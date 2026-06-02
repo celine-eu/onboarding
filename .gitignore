@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+*.egg
+
+# uv
+uv.lock
+
+# Node / pnpm
+node_modules/
+.svelte-kit/
+build/
+
+# Environment
+.env
+.env.local
+
+# Data (uploads)
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Test
+.pytest_cache/
+htmlcov/
+.coverage
+test-results/
+playwright-report/
+
+.claude
+.agents
+
+templates/**

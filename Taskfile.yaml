@@ -1,0 +1,88 @@
+version: "3"
+
+vars:
+  SRC_DIR: ./src
+  UI_DIR: ./ui
+
+tasks:
+  dev:
+    desc: Start all services with docker compose
+    cmds:
+      - docker compose up --build
+
+  run:api:
+    desc: Start backend dev server (requires local Postgres)
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8000 --reload
+
+  run:ui:
+    desc: Start frontend dev server (proxies /api to backend)
+    dir: "{{.UI_DIR}}"
+    cmds:
+      - pnpm dev --host 0.0.0.0
+
+  build:
+    desc: Build all Docker images
+    cmds:
+      - docker compose build
+
+  migrate:
+    desc: Run Alembic migrations
+    cmds:
+      - uv run --project src alembic upgrade head
+
+  migration:
+    desc: Create a new Alembic migration
+    cmds:
+      - uv run --project src alembic revision --autogenerate -m "{{.CLI_ARGS}}"
+
+  init-db:
+    desc: Create database and run migrations
+    cmds:
+      - docker compose up -d postgres
+      - sleep 3
+      - task migrate
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task test:backend
+      - task test:frontend
+
+  test:backend:
+    desc: Run backend tests
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run pytest
+
+  test:frontend:
+    desc: Run frontend tests (Playwright)
+    dir: "{{.UI_DIR}}"
+    cmds:
+      - pnpm exec playwright test
+
+  lint:
+    desc: Lint all code
+    cmds:
+      - task lint:backend
+      - task lint:frontend
+
+  lint:backend:
+    desc: Lint backend code
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
+
+  lint:frontend:
+    desc: Lint frontend code
+    dir: "{{.UI_DIR}}"
+    cmds:
+      - pnpm lint
+
+  export-csv:
+    desc: Export submissions to CSV
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run cer export-csv {{.CLI_ARGS}}

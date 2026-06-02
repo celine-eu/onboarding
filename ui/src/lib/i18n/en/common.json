@@ -1,0 +1,15 @@
+{
+	"app_title": "CER Onboarding",
+	"app_subtitle": "Renewable Energy Community Membership Platform",
+	"language": "Language",
+	"next": "Next",
+	"back": "Back",
+	"submit": "Submit",
+	"cancel": "Cancel",
+	"save": "Save",
+	"required": "Required",
+	"loading": "Loading...",
+	"error": "Error",
+	"success": "Operation completed",
+	"start_onboarding": "Start onboarding"
+}

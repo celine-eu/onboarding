@@ -1,0 +1,161 @@
+/*
+ * CER Onboarding Theme
+ * Based on @celine-eu/ui design tokens
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+
+:root {
+  --celine-font-scale: 1;
+
+  /* Typography */
+  --celine-font-display: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --celine-font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --celine-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+
+  /* Spacing */
+  --celine-space-xs: 0.25rem;
+  --celine-space-sm: 0.5rem;
+  --celine-space-md: 1rem;
+  --celine-space-lg: 1.5rem;
+  --celine-space-xl: 2rem;
+  --celine-space-2xl: 3rem;
+
+  /* Border Radius */
+  --celine-radius-sm: 6px;
+  --celine-radius-md: 10px;
+  --celine-radius-lg: 16px;
+  --celine-radius-xl: 24px;
+  --celine-radius-full: 9999px;
+
+  /* Shadows */
+  --celine-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --celine-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --celine-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+
+  /* Transitions */
+  --celine-transition-fast: 150ms ease;
+  --celine-transition-base: 250ms ease;
+  --celine-transition-slow: 350ms ease;
+
+  /* Z-Index */
+  --celine-z-dropdown: 100;
+  --celine-z-modal: 200;
+  --celine-z-floating: 300;
+  --celine-z-tooltip: 400;
+}
+
+/* Light Theme (Default) */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --celine-bg: #fafbfc;
+  --celine-bg-elevated: #ffffff;
+  --celine-bg-sunken: #f0f2f5;
+  --celine-bg-hover: rgba(0, 0, 0, 0.04);
+
+  --celine-text: #1a1a2e;
+  --celine-text-secondary: #64748b;
+  --celine-text-tertiary: #94a3b8;
+  --celine-text-inverse: #ffffff;
+
+  --celine-border: #e2e8f0;
+  --celine-border-strong: #cbd5e1;
+
+  --celine-primary: #0d9488;
+  --celine-primary-hover: #0f766e;
+  --celine-primary-light: #ccfbf1;
+  --celine-primary-text: #ffffff;
+
+  --celine-success: #10b981;
+  --celine-success-bg: #d1fae5;
+  --celine-success-text: #065f46;
+
+  --celine-warning: #f59e0b;
+  --celine-warning-bg: #fef3c7;
+  --celine-warning-text: #92400e;
+
+  --celine-danger: #ef4444;
+  --celine-danger-bg: #fee2e2;
+  --celine-danger-text: #991b1b;
+
+  --celine-info: #3b82f6;
+  --celine-info-bg: #dbeafe;
+  --celine-info-text: #1e40af;
+}
+
+/* Dark Theme */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --celine-bg: #0f172a;
+  --celine-bg-elevated: #1e293b;
+  --celine-bg-sunken: #0b1120;
+  --celine-bg-hover: rgba(255, 255, 255, 0.06);
+
+  --celine-text: #f1f5f9;
+  --celine-text-secondary: #94a3b8;
+  --celine-text-tertiary: #64748b;
+  --celine-text-inverse: #0f172a;
+
+  --celine-border: #334155;
+  --celine-border-strong: #475569;
+
+  --celine-primary: #14b8a6;
+  --celine-primary-hover: #2dd4bf;
+  --celine-primary-light: rgba(20, 184, 166, 0.15);
+  --celine-primary-text: #0f172a;
+
+  --celine-success: #34d399;
+  --celine-success-bg: rgba(52, 211, 153, 0.15);
+  --celine-success-text: #6ee7b7;
+
+  --celine-warning: #fbbf24;
+  --celine-warning-bg: rgba(251, 191, 36, 0.15);
+  --celine-warning-text: #fcd34d;
+
+  --celine-danger: #f87171;
+  --celine-danger-bg: rgba(248, 113, 113, 0.15);
+  --celine-danger-text: #fca5a5;
+
+  --celine-info: #60a5fa;
+  --celine-info-bg: rgba(96, 165, 250, 0.15);
+  --celine-info-text: #93c5fd;
+
+  --celine-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+  --celine-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+}
+
+/* Base Styles */
+html {
+  font-size: calc(16px * var(--celine-font-scale, 1));
+}
+
+body {
+  font-family: var(--celine-font-body);
+  background-color: var(--celine-bg);
+  color: var(--celine-text);
+  line-height: 1.6;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,56 @@
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celine.onboarding.models.database import get_db
+from celine.onboarding.models.schemas import ConsentCreate, SubmissionRead, SubmissionUpdate
+from celine.onboarding.services import submission_service
+from celine.onboarding.workflows.engine import InvalidTransition
+
+router = APIRouter(prefix="/submissions", tags=["submissions"])
+
+
+@router.post("", response_model=SubmissionRead, status_code=201)
+async def create_submission(
+    data: ConsentCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+    submission = await submission_service.create_from_consent(db, data, client_ip)
+    return submission
+
+
+@router.get("", response_model=list[SubmissionRead])
+async def list_submissions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    return await submission_service.list_submissions(db, skip=skip, limit=limit)
+
+
+@router.get("/{submission_id}", response_model=SubmissionRead)
+async def get_submission(
+    submission_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    submission = await submission_service.get_submission(db, submission_id)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    return submission
+
+
+@router.patch("/{submission_id}", response_model=SubmissionRead)
+async def update_submission(
+    submission_id: uuid.UUID,
+    data: SubmissionUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    submission = await submission_service.get_submission(db, submission_id)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    try:
+        return await submission_service.update_submission(db, submission, data)
+    except (ValueError, InvalidTransition) as e:
+        raise HTTPException(422, str(e))

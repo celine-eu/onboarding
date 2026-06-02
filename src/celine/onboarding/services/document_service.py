@@ -1,0 +1,80 @@
+import uuid
+from pathlib import Path
+
+from fastapi import UploadFile
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from celine.onboarding.config.settings import settings
+from celine.onboarding.models.document import Document, DocumentType
+
+ALLOWED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/pdf",
+}
+
+
+async def save_document(
+    db: AsyncSession,
+    submission_id: uuid.UUID,
+    file: UploadFile,
+    doc_type: DocumentType,
+) -> Document:
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise ValueError(f"Unsupported file type: {file.content_type}")
+
+    content = await file.read()
+    size = len(content)
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if size > max_size:
+        raise ValueError(f"File too large: {size} bytes (max {max_size})")
+
+    doc_id = uuid.uuid4()
+    ext = Path(file.filename or "file").suffix or ".bin"
+    from celine.onboarding.services.submission_service import get_submission
+
+    submission = await get_submission(db, submission_id)
+    folder_name = submission.ref if submission else str(submission_id)
+    relative_path = f"submissions/{folder_name}/{doc_id}{ext}"
+    full_path = Path(settings.data_dir) / relative_path
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_bytes(content)
+
+    document = Document(
+        id=doc_id,
+        submission_id=submission_id,
+        doc_type=doc_type,
+        file_path=relative_path,
+        original_filename=file.filename or "unknown",
+        mime_type=file.content_type or "application/octet-stream",
+        size_bytes=size,
+    )
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+    return document
+
+
+async def get_document(db: AsyncSession, document_id: uuid.UUID) -> Document | None:
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .options(selectinload(Document.extraction))
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_documents(db: AsyncSession, submission_id: uuid.UUID) -> list[Document]:
+    result = await db.execute(
+        select(Document)
+        .where(Document.submission_id == submission_id)
+        .order_by(Document.created_at)
+    )
+    return list(result.scalars().all())
+
+
+def get_file_path(document: Document) -> Path:
+    return Path(settings.data_dir) / document.file_path

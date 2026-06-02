@@ -1,0 +1,15 @@
+{
+	"app_title": "CER Onboarding",
+	"app_subtitle": "Piattaforma di adesione alla Comunita Energetica Rinnovabile",
+	"language": "Lingua",
+	"next": "Avanti",
+	"back": "Indietro",
+	"submit": "Invia",
+	"cancel": "Annulla",
+	"save": "Salva",
+	"required": "Obbligatorio",
+	"loading": "Caricamento...",
+	"error": "Errore",
+	"success": "Operazione completata",
+	"start_onboarding": "Inizia adesione"
+}
