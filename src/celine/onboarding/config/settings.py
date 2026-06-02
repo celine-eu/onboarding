@@ -17,7 +17,19 @@ class Settings(BaseSettings):
     template_dir: str = str(REPO_ROOT / "templates" / "example")
     max_upload_size_mb: int = 10
 
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_tls: bool = True
+    smtp_notify: str = ""
+
     model_config = {"env_file": str(REPO_ROOT / ".env"), "env_file_encoding": "utf-8"}
+
+    def resolve_path(self, value: str) -> Path:
+        p = Path(value)
+        return p if p.is_absolute() else REPO_ROOT / p
 
 
 settings = Settings()

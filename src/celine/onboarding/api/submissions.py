@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.models.database import get_db
@@ -54,3 +55,28 @@ async def update_submission(
         return await submission_service.update_submission(db, submission, data)
     except (ValueError, InvalidTransition) as e:
         raise HTTPException(422, str(e))
+
+
+@router.get("/{submission_id}/pdf")
+async def download_submission_pdf(
+    submission_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    from datetime import datetime, timezone
+
+    from celine.onboarding.services.pdf_service import generate_submission_pdf
+
+    submission = await submission_service.get_submission(db, submission_id)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+
+    if submission.created_at:
+        age = (datetime.now(timezone.utc) - submission.created_at).total_seconds()
+        if age > 600:
+            raise HTTPException(410, "PDF download expired for privacy protection")
+
+    pdf_bytes = generate_submission_pdf(submission)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{submission.ref}-summary.pdf"'},
+    )

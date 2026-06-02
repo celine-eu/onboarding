@@ -11,9 +11,9 @@ async def get_config():
     return template_service.get_config()
 
 
-@router.get("/assets/{path:path}")
-async def get_asset(path: str):
-    file_path = template_service.get_asset_path(f"assets/{path}")
+@router.get("/template/{path:path}")
+async def get_template_file(path: str):
+    file_path = template_service.get_asset_path(path)
     if not file_path:
         raise HTTPException(404, "Asset not found")
     return FileResponse(file_path)

@@ -26,11 +26,20 @@
 	"policy_consent": "Accetto il regolamento della comunita energetica",
 	"statute_consent": "Accetto lo statuto della comunita energetica",
 	"keep_me_updated": "Desidero ricevere aggiornamenti e comunicazioni sulla CER",
+	"step_eligibility": "Copertura",
+	"eligibility_intro": "Verifica che il tuo indirizzo di fornitura sia nell'area coperta dalla comunita energetica.",
+	"eligibility_address": "Indirizzo di fornitura",
+	"eligibility_check": "Verifica",
+	"eligibility_checking": "Verifica in corso...",
+	"eligibility_ok": "Il tuo indirizzo e' nell'area coperta!",
+	"eligibility_fail": "Il tuo indirizzo non e' nell'area coperta dalla comunita energetica.",
+	"eligibility_municipality": "Comune",
 	"invalid_email": "Indirizzo email non valido",
 	"invalid_phone": "Numero di telefono non valido",
 	"invalid_cf": "Codice fiscale non valido (16 caratteri alfanumerici)",
 	"invalid_pod": "Codice POD non valido (es. IT001E12345678)",
 	"email_or_phone": "Email o telefono obbligatorio",
 	"submit_success": "Adesione inviata con successo!",
-	"submit_success_detail": "Riceverai una conferma via email."
+	"submit_success_detail": "Riceverai una conferma via email.",
+	"download_pdf": "Scarica riepilogo PDF"
 }

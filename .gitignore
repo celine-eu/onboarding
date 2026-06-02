@@ -45,3 +45,4 @@ playwright-report/
 .agents
 
 templates/**
+!templates/example

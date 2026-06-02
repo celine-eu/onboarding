@@ -74,5 +74,18 @@ async def update_submission(
         submission.status = target_status
 
     await db.commit()
-    await db.refresh(submission)
-    return submission
+
+    reloaded = await get_submission(db, submission.id)
+
+    if target_status == SubmissionStatus.SUBMITTED and reloaded:
+        _send_notification(reloaded)
+
+    return reloaded
+
+
+def _send_notification(submission: Submission) -> None:
+    try:
+        from celine.onboarding.services.email_service import send_submission_email
+        send_submission_email(submission)
+    except Exception:
+        pass

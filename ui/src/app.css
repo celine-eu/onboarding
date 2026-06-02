@@ -64,8 +64,10 @@
   --celine-border-strong: #cbd5e1;
 
   --celine-primary: #0d9488;
+  --celine-primary-rgb: 13, 148, 136;
   --celine-primary-hover: #0f766e;
-  --celine-primary-light: #ccfbf1;
+  --celine-primary-light: rgba(13, 148, 136, 0.1);
+  --celine-primary-bg: rgba(13, 148, 136, 0.06);
   --celine-primary-text: #ffffff;
 
   --celine-success: #10b981;

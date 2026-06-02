@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.extractions import router as extractions_router
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.config import router as config_router
+    from celine.onboarding.api.eligibility import router as eligibility_router
 
     app.include_router(health_router, prefix="/api")
     app.include_router(config_router, prefix="/api")
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router, prefix="/api")
     app.include_router(extractions_router, prefix="/api")
     app.include_router(consent_docs_router, prefix="/api")
+    app.include_router(eligibility_router, prefix="/api")
 
     return app
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { t } from '$lib/i18n';
 	import { api, type SiteConfig } from '$lib/api/client';
+	import Markdown from '$lib/components/Markdown.svelte';
 
 	let config = $state<SiteConfig | null>(null);
 
@@ -10,18 +11,24 @@
 </script>
 
 <div class="hero">
-	<div class="hero-icon">
-		{#if config?.branding?.logo}
-			<img src="/api/assets/{config.branding.logo}" alt="" width="48" height="48" />
-		{:else}
+	{#if config?.branding?.logo}
+		<div class="hero-logo-wrap">
+			<img class="hero-logo" src="/api/template/{config.branding.logo}" alt="" />
+		</div>
+	{:else}
+		<div class="hero-icon">
 			<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<path d="M13 10V3L4 14h7v7l9-11h-7z" />
 			</svg>
-		{/if}
-	</div>
+		</div>
+	{/if}
 
 	<h2 class="hero-title">{config?.name ?? $t('common.app_title')}</h2>
-	<p class="hero-subtitle">{config?.content?.welcome ?? $t('common.app_subtitle')}</p>
+	{#if config?.content?.welcome}
+		<div class="hero-subtitle"><Markdown content={config.content.welcome} /></div>
+	{:else}
+		<p class="hero-subtitle">{$t('common.app_subtitle')}</p>
+	{/if}
 
 	<a href="/onboarding" class="cta-btn">
 		{$t('common.start_onboarding')}
@@ -44,6 +51,21 @@
 		border-radius: var(--celine-radius-full);
 		padding: var(--celine-space-md);
 		display: flex;
+	}
+
+	.hero-logo-wrap {
+		background: var(--celine-primary);
+		border-radius: var(--celine-radius-lg);
+		padding: var(--celine-space-md) var(--celine-space-xl);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.hero-logo {
+		max-height: 60px;
+		max-width: 260px;
+		object-fit: contain;
 	}
 
 	.hero-title {

@@ -26,11 +26,20 @@
 	"policy_consent": "I accept the energy community policy",
 	"statute_consent": "I accept the energy community statute",
 	"keep_me_updated": "I'd like to receive updates and communications about the CER",
+	"step_eligibility": "Coverage",
+	"eligibility_intro": "Verify that your supply address is within the energy community coverage area.",
+	"eligibility_address": "Supply address",
+	"eligibility_check": "Verify",
+	"eligibility_checking": "Checking...",
+	"eligibility_ok": "Your address is in the coverage area!",
+	"eligibility_fail": "Your address is not in the energy community coverage area.",
+	"eligibility_municipality": "Municipality",
 	"invalid_email": "Invalid email address",
 	"invalid_phone": "Invalid phone number",
 	"invalid_cf": "Invalid fiscal code (16 alphanumeric characters)",
 	"invalid_pod": "Invalid POD code (e.g. IT001E12345678)",
 	"email_or_phone": "Email or phone required",
 	"submit_success": "Application submitted successfully!",
-	"submit_success_detail": "You will receive a confirmation email."
+	"submit_success_detail": "You will receive a confirmation email.",
+	"download_pdf": "Download PDF summary"
 }

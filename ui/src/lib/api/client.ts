@@ -24,7 +24,7 @@ export interface SiteConfig {
 	locale: string;
 	branding: { primary_color?: string; logo?: string };
 	fields: { extra: Array<{ key: string; label: string; type: string; step: string; required: boolean }>; hidden: string[] };
-	consent: Record<string, { version: string; file?: string; required: boolean }>;
+	consent: Record<string, { version: string; file?: string; url?: string; required: boolean }>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;
 }
@@ -61,6 +61,12 @@ export const api = {
 		if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
 		return res.json();
 	},
+
+	checkEligibility: (data: { lat?: number; lng?: number; address?: string }) =>
+		request<{ eligible: boolean; lat?: number; lng?: number; municipality?: string; reason?: string }>(
+			'/api/eligibility',
+			{ method: 'POST', body: JSON.stringify(data) }
+		),
 
 	extractBill: async (files: File[]): Promise<Record<string, string | null>> => {
 		const form = new FormData();

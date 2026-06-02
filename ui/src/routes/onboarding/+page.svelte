@@ -5,6 +5,7 @@
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
 	import ExtractionReview from '$lib/components/ExtractionReview.svelte';
+	import Markdown from '$lib/components/Markdown.svelte';
 
 	let config = $state<SiteConfig | null>(null);
 	let configError = $state('');
@@ -13,6 +14,7 @@
 		consents: 'onboarding.step_data_consents',
 		utility: 'onboarding.step_utility',
 		personal: 'onboarding.step_personal',
+		eligibility: 'onboarding.step_eligibility',
 		statute: 'onboarding.step_statute',
 		review: 'onboarding.step_review'
 	};
@@ -58,6 +60,7 @@
 	let uploadedFiles = $state<UploadedFile[]>([]);
 	let extractionData: Record<string, string | null> | null = $state(null);
 	let extracting = $state(false);
+	let extractionPending = $state(false);
 	let extractionTimer: ReturnType<typeof setTimeout> | null = null;
 	let extractionVersion = 0;
 
@@ -69,7 +72,20 @@
 	let fiscalCode = $state('');
 	let podCode = $state('');
 
-	// Statute consent (step 3)
+	// Eligibility
+	let eligibilityAddress = $state('');
+	let eligibilityChecking = $state(false);
+	let eligibilityResult = $state<{
+		eligible: boolean;
+		municipality?: string;
+		postal_code?: string;
+		state?: string;
+		matched_rule?: string;
+		matched_value?: string;
+		reason?: string;
+	} | null>(null);
+
+	// Statute
 	let statuteConsent = $state(false);
 
 	// Optional marketing opt-in
@@ -105,11 +121,12 @@
 
 	let currentStepName = $derived(steps[currentStep] ?? '');
 	let uploading = $derived(uploadedFiles.some((f) => f.status === 'uploading'));
-	let stepBusy = $derived(currentStepName === 'utility' && (uploading || extracting));
+	let stepBusy = $derived(currentStepName === 'utility' && (uploading || extractionPending || extracting));
 
 	function cancelProcessing() {
 		extractionVersion++;
 		extracting = false;
+		extractionPending = false;
 		if (extractionTimer) {
 			clearTimeout(extractionTimer);
 			extractionTimer = null;
@@ -123,6 +140,7 @@
 			if (!validated) return !!firstName && !!lastName && (!!email || !!phone) && !!fiscalCode && !!podCode;
 			return Object.keys(errors).length === 0;
 		}
+		if (currentStepName === 'eligibility') return eligibilityResult?.eligible === true;
 		if (currentStepName === 'statute') return statuteConsent;
 		return true;
 	}
@@ -200,11 +218,13 @@
 	}
 
 	function scheduleExtraction() {
+		extractionPending = true;
 		if (extractionTimer) clearTimeout(extractionTimer);
 		extractionTimer = setTimeout(runExtraction, 800);
 	}
 
 	async function runExtraction() {
+		extractionPending = false;
 		const allFiles = uploadedFiles.map((f) => f.file);
 		if (allFiles.length === 0) return;
 
@@ -245,6 +265,21 @@
 		if (data.cognome) lastName = data.cognome;
 		if (data.codice_fiscale) fiscalCode = data.codice_fiscale;
 		if (data.pod) podCode = data.pod;
+		if (data.indirizzo && !eligibilityAddress) eligibilityAddress = data.indirizzo;
+	}
+
+	async function checkEligibility() {
+		if (!eligibilityAddress.trim()) return;
+		eligibilityChecking = true;
+		eligibilityResult = null;
+		errorMsg = '';
+		try {
+			eligibilityResult = await api.checkEligibility({ address: eligibilityAddress });
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Eligibility check failed';
+		} finally {
+			eligibilityChecking = false;
+		}
 	}
 
 	function onExtractionChange(data: Record<string, string | null>) {
@@ -278,12 +313,22 @@
 				<path d="M20 6 9 17l-5-5"/>
 			</svg>
 		</div>
-		<h2 class="success-title">{$t('onboarding.submit_success')}</h2>
-		<p class="success-detail">{$t('onboarding.submit_success_detail')}</p>
+		{#if config?.content?.success}
+			<Markdown content={config.content.success} />
+		{:else}
+			<h2 class="success-title">{$t('onboarding.submit_success')}</h2>
+		{/if}
 		{#if submissionRef}
 			<p class="success-ref">Ref: {submissionRef}</p>
 		{/if}
-		<a href="/" class="btn btn-secondary">{$t('common.back')}</a>
+		<div class="success-actions">
+			{#if submissionId}
+				<a href="/api/submissions/{submissionId}/pdf" target="_blank" class="btn btn-primary">
+					{$t('onboarding.download_pdf')}
+				</a>
+			{/if}
+			<a href="/" class="btn btn-secondary">{$t('common.back')}</a>
+		</div>
 	</div>
 {:else}
 	<div class="wizard">
@@ -303,19 +348,23 @@
 		<div class="step-content">
 			{#if currentStepName === 'consents'}
 				<div class="consents">
-					<p class="consent-intro">{config?.content?.consent_intro ?? $t('onboarding.consent_intro')}</p>
+					{#if config?.content?.consent_intro}
+						<Markdown content={config.content.consent_intro} />
+					{:else}
+						<p class="consent-intro">{$t('onboarding.consent_intro')}</p>
+					{/if}
 					<ConsentCheckbox
 						label={$t('onboarding.gdpr_consent')}
 						bind:checked={gdprConsent}
 						required
-						documentUrl="/api/consent-documents/gdpr"
+						documentUrl={config?.consent?.gdpr?.url ?? '/api/consent-documents/gdpr'}
 						documentLabel={$t('onboarding.view_document')}
 					/>
 					<ConsentCheckbox
 						label={$t('onboarding.policy_consent')}
 						bind:checked={policyConsent}
 						required
-						documentUrl="/api/consent-documents/policy"
+						documentUrl={config?.consent?.policy?.url ?? '/api/consent-documents/policy'}
 						documentLabel={$t('onboarding.view_document')}
 					/>
 					<ConsentCheckbox
@@ -353,6 +402,50 @@
 					<FormField label={$t('onboarding.fiscal_code')} name="fiscal_code" bind:value={fiscalCode} required maxlength={16} error={errors.fiscal_code ?? ''} placeholder="RSSMRA80A01H501U" />
 					<FormField label={$t('onboarding.pod_code')} name="pod_code" bind:value={podCode} required maxlength={20} error={errors.pod_code ?? ''} placeholder="IT001E12345678" />
 				</div>
+			{:else if currentStepName === 'eligibility'}
+				<div class="step-section">
+					<p class="step-hint">{$t('onboarding.eligibility_intro')}</p>
+					<div class="eligibility-row">
+						<FormField
+							label={$t('onboarding.eligibility_address')}
+							name="eligibility_address"
+							bind:value={eligibilityAddress}
+							required
+							placeholder="Via Roma 1, Borgo Valsugana"
+						/>
+						<button
+							class="btn btn-primary eligibility-btn"
+							disabled={!eligibilityAddress.trim() || eligibilityChecking}
+							onclick={checkEligibility}
+						>
+							{eligibilityChecking ? $t('onboarding.eligibility_checking') : $t('onboarding.eligibility_check')}
+						</button>
+					</div>
+
+					{#if eligibilityResult}
+						{#if eligibilityResult.eligible}
+							<div class="eligibility-ok">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M20 6 9 17l-5-5"/>
+								</svg>
+								<span>{$t('onboarding.eligibility_ok')}</span>
+								<span class="eligibility-detail">
+									{[eligibilityResult.municipality, eligibilityResult.postal_code, eligibilityResult.state].filter(Boolean).join(' - ')}
+								</span>
+							</div>
+						{:else}
+							<div class="eligibility-fail">
+								<span>{$t('onboarding.eligibility_fail')}</span>
+								<span class="eligibility-detail">
+									{[eligibilityResult.municipality, eligibilityResult.postal_code].filter(Boolean).join(' - ')}
+								</span>
+								{#if eligibilityResult.reason}
+									<span class="eligibility-reason">{eligibilityResult.reason}</span>
+								{/if}
+							</div>
+						{/if}
+					{/if}
+				</div>
 			{:else if currentStepName === 'statute'}
 				<div class="consents">
 					<p class="consent-intro">{$t('onboarding.statute_intro')}</p>
@@ -360,7 +453,7 @@
 						label={$t('onboarding.statute_consent')}
 						bind:checked={statuteConsent}
 						required
-						documentUrl="/api/consent-documents/statute"
+						documentUrl={config?.consent?.statute?.url ?? '/api/consent-documents/statute'}
 						documentLabel={$t('onboarding.view_document')}
 					/>
 				</div>
@@ -606,6 +699,56 @@
 		color: var(--celine-text);
 	}
 
+	.eligibility-row {
+		display: flex;
+		gap: var(--celine-space-sm);
+		align-items: flex-end;
+	}
+
+	.eligibility-row :global(.field) {
+		flex: 1;
+	}
+
+	.eligibility-btn {
+		flex-shrink: 0;
+		height: 2.625rem;
+	}
+
+	.eligibility-ok {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--celine-space-sm);
+		padding: var(--celine-space-md);
+		background: var(--celine-success-bg);
+		color: var(--celine-success-text);
+		border-radius: var(--celine-radius-md);
+		font-weight: 500;
+		font-size: 0.9375rem;
+	}
+
+	.eligibility-fail {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-xs);
+		padding: var(--celine-space-md);
+		background: var(--celine-danger-bg);
+		color: var(--celine-danger-text);
+		border-radius: var(--celine-radius-md);
+		font-size: 0.9375rem;
+	}
+
+	.eligibility-detail {
+		font-size: 0.8125rem;
+		font-weight: 400;
+		width: 100%;
+	}
+
+	.eligibility-reason {
+		font-size: 0.8125rem;
+		opacity: 0.8;
+	}
+
 	.error-banner {
 		background: var(--celine-danger-bg);
 		color: var(--celine-danger-text);
@@ -700,6 +843,11 @@
 	.success-detail {
 		color: var(--celine-text-secondary);
 		margin: 0;
+	}
+
+	.success-actions {
+		display: flex;
+		gap: var(--celine-space-sm);
 	}
 
 	.success-ref {

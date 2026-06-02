@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from celine.onboarding.services import template_service
 
@@ -55,11 +55,21 @@ async def get_consent_meta(slug: str):
     return _load_meta(slug)
 
 
+def _get_consent_url(slug: str) -> str | None:
+    manifest = template_service.load_manifest()
+    consent = manifest.get("consent", {}).get(slug, {})
+    return consent.get("url")
+
+
 @router.get("/{slug}")
 async def download_consent_document(slug: str):
-    """Download/preview a consent document."""
+    """Download/preview a consent document. Redirects if manifest specifies a URL."""
     if not SLUG_PATTERN.match(slug):
         raise HTTPException(400, "Invalid slug")
+
+    url = _get_consent_url(slug)
+    if url:
+        return RedirectResponse(url)
 
     meta = _load_meta(slug)
     doc_path = _find_document(slug)

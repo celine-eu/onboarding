@@ -3,13 +3,16 @@ from typing import Any
 
 import yaml
 
-from celine.onboarding.config.settings import settings
+from celine.onboarding.config.settings import REPO_ROOT, settings
 
 _cache: dict[str, Any] | None = None
 
 
 def _template_dir() -> Path:
-    return Path(settings.template_dir)
+    p = Path(settings.template_dir)
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    return p
 
 
 def load_manifest() -> dict[str, Any]:
