@@ -185,6 +185,7 @@
 					phone: phone || null,
 					fiscal_code: fiscalCode,
 					pod_code: podCode,
+					extracted_data: extractionData,
 				});
 			} catch (e) {
 				errorMsg = e instanceof Error ? e.message : 'Failed to save data';

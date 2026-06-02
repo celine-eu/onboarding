@@ -23,17 +23,24 @@ async def save_document(
     file: UploadFile,
     doc_type: DocumentType,
 ) -> Document:
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise ValueError(f"Unsupported file type: {file.content_type}")
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if file.size and file.size > max_size:
+        raise ValueError(f"File too large (max {settings.max_upload_size_mb}MB)")
 
     content = await file.read()
     size = len(content)
-    max_size = settings.max_upload_size_mb * 1024 * 1024
     if size > max_size:
         raise ValueError(f"File too large: {size} bytes (max {max_size})")
 
+    from celine.onboarding.extractors.openai_extractor import _detect_mime
+    detected = _detect_mime(content)
+    mime = detected if detected != "application/octet-stream" else (file.content_type or "")
+    if mime not in ALLOWED_MIME_TYPES:
+        raise ValueError(f"Unsupported file type: {mime}")
+
     doc_id = uuid.uuid4()
-    ext = Path(file.filename or "file").suffix or ".bin"
+    raw_name = Path(file.filename or "file").name
+    ext = Path(raw_name).suffix or ".bin"
     from celine.onboarding.services.submission_service import get_submission
 
     submission = await get_submission(db, submission_id)
@@ -49,7 +56,7 @@ async def save_document(
         doc_type=doc_type,
         file_path=relative_path,
         original_filename=file.filename or "unknown",
-        mime_type=file.content_type or "application/octet-stream",
+        mime_type=mime,
         size_bytes=size,
     )
     db.add(document)

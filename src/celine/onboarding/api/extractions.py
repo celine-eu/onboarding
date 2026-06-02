@@ -2,9 +2,10 @@ import uuid
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.api.deps import limiter
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import ExtractionConfirm, ExtractionRead
 from celine.onboarding.services import document_service, extraction_service
@@ -15,7 +16,8 @@ ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"
 
 
 @router.post("/extract")
-async def extract_from_upload(files: Annotated[list[UploadFile], File()]):
+@limiter.limit("10/hour")
+async def extract_from_upload(request: Request, files: Annotated[list[UploadFile], File()]):
     """Extract structured data from bill pages (images/PDFs). Stateless."""
     from celine.onboarding.extractors.openai_extractor import OpenAIExtractor
 

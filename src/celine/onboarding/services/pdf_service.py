@@ -48,6 +48,12 @@ def generate_submission_pdf(submission: Submission) -> bytes:
     _row(pdf, "Consent IP", submission.consent_ip)
     pdf.ln(4)
 
+    if submission.extracted_data:
+        _section(pdf, "Extracted Data (from bill)")
+        for key, value in submission.extracted_data.items():
+            _row(pdf, key, str(value) if value else None)
+        pdf.ln(4)
+
     if submission.documents:
         _section(pdf, "Documents")
         for doc in submission.documents:

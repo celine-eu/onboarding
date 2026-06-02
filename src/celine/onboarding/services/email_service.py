@@ -34,6 +34,9 @@ def send_submission_email(submission: Submission) -> None:
 
     from_addr = notifications.get("from") or settings.smtp_from or settings.smtp_user
 
+    def _sanitize(val: str | None) -> str:
+        return (val or "").replace("\r", "").replace("\n", "").replace("\x00", "")
+
     msg = EmailMessage()
     msg["Subject"] = f"{rec_name} — Submission {submission.ref}"
     msg["From"] = from_addr
@@ -41,7 +44,7 @@ def send_submission_email(submission: Submission) -> None:
 
     body = (
         f"Submission reference: {submission.ref}\n"
-        f"Name: {submission.first_name} {submission.last_name}\n"
+        f"Name: {_sanitize(submission.first_name)} {_sanitize(submission.last_name)}\n"
         f"Status: {submission.status.value}\n"
         f"Date: {submission.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if submission.created_at else '-'}\n\n"
         f"Please find attached the submission summary (PDF) and uploaded documents (ZIP).\n"

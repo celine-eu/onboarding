@@ -1,10 +1,12 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.models.document import DocumentType
+from celine.onboarding.validators.fiscal_code import validate_fiscal_code
+from celine.onboarding.validators.pod_code import validate_pod_code
 
 
 class ConsentCreate(BaseModel):
@@ -23,10 +25,25 @@ class SubmissionUpdate(BaseModel):
     phone: str | None = Field(None, max_length=30)
     fiscal_code: str | None = Field(None, max_length=16)
     pod_code: str | None = Field(None, max_length=20)
+    extracted_data: dict | None = None
     statute_consent: bool | None = None
     keep_me_updated: bool | None = None
     status: SubmissionStatus | None = None
     notes: str | None = None
+
+    @field_validator("fiscal_code")
+    @classmethod
+    def check_fiscal_code(cls, v: str | None) -> str | None:
+        if v and not validate_fiscal_code(v):
+            raise ValueError("Invalid Italian fiscal code")
+        return v.upper().strip() if v else v
+
+    @field_validator("pod_code")
+    @classmethod
+    def check_pod_code(cls, v: str | None) -> str | None:
+        if v and not validate_pod_code(v):
+            raise ValueError("Invalid POD code")
+        return v.upper().strip() if v else v
 
 
 class SubmissionRead(BaseModel):
@@ -39,6 +56,7 @@ class SubmissionRead(BaseModel):
     phone: str | None
     fiscal_code: str | None
     pod_code: str | None
+    extracted_data: dict | None
     consent_ip: str
     gdpr_consent: bool
     gdpr_consent_at: datetime | None

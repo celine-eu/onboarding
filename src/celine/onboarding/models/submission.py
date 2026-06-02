@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Enum, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from celine.onboarding.models.database import Base
@@ -41,6 +41,9 @@ class Submission(Base):
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     fiscal_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     pod_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Raw extraction data from bill OCR
+    extracted_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Consents (collected first, with audit trail)
     consent_ip: Mapped[str] = mapped_column(String(45))

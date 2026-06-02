@@ -27,7 +27,11 @@ def _load_meta(slug: str) -> dict:
 def _find_document(slug: str) -> Path:
     meta = _load_meta(slug)
     filename = meta.get("filename", f"{slug}.pdf")
-    doc_path = _consent_dir() / filename
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    doc_path = (_consent_dir() / filename).resolve()
+    if not doc_path.is_relative_to(_consent_dir().resolve()):
+        raise HTTPException(400, "Invalid path")
     if not doc_path.exists():
         raise HTTPException(404, f"Document file not found for '{slug}'")
     return doc_path

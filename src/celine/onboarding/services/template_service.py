@@ -54,7 +54,11 @@ def get_consent_dir() -> Path:
 
 
 def get_asset_path(relative: str) -> Path | None:
-    path = _template_dir() / relative
+    if ".." in relative or relative.startswith("/"):
+        return None
+    path = (_template_dir() / relative).resolve()
+    if not path.is_relative_to(_template_dir().resolve()):
+        return None
     if path.exists() and path.is_file():
         return path
     return None

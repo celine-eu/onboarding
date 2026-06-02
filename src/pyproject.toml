@@ -19,6 +19,7 @@ dependencies = [
     "pillow>=12.2.0",
     "pyyaml>=6.0.3",
     "fpdf2>=2.8.7",
+    "slowapi>=0.1.9",
 ]
 
 [build-system]
