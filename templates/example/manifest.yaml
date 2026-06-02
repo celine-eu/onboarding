@@ -1,0 +1,37 @@
+slug: example
+name: "CER Valle del Sole"
+locale: it
+
+branding:
+  primary_color: "#0d9488"
+  logo: assets/logo.svg
+
+fields:
+  extra: []
+  hidden: []
+
+consent:
+  gdpr:
+    version: "1.0"
+    file: consent/gdpr.pdf
+    required: true
+  policy:
+    version: "1.0"
+    file: consent/policy.pdf
+    required: true
+  statute:
+    version: "1.0"
+    file: consent/statute.pdf
+    required: true
+
+steps:
+  - consents
+  - utility
+  - personal
+  - statute
+  - review
+
+content:
+  welcome: content/welcome.md
+  consent_intro: content/consent_intro.md
+  success: content/success.md
