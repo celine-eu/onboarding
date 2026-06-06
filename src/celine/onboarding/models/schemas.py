@@ -26,6 +26,8 @@ class SubmissionUpdate(BaseModel):
     fiscal_code: str | None = Field(None, max_length=16)
     pod_code: str | None = Field(None, max_length=20)
     extracted_data: dict | None = None
+    id_extracted_data: dict | None = None
+    extra_data: dict | None = None
     statute_consent: bool | None = None
     keep_me_updated: bool | None = None
     status: SubmissionStatus | None = None
@@ -57,6 +59,8 @@ class SubmissionRead(BaseModel):
     fiscal_code: str | None
     pod_code: str | None
     extracted_data: dict | None
+    id_extracted_data: dict | None
+    extra_data: dict | None
     consent_ip: str
     gdpr_consent: bool
     gdpr_consent_at: datetime | None
@@ -73,6 +77,10 @@ class SubmissionRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SubmissionCreatedRead(SubmissionRead):
+    session_token: str
 
 
 class DocumentRead(BaseModel):
@@ -100,3 +108,15 @@ class ExtractionRead(BaseModel):
 
 class ExtractionConfirm(BaseModel):
     extracted_data: dict | None = None
+
+
+class AuditLogRead(BaseModel):
+    id: uuid.UUID
+    action: str
+    entity_type: str
+    entity_id: str | None
+    ip_address: str | None
+    detail: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

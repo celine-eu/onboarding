@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     template_dir: str = str(REPO_ROOT / "templates" / "example")
     max_upload_size_mb: int = 10
 
+    encryption_key: str = ""
+    dpa_signed: bool = False
+
     admin_token: str = ""
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 

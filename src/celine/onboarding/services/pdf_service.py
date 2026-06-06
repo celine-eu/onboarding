@@ -48,10 +48,39 @@ def generate_submission_pdf(submission: Submission) -> bytes:
     _row(pdf, "Consent IP", submission.consent_ip)
     pdf.ln(4)
 
+    if submission.extra_data:
+        extra_fields = manifest.get("fields", {}).get("extra", [])
+        label_map = {f["key"]: f["label"] for f in extra_fields if "key" in f}
+        _section(pdf, "Additional Information")
+        for key, value in submission.extra_data.items():
+            if isinstance(value, bool):
+                display = "Si" if value else "No"
+            elif value is not None:
+                display = str(value)
+            else:
+                display = None
+            label = label_map.get(key, key.replace("_", " ").title())
+            _row(pdf, label, display)
+        pdf.ln(4)
+
+    extraction_labels = {
+        "nome": "Nome", "cognome": "Cognome", "codice_fiscale": "Codice Fiscale",
+        "pod": "POD", "indirizzo": "Indirizzo", "fornitore": "Fornitore",
+        "numero_contratto": "N. Contratto", "tipo_documento": "Tipo documento",
+        "data_nascita": "Data di nascita", "luogo_nascita": "Luogo di nascita",
+        "sesso": "Sesso", "numero_documento": "N. Documento", "scadenza": "Scadenza",
+    }
+
     if submission.extracted_data:
         _section(pdf, "Extracted Data (from bill)")
         for key, value in submission.extracted_data.items():
-            _row(pdf, key, str(value) if value else None)
+            _row(pdf, extraction_labels.get(key, key), str(value) if value else None)
+        pdf.ln(4)
+
+    if submission.id_extracted_data:
+        _section(pdf, "Extracted Data (from ID card)")
+        for key, value in submission.id_extracted_data.items():
+            _row(pdf, extraction_labels.get(key, key), str(value) if value else None)
         pdf.ln(4)
 
     if submission.documents:

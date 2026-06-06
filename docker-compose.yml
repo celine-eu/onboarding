@@ -21,12 +21,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-securepassword123}@${DB_HOST:-172.17.0.1}:${DB_PORT:-15432}/rec_onboarding
-    volumes:
-      - ./src:/app
-      - ./alembic:/alembic
-      - ./alembic.ini:/alembic.ini
-    working_dir: /
-    command: uv run --project /app alembic upgrade head
+    command: uv run alembic upgrade head
     depends_on:
       init-db:
         condition: service_completed_successfully
@@ -43,7 +38,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./src:/app
       - ./data:/app/data
     depends_on:
       migrate:

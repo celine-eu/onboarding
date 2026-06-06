@@ -15,15 +15,26 @@
 		fields = { ...data };
 	});
 
-	const fieldLabels: Record<string, string> = {
-		nome: 'Nome',
-		cognome: 'Cognome',
-		codice_fiscale: 'Codice Fiscale',
-		pod: 'POD',
-		indirizzo: 'Indirizzo',
-		fornitore: 'Fornitore',
-		numero_contratto: 'N. Contratto'
+	const FIELD_LABEL_KEYS: Record<string, string> = {
+		nome: 'onboarding.field_nome',
+		cognome: 'onboarding.field_cognome',
+		codice_fiscale: 'onboarding.field_codice_fiscale',
+		pod: 'onboarding.field_pod',
+		indirizzo: 'onboarding.field_indirizzo',
+		fornitore: 'onboarding.field_fornitore',
+		numero_contratto: 'onboarding.field_numero_contratto',
+		tipo_documento: 'onboarding.field_tipo_documento',
+		data_nascita: 'onboarding.field_data_nascita',
+		luogo_nascita: 'onboarding.field_luogo_nascita',
+		sesso: 'onboarding.field_sesso',
+		numero_documento: 'onboarding.field_numero_documento',
+		scadenza: 'onboarding.field_scadenza',
 	};
+
+	function fieldLabel(key: string): string {
+		const i18nKey = FIELD_LABEL_KEYS[key];
+		return i18nKey ? $t(i18nKey) : key;
+	}
 
 	function onFieldChange() {
 		onchange(fields);
@@ -41,7 +52,7 @@
 	<div class="extraction-fields">
 		{#each Object.entries(fields) as [key, value]}
 			<div class="extraction-field">
-				<span class="extraction-label">{fieldLabels[key] ?? key}</span>
+				<span class="extraction-label">{fieldLabel(key)}</span>
 				{#if editing}
 					<input
 						class="extraction-input"

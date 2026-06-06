@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { t } from '$lib/i18n';
-	import { api, type SiteConfig } from '$lib/api/client';
+	import { t, locale } from '$lib/i18n';
+	import { api, setSessionToken, getSessionToken, type SiteConfig } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -14,6 +14,7 @@
 		consents: 'onboarding.step_data_consents',
 		utility: 'onboarding.step_utility',
 		personal: 'onboarding.step_personal',
+		energy: 'onboarding.step_energy',
 		eligibility: 'onboarding.step_eligibility',
 		statute: 'onboarding.step_statute',
 		review: 'onboarding.step_review'
@@ -64,6 +65,14 @@
 	let extractionTimer: ReturnType<typeof setTimeout> | null = null;
 	let extractionVersion = 0;
 
+	// ID card upload & extraction (in personal step)
+	let idUploadedFiles = $state<UploadedFile[]>([]);
+	let idExtractionData: Record<string, string | null> | null = $state(null);
+	let idExtracting = $state(false);
+	let idExtractionPending = $state(false);
+	let idExtractionTimer: ReturnType<typeof setTimeout> | null = null;
+	let idExtractionVersion = 0;
+
 	// Personal data (step 2 — prefilled from extraction)
 	let firstName = $state('');
 	let lastName = $state('');
@@ -90,6 +99,35 @@
 
 	// Optional marketing opt-in
 	let keepMeUpdated = $state(false);
+
+	// Dynamic extra fields from manifest
+	let extraData = $state<Record<string, unknown>>({});
+
+	function fieldLabel(field: { label: string; [k: string]: unknown }): string {
+		const localized = field[`label:${$locale}`];
+		return typeof localized === 'string' ? localized : field.label;
+	}
+
+	function extraFieldsForStep(step: string) {
+		if (!config) return [];
+		return config.fields.extra.filter((f) => f.step === step);
+	}
+
+	function isFieldVisible(field: { show_if?: { key: string; value: unknown } }): boolean {
+		if (!field.show_if) return true;
+		return extraData[field.show_if.key] === field.show_if.value;
+	}
+
+	function setExtraField(key: string, value: unknown) {
+		const updated = { ...extraData, [key]: value };
+		if (!config) { extraData = updated; return; }
+		for (const f of config.fields.extra) {
+			if (f.show_if?.key === key && value !== f.show_if.value) {
+				delete updated[f.key];
+			}
+		}
+		extraData = updated;
+	}
 
 	// Validation
 	let errors = $state<Record<string, string>>({});
@@ -121,7 +159,11 @@
 
 	let currentStepName = $derived(steps[currentStep] ?? '');
 	let uploading = $derived(uploadedFiles.some((f) => f.status === 'uploading'));
-	let stepBusy = $derived(currentStepName === 'utility' && (uploading || extractionPending || extracting));
+	let idUploading = $derived(idUploadedFiles.some((f) => f.status === 'uploading'));
+	let stepBusy = $derived(
+		(currentStepName === 'utility' && (uploading || extractionPending || extracting)) ||
+		(currentStepName === 'personal' && (idUploading || idExtractionPending || idExtracting))
+	);
 
 	function cancelProcessing() {
 		extractionVersion++;
@@ -142,6 +184,17 @@
 		}
 		if (currentStepName === 'eligibility') return eligibilityResult?.eligible === true;
 		if (currentStepName === 'statute') return statuteConsent;
+
+		const stepFields = extraFieldsForStep(currentStepName);
+		if (stepFields.length > 0) {
+			for (const field of stepFields) {
+				if (field.required && isFieldVisible(field)) {
+					const val = extraData[field.key];
+					if (val === undefined || val === null || val === '') return false;
+				}
+			}
+		}
+
 		return true;
 	}
 
@@ -161,6 +214,7 @@
 				});
 				submissionId = res.id;
 				submissionRef = (res as Record<string, unknown>).ref as string;
+				if (res.session_token) setSessionToken(res.session_token);
 			} catch (e) {
 				errorMsg = e instanceof Error ? e.message : 'Failed to create submission';
 				submitting = false;
@@ -186,7 +240,19 @@
 					fiscal_code: fiscalCode,
 					pod_code: podCode,
 					extracted_data: extractionData,
+					id_extracted_data: idExtractionData,
+					extra_data: extraData,
 				});
+			} catch (e) {
+				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
+				return;
+			}
+		}
+
+		const stepExtraFields = extraFieldsForStep(currentStepName);
+		if (stepExtraFields.length > 0 && currentStepName !== 'personal' && submissionId) {
+			try {
+				await api.updateSubmission(submissionId, { extra_data: extraData });
 			} catch (e) {
 				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
 				return;
@@ -288,6 +354,98 @@
 		applyExtraction(data);
 	}
 
+	// ID card upload & extraction handlers
+	async function onIdFileAdded(file: File) {
+		const entry: UploadedFile = { file, status: 'uploading' };
+		idUploadedFiles = [...idUploadedFiles, entry];
+		const idx = idUploadedFiles.length - 1;
+
+		if (submissionId) {
+			try {
+				await api.uploadDocument(submissionId, file, 'id_card');
+				idUploadedFiles[idx].status = 'done';
+				idUploadedFiles = [...idUploadedFiles];
+			} catch {
+				idUploadedFiles[idx].status = 'error';
+				idUploadedFiles = [...idUploadedFiles];
+			}
+		} else {
+			idUploadedFiles[idx].status = 'done';
+			idUploadedFiles = [...idUploadedFiles];
+		}
+
+		scheduleIdExtraction();
+	}
+
+	function scheduleIdExtraction() {
+		idExtractionPending = true;
+		if (idExtractionTimer) clearTimeout(idExtractionTimer);
+		idExtractionTimer = setTimeout(runIdExtraction, 800);
+	}
+
+	async function runIdExtraction() {
+		idExtractionPending = false;
+		const allFiles = idUploadedFiles.map((f) => f.file);
+		if (allFiles.length === 0) return;
+
+		const thisVersion = ++idExtractionVersion;
+		idExtracting = true;
+		errorMsg = '';
+		try {
+			const newData = await api.extractIdCard(allFiles);
+			if (thisVersion !== idExtractionVersion) return;
+			idExtractionData = mergeExtraction(idExtractionData, newData);
+			applyIdExtraction(idExtractionData);
+		} catch (e) {
+			if (thisVersion !== idExtractionVersion) return;
+			errorMsg = e instanceof Error ? e.message : 'ID extraction failed';
+		} finally {
+			if (thisVersion === idExtractionVersion) idExtracting = false;
+		}
+	}
+
+	function applyIdExtraction(data: Record<string, string | null>) {
+		if (data.nome && !firstName) firstName = data.nome;
+		if (data.cognome && !lastName) lastName = data.cognome;
+		if (data.codice_fiscale && !fiscalCode) fiscalCode = data.codice_fiscale;
+	}
+
+	function onIdExtractionChange(data: Record<string, string | null>) {
+		idExtractionData = data;
+		applyIdExtraction(data);
+	}
+
+	// Cross-validation: bill vs ID card
+	interface MismatchField {
+		field: string;
+		bill: string;
+		id: string;
+	}
+	let mismatches = $derived.by(() => {
+		if (!extractionData || !idExtractionData) return [];
+		const result: MismatchField[] = [];
+
+		const billName = (extractionData.nome ?? '').toUpperCase().trim();
+		const idName = (idExtractionData.nome ?? '').toUpperCase().trim();
+		if (billName && idName && billName !== idName) {
+			result.push({ field: 'first_name', bill: billName, id: idName });
+		}
+
+		const billSurname = (extractionData.cognome ?? '').toUpperCase().trim();
+		const idSurname = (idExtractionData.cognome ?? '').toUpperCase().trim();
+		if (billSurname && idSurname && billSurname !== idSurname) {
+			result.push({ field: 'last_name', bill: billSurname, id: idSurname });
+		}
+
+		const billCf = (extractionData.codice_fiscale ?? '').toUpperCase().replace(/\s/g, '');
+		const idCf = (idExtractionData.codice_fiscale ?? '').toUpperCase().replace(/\s/g, '');
+		if (billCf && idCf && billCf !== idCf) {
+			result.push({ field: 'fiscal_code', bill: billCf, id: idCf });
+		}
+
+		return result;
+	});
+
 	async function handleFinalSubmit() {
 		if (!submissionId) return;
 		submitting = true;
@@ -296,6 +454,7 @@
 			await api.updateSubmission(submissionId, {
 				statute_consent: statuteConsent,
 				keep_me_updated: keepMeUpdated,
+				extra_data: extraData,
 				status: 'submitted',
 			});
 			submitted = true;
@@ -304,6 +463,18 @@
 		} finally {
 			submitting = false;
 		}
+	}
+
+	async function downloadPdf() {
+		if (!submissionId) return;
+		const headers: Record<string, string> = {};
+		const token = getSessionToken();
+		if (token) headers['X-Session-Token'] = token;
+		const res = await fetch(`/api/submissions/${submissionId}/pdf`, { headers });
+		if (!res.ok) return;
+		const blob = await res.blob();
+		const url = URL.createObjectURL(blob);
+		window.open(url, '_blank');
 	}
 </script>
 
@@ -324,9 +495,9 @@
 		{/if}
 		<div class="success-actions">
 			{#if submissionId}
-				<a href="/api/submissions/{submissionId}/pdf" target="_blank" class="btn btn-primary">
+				<button class="btn btn-primary" onclick={downloadPdf}>
 					{$t('onboarding.download_pdf')}
-				</a>
+				</button>
 			{/if}
 			<a href="/" class="btn btn-secondary">{$t('common.back')}</a>
 		</div>
@@ -395,6 +566,41 @@
 					{/if}
 				</div>
 			{:else if currentStepName === 'personal'}
+				<div class="step-section id-upload-section">
+					<FileUpload
+						label={$t('onboarding.upload_id')}
+						hint={$t('onboarding.upload_id_hint')}
+						files={idUploadedFiles}
+						onadd={onIdFileAdded}
+					/>
+
+					{#if idExtracting}
+						<div class="loading-box">
+							<div class="spinner"></div>
+							<span>{$t('onboarding.id_extracting')}</span>
+						</div>
+					{/if}
+
+					{#if idExtractionData}
+						<ExtractionReview data={idExtractionData} onchange={onIdExtractionChange} />
+					{/if}
+				</div>
+
+				{#if mismatches.length > 0}
+					<div class="mismatch-banner">
+						<strong>{$t('onboarding.mismatch_title')}</strong>
+						<ul class="mismatch-list">
+							{#each mismatches as m}
+								<li>
+									<strong>{$t(`onboarding.${m.field}`)}</strong>:
+									{$t('onboarding.mismatch_bill')} <em>{m.bill}</em> /
+									{$t('onboarding.mismatch_id')} <em>{m.id}</em>
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
+
 				<div class="form-grid">
 					<FormField label={$t('onboarding.first_name')} name="first_name" bind:value={firstName} required error={errors.first_name ?? ''} />
 					<FormField label={$t('onboarding.last_name')} name="last_name" bind:value={lastName} required error={errors.last_name ?? ''} />
@@ -403,6 +609,43 @@
 					<FormField label={$t('onboarding.fiscal_code')} name="fiscal_code" bind:value={fiscalCode} required maxlength={16} error={errors.fiscal_code ?? ''} placeholder="RSSMRA80A01H501U" />
 					<FormField label={$t('onboarding.pod_code')} name="pod_code" bind:value={podCode} required maxlength={20} error={errors.pod_code ?? ''} placeholder="IT001E12345678" />
 				</div>
+				{#if extraFieldsForStep('personal').length > 0}
+					<div class="extra-fields">
+						{#each extraFieldsForStep('personal') as field (field.key)}
+							{#if isFieldVisible(field)}
+								{#if field.type === 'boolean'}
+									<label class="toggle-field">
+										<input type="checkbox" checked={!!extraData[field.key]} onchange={(e) => { setExtraField(field.key, e.currentTarget.checked); }} />
+										<span>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</span>
+									</label>
+								{:else if field.type === 'select' && field.options}
+									<div class="field">
+										<label class="field-label" for={field.key}>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</label>
+										<select class="field-input" id={field.key} value={extraData[field.key] ?? ''} onchange={(e) => { setExtraField(field.key, e.currentTarget.value); }}>
+											<option value="">—</option>
+											{#each field.options as opt}
+												<option value={opt.value}>{opt.label}</option>
+											{/each}
+										</select>
+									</div>
+								{:else}
+									<div class="field">
+									<label class="field-label" for={field.key}>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</label>
+									<input
+										class="field-input"
+										id={field.key}
+										name={field.key}
+										type={field.type === 'number' ? 'number' : 'text'}
+										value={extraData[field.key] ?? ''}
+										placeholder={field.placeholder ?? ''}
+										oninput={(e) => { setExtraField(field.key, field.type === 'number' ? (e.currentTarget.value ? Number(e.currentTarget.value) : null) : e.currentTarget.value); }}
+									/>
+								</div>
+								{/if}
+							{/if}
+						{/each}
+					</div>
+				{/if}
 			{:else if currentStepName === 'eligibility'}
 				<div class="step-section">
 					<p class="step-hint">{$t('onboarding.eligibility_intro')}</p>
@@ -447,6 +690,47 @@
 						{/if}
 					{/if}
 				</div>
+			{:else if extraFieldsForStep(currentStepName).length > 0}
+				<div class="extra-fields-step">
+					{#each extraFieldsForStep(currentStepName) as field (field.key)}
+						{#if isFieldVisible(field)}
+							{#if field.type === 'boolean'}
+								<label class="toggle-field">
+									<input type="checkbox" checked={!!extraData[field.key]} onchange={(e) => { setExtraField(field.key, e.currentTarget.checked); }} />
+									<span>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</span>
+								</label>
+							{:else if field.type === 'select' && field.options}
+								<div class="field">
+									<label class="field-label" for={field.key}>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</label>
+									<select class="field-input" id={field.key} value={extraData[field.key] ?? ''} onchange={(e) => { setExtraField(field.key, e.currentTarget.value); }}>
+										<option value="">—</option>
+										{#each field.options as opt}
+											<option value={opt.value}>{opt.label}</option>
+										{/each}
+									</select>
+								</div>
+							{:else}
+								<div class="extra-field-row">
+									<div class="field">
+									<label class="field-label" for={field.key}>{fieldLabel(field)}{#if field.required}<span class="field-required">*</span>{/if}</label>
+									<input
+										class="field-input"
+										id={field.key}
+										name={field.key}
+										type={field.type === 'number' ? 'number' : 'text'}
+										value={extraData[field.key] ?? ''}
+										placeholder={field.placeholder ?? ''}
+										oninput={(e) => { setExtraField(field.key, field.type === 'number' ? (e.currentTarget.value ? Number(e.currentTarget.value) : null) : e.currentTarget.value); }}
+									/>
+								</div>
+									{#if field.suffix}
+										<span class="field-suffix">{field.suffix}</span>
+									{/if}
+								</div>
+							{/if}
+						{/if}
+					{/each}
+				</div>
 			{:else if currentStepName === 'statute'}
 				<div class="consents">
 					<p class="consent-intro">{$t('onboarding.statute_intro')}</p>
@@ -460,6 +744,20 @@
 				</div>
 			{:else}
 				<div class="review">
+					{#if mismatches.length > 0}
+						<div class="mismatch-banner">
+							<strong>{$t('onboarding.mismatch_title')}</strong>
+							<ul class="mismatch-list">
+								{#each mismatches as m}
+									<li>
+										<strong>{$t(`onboarding.${m.field}`)}</strong>:
+										{$t('onboarding.mismatch_bill')} <em>{m.bill}</em> /
+										{$t('onboarding.mismatch_id')} <em>{m.id}</em>
+									</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
 					<div class="review-section">
 						<h3 class="review-heading">{$t('onboarding.step_personal')}</h3>
 						<div class="review-row">
@@ -494,6 +792,31 @@
 							<span class="review-value">{podCode}</span>
 						</div>
 					</div>
+					{#if config && Object.keys(extraData).length > 0}
+						{@const extraSteps = [...new Set(config.fields.extra.map((f) => f.step))]}
+						{#each extraSteps as step}
+							{@const stepFields = config.fields.extra.filter((f) => f.step === step && extraData[f.key] !== undefined && extraData[f.key] !== null && extraData[f.key] !== '')}
+							{#if stepFields.length > 0}
+								<div class="review-section">
+									<h3 class="review-heading">{$t(STEP_LABELS[step] ?? step)}</h3>
+									{#each stepFields as field}
+										<div class="review-row">
+											<span class="review-label">{fieldLabel(field)}</span>
+											<span class="review-value">
+												{#if typeof extraData[field.key] === 'boolean'}
+													{extraData[field.key] ? $t('onboarding.yes') : $t('onboarding.no')}
+												{:else if field.type === 'select' && field.options}
+													{field.options.find((o) => o.value === extraData[field.key])?.label ?? extraData[field.key]}
+												{:else}
+													{extraData[field.key]}{#if field.suffix} {field.suffix}{/if}
+												{/if}
+											</span>
+										</div>
+									{/each}
+								</div>
+							{/if}
+						{/each}
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -750,12 +1073,120 @@
 		opacity: 0.8;
 	}
 
+	.extra-fields,
+	.extra-fields-step {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-md);
+		margin-top: var(--celine-space-md);
+	}
+
+	.extra-fields-step {
+		margin-top: 0;
+	}
+
+	.toggle-field {
+		display: flex;
+		align-items: center;
+		gap: var(--celine-space-sm);
+		cursor: pointer;
+		font-size: 0.9375rem;
+		color: var(--celine-text);
+		padding: var(--celine-space-sm) 0;
+	}
+
+	.toggle-field input[type='checkbox'] {
+		width: 1.125rem;
+		height: 1.125rem;
+		accent-color: var(--celine-primary);
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-xs);
+	}
+
+	.field-label {
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--celine-text);
+	}
+
+	.field-required {
+		color: var(--celine-danger);
+	}
+
+	.field-input {
+		padding: 0.625rem 0.875rem;
+		border: 1px solid var(--celine-border);
+		border-radius: var(--celine-radius-md);
+		background: var(--celine-bg-elevated);
+		color: var(--celine-text);
+		font-family: var(--celine-font-body);
+		font-size: 0.9375rem;
+		transition: border-color var(--celine-transition-fast);
+	}
+
+	.field-input:focus {
+		outline: 2px solid var(--celine-primary);
+		outline-offset: 2px;
+		border-color: var(--celine-primary);
+	}
+
+	select.field-input {
+		cursor: pointer;
+	}
+
+	.extra-field-row {
+		display: flex;
+		align-items: flex-end;
+		gap: var(--celine-space-sm);
+	}
+
+	.extra-field-row .field {
+		flex: 1;
+	}
+
+	.field-suffix {
+		font-size: 0.875rem;
+		color: var(--celine-text-secondary);
+		padding-bottom: 0.75rem;
+		white-space: nowrap;
+	}
+
 	.error-banner {
 		background: var(--celine-danger-bg);
 		color: var(--celine-danger-text);
 		padding: var(--celine-space-sm) var(--celine-space-md);
 		border-radius: var(--celine-radius-md);
 		font-size: 0.875rem;
+	}
+
+	.mismatch-banner {
+		background: #fef3c7;
+		color: #92400e;
+		border: 1px solid #f59e0b;
+		padding: var(--celine-space-sm) var(--celine-space-md);
+		border-radius: var(--celine-radius-md);
+		font-size: 0.875rem;
+		margin-bottom: var(--celine-space-md);
+	}
+
+	.mismatch-list {
+		margin: var(--celine-space-xs) 0 0;
+		padding-left: 1.2em;
+	}
+
+	.mismatch-list li {
+		margin-bottom: 0.25em;
+	}
+
+	.mismatch-list em {
+		font-style: normal;
+		font-weight: 600;
 	}
 
 	.wizard-nav {

@@ -7,7 +7,44 @@ branding:
   logo: assets/logo.svg
 
 fields:
-  extra: []
+  extra:
+    - key: has_pv
+      label: "Ho un impianto fotovoltaico"
+      "label:en": "I have a photovoltaic system"
+      type: boolean
+      step: energy
+    - key: pv_kwp
+      label: "Potenza impianto (kWp)"
+      "label:en": "System power (kWp)"
+      type: number
+      step: energy
+      suffix: kWp
+      placeholder: "es. 6"
+      show_if: { key: has_pv, value: true }
+    - key: has_battery
+      label: "Ho un sistema di accumulo (batteria)"
+      "label:en": "I have a battery storage system"
+      type: boolean
+      step: energy
+      show_if: { key: has_pv, value: true }
+    - key: battery_kwh
+      label: "Capacita' batteria (kWh)"
+      "label:en": "Battery capacity (kWh)"
+      type: number
+      step: energy
+      suffix: kWh
+      placeholder: "es. 10"
+      show_if: { key: has_battery, value: true }
+    - key: has_ev
+      label: "Ho un'auto elettrica"
+      "label:en": "I have an electric vehicle"
+      type: boolean
+      step: energy
+    - key: has_heat_pump
+      label: "Ho una pompa di calore"
+      "label:en": "I have a heat pump"
+      type: boolean
+      step: energy
   hidden: []
 
 consent:
@@ -28,6 +65,7 @@ steps:
   - consents
   - utility
   - personal
+  - energy
   - statute
   - review
 

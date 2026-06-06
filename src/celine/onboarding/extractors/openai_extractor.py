@@ -39,6 +39,34 @@ EXTRACTION_SYSTEM_PROMPT = (
 
 EXTRACTION_USER_PROMPT = "Extract the data from this utility bill."
 
+ID_CARD_SYSTEM_PROMPT = (
+    "You are an expert at extracting structured data from identity documents. "
+    "Supported documents: Italian Carta d'Identita, CIE (Carta d'Identita Elettronica), "
+    "Passaporto, EU national ID cards, and passports.\n\n"
+    "Analyze all provided images (front and back if present) and return ONLY a JSON object "
+    "with these fields:\n\n"
+    "{\n"
+    '  "tipo_documento": "CI" or "CIE" or "PASSAPORTO" or "ID_CARD" or "PASSPORT",\n'
+    '  "nome": "first name",\n'
+    '  "cognome": "last name",\n'
+    '  "codice_fiscale": "Italian fiscal code (16 alphanumeric chars) or null if not present",\n'
+    '  "data_nascita": "birth date in DD/MM/YYYY format",\n'
+    '  "luogo_nascita": "birth place",\n'
+    '  "sesso": "M or F",\n'
+    '  "numero_documento": "document number",\n'
+    '  "scadenza": "expiry date in DD/MM/YYYY format"\n'
+    "}\n\n"
+    "Rules:\n"
+    "- Return ONLY the JSON, no additional text.\n"
+    "- If a field is not found, use null.\n"
+    "- The codice fiscale is 16 alphanumeric characters. It may appear on the back of Italian IDs.\n"
+    "- For CIE, the document number format is CA followed by 5 digits and 2 letters.\n"
+    "- Normalize names to UPPERCASE.\n"
+    "- Search ALL provided images. Front and back may contain different fields."
+)
+
+ID_CARD_USER_PROMPT = "Extract the data from this identity document."
+
 
 def _detect_mime(data: bytes) -> str:
     if data[:4] == b"%PDF":
@@ -79,10 +107,19 @@ def _pdf_to_text(pdf_bytes: bytes) -> str:
 
 
 class OpenAIExtractor:
-    async def extract(self, file_bytes: bytes, declared_mime: str) -> tuple[dict, dict]:
-        return await self.extract_pages([(file_bytes, declared_mime)])
+    async def extract(
+        self, file_bytes: bytes, declared_mime: str, *,
+        system_prompt: str | None = None, user_prompt: str | None = None,
+    ) -> tuple[dict, dict]:
+        return await self.extract_pages(
+            [(file_bytes, declared_mime)],
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
 
-    async def extract_pages(self, pages: list[tuple[bytes, str]]) -> tuple[dict, dict]:
+    async def extract_pages(
+        self, pages: list[tuple[bytes, str]], *,
+        system_prompt: str | None = None, user_prompt: str | None = None,
+    ) -> tuple[dict, dict]:
         if not settings.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -107,7 +144,7 @@ class OpenAIExtractor:
             else:
                 raise ValueError(f"Unsupported file type: {mime}")
 
-        content.append({"type": "text", "text": EXTRACTION_USER_PROMPT})
+        content.append({"type": "text", "text": user_prompt or EXTRACTION_USER_PROMPT})
 
         client = AsyncOpenAI(
             api_key=settings.openai_api_key,
@@ -118,7 +155,7 @@ class OpenAIExtractor:
             model=settings.extraction_model,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt or EXTRACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": content},
             ],
             max_completion_tokens=500,

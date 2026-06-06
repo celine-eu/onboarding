@@ -4,10 +4,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY src/pyproject.toml .
+COPY pyproject.toml .
 RUN uv sync --no-dev --no-install-project
 
 COPY src/ .
+COPY alembic.ini .
+COPY alembic/ alembic/
 RUN uv sync --no-dev
 
 EXPOSE 8000

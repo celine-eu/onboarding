@@ -46,9 +46,11 @@ async def save_document(
     submission = await get_submission(db, submission_id)
     folder_name = submission.ref if submission else str(submission_id)
     relative_path = f"submissions/{folder_name}/{doc_id}{ext}"
+    from celine.onboarding.services.crypto import encrypt
+
     full_path = Path(settings.data_dir) / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_bytes(content)
+    full_path.write_bytes(encrypt(content))
 
     document = Document(
         id=doc_id,
@@ -85,3 +87,10 @@ async def list_documents(db: AsyncSession, submission_id: uuid.UUID) -> list[Doc
 
 def get_file_path(document: Document) -> Path:
     return Path(settings.data_dir) / document.file_path
+
+
+def read_file(document: Document) -> bytes:
+    from celine.onboarding.services.crypto import decrypt
+
+    path = get_file_path(document)
+    return decrypt(path.read_bytes())

@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.api.deps import limiter
 from celine.onboarding.models.database import get_db
-from celine.onboarding.models.schemas import ConsentCreate, SubmissionRead, SubmissionUpdate
+from celine.onboarding.models.schemas import (
+    ConsentCreate,
+    SubmissionCreatedRead,
+    SubmissionRead,
+    SubmissionUpdate,
+)
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import submission_service
 from celine.onboarding.workflows.engine import InvalidTransition
@@ -18,19 +23,28 @@ SESSION_TTL_SECONDS = 600
 
 
 async def _get_live_submission(
-    submission_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    submission_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ) -> Submission:
     submission = await submission_service.get_submission(db, submission_id)
     if not submission:
         raise HTTPException(404, "Submission not found")
-    if submission.created_at:
-        age = (datetime.now(timezone.utc) - submission.created_at).total_seconds()
-        if age > SESSION_TTL_SECONDS:
-            raise HTTPException(410, "Session expired. Please start a new submission.")
+
+    token = request.headers.get("x-session-token", "")
+    if not token or token != submission.session_token:
+        raise HTTPException(403, "Invalid session token")
+
+    now = datetime.now(timezone.utc)
+    anchor = submission.last_active_at or submission.created_at
+    if anchor and (now - anchor).total_seconds() > SESSION_TTL_SECONDS:
+        raise HTTPException(410, "Session expired. Please start a new submission.")
+
+    submission.last_active_at = now
+    await db.commit()
+
     return submission
 
 
-@router.post("", response_model=SubmissionRead, status_code=201)
+@router.post("", response_model=SubmissionCreatedRead, status_code=201)
 @limiter.limit("20/hour")
 async def create_submission(
     request: Request,

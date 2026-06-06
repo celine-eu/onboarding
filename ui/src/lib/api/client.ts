@@ -1,14 +1,35 @@
 export interface SubmissionResponse {
 	id: string;
 	status: string;
+	session_token?: string;
 	[key: string]: unknown;
 }
 
+let sessionToken: string | null = null;
+
+export function setSessionToken(token: string) {
+	sessionToken = token;
+}
+
+export function getSessionToken(): string | null {
+	return sessionToken;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-	const res = await fetch(path, {
-		headers: { 'Content-Type': 'application/json', ...options?.headers },
-		...options
-	});
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+		...(options?.headers as Record<string, string>)
+	};
+	if (sessionToken) {
+		headers['X-Session-Token'] = sessionToken;
+	}
+
+	const res = await fetch(path, { ...options, headers });
+
+	if (res.status === 410) {
+		window.location.reload();
+		throw new Error('Session expired');
+	}
 
 	if (!res.ok) {
 		const body = await res.text();
@@ -23,7 +44,21 @@ export interface SiteConfig {
 	name: string;
 	locale: string;
 	branding: { primary_color?: string; logo?: string };
-	fields: { extra: Array<{ key: string; label: string; type: string; step: string; required: boolean }>; hidden: string[] };
+	fields: {
+		extra: Array<{
+			key: string;
+			label: string;
+			type: string;
+			step: string;
+			required?: boolean;
+			options?: Array<{ value: string; label: string }>;
+			show_if?: { key: string; value: unknown };
+			placeholder?: string;
+			suffix?: string;
+			[k: string]: unknown;
+		}>;
+		hidden: string[];
+	};
 	consent: Record<string, { version: string; file?: string; url?: string; required: boolean }>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;
@@ -53,11 +88,19 @@ export const api = {
 		form.append('file', file);
 		form.append('doc_type', docType);
 
+		const headers: Record<string, string> = {};
+		if (sessionToken) headers['X-Session-Token'] = sessionToken;
+
 		const res = await fetch(`/api/submissions/${submissionId}/documents`, {
 			method: 'POST',
-			body: form
+			body: form,
+			headers
 		});
 
+		if (res.status === 410) {
+			window.location.reload();
+			throw new Error('Session expired');
+		}
 		if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
 		return res.json();
 	},
@@ -82,6 +125,24 @@ export const api = {
 		if (!res.ok) {
 			const body = await res.text();
 			throw new Error(`Extraction failed: ${body}`);
+		}
+		return res.json();
+	},
+
+	extractIdCard: async (files: File[]): Promise<Record<string, string | null>> => {
+		const form = new FormData();
+		for (const file of files) {
+			form.append('files', file);
+		}
+
+		const res = await fetch('/api/extract-id', {
+			method: 'POST',
+			body: form
+		});
+
+		if (!res.ok) {
+			const body = await res.text();
+			throw new Error(`ID extraction failed: ${body}`);
 		}
 		return res.json();
 	}

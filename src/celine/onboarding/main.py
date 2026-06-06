@@ -13,6 +13,29 @@ from celine.onboarding.config.settings import settings
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+
+    from celine.onboarding.services.template_service import load_manifest
+    manifest = load_manifest()
+    steps = manifest.get("steps", [])
+    if any(s in steps for s in ("utility", "identity")) and not settings.dpa_signed:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  DPA_SIGNED=yes is required in .env\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "This instance uses LLM-based extraction (bill/ID processing),\n"
+            "which sends personal data to an external AI provider.\n\n"
+            "GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
+            "with your provider before processing personal data.\n\n"
+            "  1. Sign the DPA with your LLM provider:\n"
+            "     - OpenAI:  https://privacy.openai.com\n"
+            "     - Mistral: https://mistral.ai/terms/#dpa\n"
+            "     - Azure:   covered by your Microsoft DPA\n"
+            "  2. Download and keep a copy on file for audits\n"
+            "  3. Set DPA_SIGNED=yes in your .env file\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
     yield
 
 

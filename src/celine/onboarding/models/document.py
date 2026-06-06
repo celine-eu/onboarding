@@ -14,6 +14,7 @@ class DocumentType(str, enum.Enum):
     GDPR_FORM = "gdpr_form"
     POLICY_DOC = "policy_doc"
     STATUTE_DOC = "statute_doc"
+    ID_CARD = "id_card"
     OTHER = "other"
 
 

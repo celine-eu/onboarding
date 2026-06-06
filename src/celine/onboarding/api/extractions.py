@@ -32,6 +32,27 @@ async def extract_from_upload(request: Request, files: Annotated[list[UploadFile
     return extracted_data
 
 
+@router.post("/extract-id")
+@limiter.limit("10/hour")
+async def extract_from_id_upload(request: Request, files: Annotated[list[UploadFile], File()]):
+    """Extract structured data from ID card pages (images/PDFs). Stateless."""
+    from celine.onboarding.extractors.openai_extractor import (
+        ID_CARD_SYSTEM_PROMPT, ID_CARD_USER_PROMPT, OpenAIExtractor,
+    )
+
+    pages = []
+    for f in files:
+        if f.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(400, f"Unsupported file type: {f.content_type}")
+        pages.append((await f.read(), f.content_type or "application/octet-stream"))
+
+    extractor = OpenAIExtractor()
+    extracted_data, _ = await extractor.extract_pages(
+        pages, system_prompt=ID_CARD_SYSTEM_PROMPT, user_prompt=ID_CARD_USER_PROMPT,
+    )
+    return extracted_data
+
+
 @router.post("/documents/{document_id}/extract", response_model=ExtractionRead, status_code=201)
 async def extract_from_document(
     document_id: uuid.UUID, db: AsyncSession = Depends(get_db)

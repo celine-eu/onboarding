@@ -7,14 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celine.onboarding.models.document import Document
 from celine.onboarding.models.extraction import Extraction
 from celine.onboarding.models.schemas import ExtractionConfirm
-from celine.onboarding.services.document_service import get_file_path
+from celine.onboarding.services.document_service import read_file
 
 
 async def run_extraction(db: AsyncSession, document: Document) -> Extraction:
     from celine.onboarding.extractors.openai_extractor import OpenAIExtractor
 
-    file_path = get_file_path(document)
-    image_bytes = file_path.read_bytes()
+    image_bytes = read_file(document)
 
     extractor = OpenAIExtractor()
     extracted_data, raw_response = await extractor.extract(image_bytes, document.mime_type)
