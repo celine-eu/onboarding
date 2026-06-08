@@ -6,9 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 class Settings(BaseSettings):
-    database_url: str = (
-        "postgresql+asyncpg://postgres:securepassword123@172.17.0.1:15432/rec_onboarding"
-    )
+    database_url: str
     openai_api_key: str = ""
     extraction_base_url: str = "https://api.openai.com/v1"
     extraction_model: str = "gpt-5.4"
@@ -18,10 +16,14 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
 
     encryption_key: str = ""
+    require_encryption: bool = True
     dpa_signed: bool = False
 
     admin_token: str = ""
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    security_headers: bool = True
+
+    download_token_ttl: int = 86400  # 24 hours
 
     smtp_host: str = ""
     smtp_port: int = 587

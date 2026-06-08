@@ -1,4 +1,5 @@
 <script lang="ts">
+	import DOMPurify from 'isomorphic-dompurify';
 	import { marked } from 'marked';
 
 	interface Props {
@@ -23,7 +24,12 @@
 		});
 	}
 
-	let rendered = $derived(autolink(marked.parse(content, { async: false, gfm: true, breaks: true }) as string));
+	let rendered = $derived(
+		DOMPurify.sanitize(
+			autolink(marked.parse(content, { async: false, gfm: true, breaks: true }) as string),
+			{ ADD_ATTR: ['target'] }
+		)
+	);
 </script>
 
 <div class="md-content">

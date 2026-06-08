@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import smtplib
 import ssl
@@ -5,13 +7,15 @@ from email.message import EmailMessage
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services.pdf_service import generate_submission_pdf
 from celine.onboarding.services.template_service import load_manifest
 
 logger = logging.getLogger(__name__)
 
 
-def send_submission_email(submission: Submission) -> None:
+def send_submission_email(
+    submission: Submission,
+    download_url: str | None = None,
+) -> None:
     if not settings.smtp_host:
         return
 
@@ -19,9 +23,7 @@ def send_submission_email(submission: Submission) -> None:
     rec_name = manifest.get("name", "CER")
     notifications = manifest.get("notifications", {})
 
-    pdf_bytes = generate_submission_pdf(submission)
-
-    recipients = []
+    recipients: list[str] = []
     if submission.email:
         recipients.append(submission.email)
     notify_list = notifications.get("notify", [])
@@ -33,26 +35,32 @@ def send_submission_email(submission: Submission) -> None:
         return
 
     from_addr = notifications.get("from") or settings.smtp_from or settings.smtp_user
+    date_str = (
+        submission.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        if submission.created_at
+        else "-"
+    )
 
     msg = EmailMessage()
     msg["Subject"] = f"{rec_name} — Submission {submission.ref}"
     msg["From"] = from_addr
     msg["To"] = ", ".join(recipients)
 
-    body = (
-        f"Submission reference: {submission.ref}\n"
-        f"Status: {submission.status.value}\n"
-        f"Date: {submission.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if submission.created_at else '-'}\n\n"
-        f"Please find the submission summary attached.\n"
-    )
+    if download_url:
+        body = (
+            f"Submission reference: {submission.ref}\n"
+            f"Status: {submission.status.value}\n"
+            f"Date: {date_str}\n\n"
+            f"Submission documents are available at:\n"
+            f"{download_url}\n"
+        )
+    else:
+        body = (
+            f"Submission reference: {submission.ref}\n"
+            f"Status: {submission.status.value}\n"
+            f"Date: {date_str}\n"
+        )
     msg.set_content(body)
-
-    msg.add_attachment(
-        pdf_bytes,
-        maintype="application",
-        subtype="pdf",
-        filename=f"{submission.ref}-summary.pdf",
-    )
 
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
         if settings.smtp_tls:

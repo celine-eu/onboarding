@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +10,7 @@ from celine.onboarding.api.deps import require_admin
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.audit_log import AuditLog
 from celine.onboarding.models.database import get_db
-from celine.onboarding.models.schemas import AuditLogRead, SubmissionRead, SubmissionUpdate
+from celine.onboarding.models.schemas import AuditLogRead, SubmissionAdminRead, SubmissionUpdate
 from celine.onboarding.services import submission_service
 from celine.onboarding.workflows.engine import InvalidTransition
 
@@ -34,7 +34,7 @@ async def _audit(
     await db.commit()
 
 
-@router.get("/submissions", response_model=list[SubmissionRead])
+@router.get("/submissions", response_model=list[SubmissionAdminRead])
 async def list_submissions(
     request: Request,
     skip: int = Query(0, ge=0),
@@ -47,7 +47,7 @@ async def list_submissions(
     return result
 
 
-@router.get("/submissions/{submission_id}", response_model=SubmissionRead)
+@router.get("/submissions/{submission_id}", response_model=SubmissionAdminRead)
 async def get_submission(
     submission_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ):
@@ -59,11 +59,12 @@ async def get_submission(
     return submission
 
 
-@router.patch("/submissions/{submission_id}", response_model=SubmissionRead)
+@router.patch("/submissions/{submission_id}", response_model=SubmissionAdminRead)
 async def update_submission(
     submission_id: uuid.UUID,
     data: SubmissionUpdate,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     submission = await submission_service.get_submission(db, submission_id)
@@ -71,7 +72,9 @@ async def update_submission(
         raise HTTPException(404, "Submission not found")
     fields = ", ".join(data.model_dump(exclude_unset=True).keys())
     try:
-        result = await submission_service.update_submission(db, submission, data)
+        result = await submission_service.update_submission(
+            db, submission, data, background_tasks=background_tasks
+        )
     except (ValueError, InvalidTransition) as e:
         raise HTTPException(422, str(e))
     await _audit(db, action="update", entity_type="submission",

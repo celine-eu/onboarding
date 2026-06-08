@@ -31,7 +31,7 @@ class SubmissionUpdate(BaseModel):
     statute_consent: bool | None = None
     keep_me_updated: bool | None = None
     status: SubmissionStatus | None = None
-    notes: str | None = None
+    notes: str | None = Field(None, max_length=2000)
 
     @field_validator("fiscal_code")
     @classmethod
@@ -61,7 +61,6 @@ class SubmissionRead(BaseModel):
     extracted_data: dict | None
     id_extracted_data: dict | None
     extra_data: dict | None
-    consent_ip: str
     gdpr_consent: bool
     gdpr_consent_at: datetime | None
     gdpr_consent_version: str | None
@@ -81,6 +80,10 @@ class SubmissionRead(BaseModel):
 
 class SubmissionCreatedRead(SubmissionRead):
     session_token: str
+
+
+class SubmissionAdminRead(SubmissionRead):
+    consent_ip: str
 
 
 class DocumentRead(BaseModel):

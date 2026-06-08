@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from celine.onboarding.models.database import Base
-from celine.onboarding.models.encrypted import EncryptedString
+from celine.onboarding.models.encrypted import EncryptedJSON, EncryptedString
 
 
 def _sortable_ref() -> str:
@@ -36,8 +36,8 @@ class Submission(Base):
         Enum(SubmissionStatus), default=SubmissionStatus.DRAFT
     )
 
-    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     email: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     phone: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     fiscal_code: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
@@ -51,17 +51,14 @@ class Submission(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    # Raw extraction data from bill OCR
-    extracted_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
-    # Raw extraction data from ID card
-    id_extracted_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    extracted_data: Mapped[dict | None] = mapped_column(EncryptedJSON, nullable=True)
+    id_extracted_data: Mapped[dict | None] = mapped_column(EncryptedJSON, nullable=True)
 
     # Dynamic fields from manifest (PV, battery, community-specific questions)
     extra_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Consents (collected first, with audit trail)
-    consent_ip: Mapped[str] = mapped_column(String(45))
+    consent_ip: Mapped[str] = mapped_column(EncryptedString)
     gdpr_consent: Mapped[bool] = mapped_column(default=False)
     gdpr_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     gdpr_consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)

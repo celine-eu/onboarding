@@ -14,7 +14,7 @@ tasks:
     desc: Start backend dev server (requires local Postgres)
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8000 --reload
+      - uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8040 --reload
 
   run:ui:
     desc: Start frontend dev server (proxies /api to backend)

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+import uuid
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -55,3 +58,23 @@ def decrypt_str(value: str) -> str:
         return f.decrypt(value.encode("utf-8")).decode("utf-8")
     except InvalidToken:
         return value
+
+
+def generate_download_token(submission_id: uuid.UUID) -> str | None:
+    f = _get_fernet()
+    if f is None:
+        return None
+    return f.encrypt(str(submission_id).encode()).decode()
+
+
+def validate_download_token(token: str, ttl: int | None = None) -> uuid.UUID | None:
+    f = _get_fernet()
+    if f is None:
+        return None
+    if ttl is None:
+        ttl = settings.download_token_ttl
+    try:
+        payload = f.decrypt(token.encode(), ttl=ttl)
+        return uuid.UUID(payload.decode())
+    except (InvalidToken, ValueError):
+        return None

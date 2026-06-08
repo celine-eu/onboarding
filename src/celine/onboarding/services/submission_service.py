@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime, timezone
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -52,7 +55,10 @@ async def list_submissions(
 
 
 async def update_submission(
-    db: AsyncSession, submission: Submission, data: SubmissionUpdate
+    db: AsyncSession,
+    submission: Submission,
+    data: SubmissionUpdate,
+    background_tasks: BackgroundTasks | None = None,
 ) -> Submission:
     updates = data.model_dump(exclude_unset=True)
     now = datetime.now(timezone.utc)
@@ -78,14 +84,11 @@ async def update_submission(
     reloaded = await get_submission(db, submission.id)
 
     if target_status == SubmissionStatus.SUBMITTED and reloaded:
-        _send_notification(reloaded)
+        if background_tasks is not None:
+            from celine.onboarding.services.notification_service import (
+                handle_submission_notification,
+            )
+
+            background_tasks.add_task(handle_submission_notification, reloaded)
 
     return reloaded
-
-
-def _send_notification(submission: Submission) -> None:
-    try:
-        from celine.onboarding.services.email_service import send_submission_email
-        send_submission_email(submission)
-    except Exception:
-        pass

@@ -2,10 +2,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from celine.onboarding.models.database import Base
+from celine.onboarding.models.encrypted import EncryptedJSON
 
 
 class Extraction(Base):
@@ -17,8 +18,8 @@ class Extraction(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
     )
-    extracted_data: Mapped[dict] = mapped_column(JSONB, default=dict)
-    raw_response: Mapped[dict] = mapped_column(JSONB, default=dict)
+    extracted_data: Mapped[dict] = mapped_column(EncryptedJSON, default=dict)
+    raw_response: Mapped[dict] = mapped_column(EncryptedJSON, default=dict)
     confirmed_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

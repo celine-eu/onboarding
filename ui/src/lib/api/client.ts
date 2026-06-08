@@ -117,11 +117,19 @@ export const api = {
 			form.append('files', file);
 		}
 
+		const headers: Record<string, string> = {};
+		if (sessionToken) headers['X-Session-Token'] = sessionToken;
+
 		const res = await fetch('/api/extract', {
 			method: 'POST',
-			body: form
+			body: form,
+			headers
 		});
 
+		if (res.status === 410) {
+			window.location.reload();
+			throw new Error('Session expired');
+		}
 		if (!res.ok) {
 			const body = await res.text();
 			throw new Error(`Extraction failed: ${body}`);
@@ -135,11 +143,19 @@ export const api = {
 			form.append('files', file);
 		}
 
+		const headers: Record<string, string> = {};
+		if (sessionToken) headers['X-Session-Token'] = sessionToken;
+
 		const res = await fetch('/api/extract-id', {
 			method: 'POST',
-			body: form
+			body: form,
+			headers
 		});
 
+		if (res.status === 410) {
+			window.location.reload();
+			throw new Error('Session expired');
+		}
 		if (!res.ok) {
 			const body = await res.text();
 			throw new Error(`ID extraction failed: ${body}`);

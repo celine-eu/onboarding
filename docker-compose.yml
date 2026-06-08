@@ -32,7 +32,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8040:8040"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-securepassword123}@${DB_HOST:-postgres}:${DB_PORT:-5432}/rec_onboarding
     env_file:
@@ -42,7 +42,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    command: uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8040 --reload
 
   frontend:
     build:

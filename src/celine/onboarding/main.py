@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
 from celine.onboarding.config.settings import settings
@@ -36,7 +37,32 @@ async def lifespan(app: FastAPI):
             "═══════════════════════════════════════════════════════════════\n"
         )
 
+    if settings.require_encryption and not settings.encryption_key:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  ENCRYPTION_KEY is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "PII encryption is mandatory for production deployments.\n\n"
+            "Generate a key:\n"
+            '  python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"\n\n'
+            "Then set ENCRYPTION_KEY in your .env file.\n\n"
+            "For development only, set REQUIRE_ENCRYPTION=false to skip.\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
     yield
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
 
 
 def create_app() -> FastAPI:
@@ -55,6 +81,9 @@ def create_app() -> FastAPI:
             content={"detail": "Too many requests. Please try again later."},
         )
 
+    if settings.security_headers:
+        app.add_middleware(SecurityHeadersMiddleware)
+
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -72,6 +101,7 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.eligibility import router as eligibility_router
     from celine.onboarding.api.admin import router as admin_router
+    from celine.onboarding.api.downloads import router as downloads_router
 
     app.include_router(health_router, prefix="/api")
     app.include_router(config_router, prefix="/api")
@@ -80,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(extractions_router, prefix="/api")
     app.include_router(consent_docs_router, prefix="/api")
     app.include_router(eligibility_router, prefix="/api")
+    app.include_router(downloads_router, prefix="/api")
     app.include_router(admin_router, prefix="/api/admin")
 
     return app

@@ -1,7 +1,8 @@
+import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +31,7 @@ async def _get_live_submission(
         raise HTTPException(404, "Submission not found")
 
     token = request.headers.get("x-session-token", "")
-    if not token or token != submission.session_token:
+    if not token or not secrets.compare_digest(token, submission.session_token):
         raise HTTPException(403, "Invalid session token")
 
     now = datetime.now(timezone.utc)
@@ -66,11 +67,14 @@ async def get_submission(submission: Submission = Depends(_get_live_submission))
 @router.patch("/{submission_id}", response_model=SubmissionRead)
 async def update_submission(
     data: SubmissionUpdate,
+    background_tasks: BackgroundTasks,
     submission: Submission = Depends(_get_live_submission),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        return await submission_service.update_submission(db, submission, data)
+        return await submission_service.update_submission(
+            db, submission, data, background_tasks=background_tasks
+        )
     except (ValueError, InvalidTransition) as e:
         raise HTTPException(422, str(e))
 

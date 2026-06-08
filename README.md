@@ -14,16 +14,16 @@ This platform automates the process: a public-facing wizard collects data from a
 
 1. **Accept consents** — GDPR privacy policy and community rules, with links to the actual documents. This step creates the submission and records the IP address, timestamp, and document versions.
 2. **Upload utility bill** (optional) — photos or PDFs of the electricity bill. The system uses AI vision to extract the holder's name, fiscal code, POD code, address, and provider. Multiple pages can be uploaded; each one refines the extracted data.
-3. **Confirm personal data** — a form pre-filled with extracted data. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats.
+3. **Confirm personal data** — a form pre-filled with extracted data. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats. Optional ID card upload provides cross-validation against bill data.
 4. **Eligibility check** (if configured) — the applicant's address is geocoded and checked against the community's coverage area (municipalities, postal codes, or regions).
 5. **Accept statute** — the community's founding document, presented separately from the data-collection consents.
 6. **Review and submit** — summary of all entered data. On submit, the applicant receives a PDF summary and the operator is notified by email.
 
-The entire process has a 10-minute window. After that, the submission UUID expires and the public API rejects further requests. This limits the exposure window for personal data.
+The entire process has a 10-minute inactivity window. After that, the session token expires and the public API rejects further requests. This limits the exposure window for personal data.
 
 ### For the operator
 
-Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV.
+Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
 
 ### For the community
 
@@ -34,15 +34,15 @@ Each REC gets a template folder that customizes the platform without code change
 - **Coverage area** — municipalities, postal codes, or regions for eligibility checks
 - **Wizard steps** — reorderable via the manifest (skip eligibility if no coverage restriction)
 - **Content** — markdown files for the welcome page, consent intro, and success message
-- **Notifications** — sender address and operator email list
+- **Notifications** — sender address, operator email list, optional storage backend (S3/Google Drive), optional webhook
 
-The template is selected at deploy time via the `TEMPLATE_DIR` environment variable. One deployment per community for now; the architecture supports multi-tenant via template resolution.
+The template is selected at deploy time via the `TEMPLATE_DIR` environment variable.
 
 ## Architecture
 
 **Backend**: Python 3.12, FastAPI (async), SQLAlchemy 2 (async), PostgreSQL, Alembic migrations. Rate limiting via slowapi. PDF generation with fpdf2. Email via SMTP.
 
-**Frontend**: SvelteKit 5, CSS custom properties for theming, sveltekit-i18n (Italian + English), marked for markdown rendering. No CSS framework — design tokens from a shared design system.
+**Frontend**: SvelteKit 5, CSS custom properties for theming, sveltekit-i18n (Italian + English), marked for markdown rendering with DOMPurify sanitization. No CSS framework — design tokens from a shared design system.
 
 **Extraction pipeline**: uploaded files are classified by magic bytes. Images are compressed to JPEG (max 1600px, quality 75) and sent to the OpenAI Vision API. PDFs are converted to text via markitdown. Both go into a single LLM call that returns structured JSON. The model is configurable via env var.
 
@@ -50,13 +50,34 @@ The template is selected at deploy time via the `TEMPLATE_DIR` environment varia
 
 ## Security
 
-- **No authentication on applicant endpoints** — the UUID acts as a capability token with a 10-minute TTL. After expiry, the public API returns 410.
-- **Admin endpoints** require `Authorization: Bearer <token>` with a token from `.env`.
-- **Rate limiting**: bill extraction (10/hour/IP), submission creation (20/hour/IP), PDF download (5/minute/IP).
-- **Path traversal protection**: file-serving endpoints validate resolved paths stay within their root directories.
-- **Input validation**: fiscal code checksum and POD format enforced at the API layer. MIME types detected from magic bytes, not client headers.
-- **Email sanitization**: CR/LF stripped from user-supplied data before inclusion in email headers.
-- **CORS**: configurable origins, restricted to specific methods and headers.
+### Encryption at rest
+
+All PII is encrypted using Fernet symmetric encryption (`ENCRYPTION_KEY`). This covers:
+
+- Uploaded documents (utility bills, ID cards) encrypted on disk
+- Database columns: `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`, `consent_ip`
+- JSON fields: `extracted_data`, `id_extracted_data` (OCR results), `raw_response` (LLM responses)
+
+Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false` (dev-only). Legacy unencrypted data is read gracefully during migration.
+
+### Session and authentication
+
+- **Applicant sessions**: 32-byte random tokens with 10-minute inactivity TTL. All data-mutating endpoints (including extraction) require a valid session token via `X-Session-Token` header.
+- **Admin endpoints**: require `Authorization: Bearer <ADMIN_TOKEN>` with timing-safe comparison.
+- **Download links**: Fernet-encrypted tokens with configurable TTL (default 24 hours).
+
+### HTTP hardening
+
+Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy. CORS is configurable with restricted methods/headers. Rate limiting on extraction (10/hr), submission creation (20/hr), PDF download (5/min).
+
+### GDPR
+
+- Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
+- Right to erasure: `DELETE /api/admin/submissions/{id}` removes files from disk and all DB records
+- Audit trail: all admin operations logged with action, entity, IP, and detail
+- DPA enforcement: app refuses to start with LLM extraction steps unless `DPA_SIGNED=yes`
+- Data minimization: `consent_ip` excluded from public API responses, only visible to admins
+- Markdown content sanitized with DOMPurify to prevent XSS
 
 ## Quick Start
 
@@ -72,7 +93,8 @@ The template is selected at deploy time via the `TEMPLATE_DIR` environment varia
 ```bash
 # Clone and configure
 cp .env.example .env
-# Edit .env: set OPENAI_API_KEY, DATABASE_URL, ADMIN_TOKEN
+# Edit .env — required: DATABASE_URL, OPENAI_API_KEY, ENCRYPTION_KEY
+# For dev without encryption: set REQUIRE_ENCRYPTION=false
 
 # Backend
 cd src && uv sync && cd ..
@@ -105,6 +127,51 @@ TEMPLATE_DIR=./templates/my-community
 
 See `templates/example/` for the manifest format.
 
+## Environment Variables
+
+### Required
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL async connection string (e.g. `postgresql+asyncpg://user:pass@host:5432/db`) |
+| `OPENAI_API_KEY` | OpenAI API key for bill/ID extraction |
+| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `DPA_SIGNED` | Set to `yes` after signing a DPA with your LLM provider (required when using extraction steps) |
+| `ADMIN_TOKEN` | Bearer token for admin endpoints (admin returns 503 if unset) |
+
+### Security
+
+| Variable | Default | Description |
+|---|---|---|
+| `REQUIRE_ENCRYPTION` | `true` | App refuses to start without `ENCRYPTION_KEY`. Set `false` for local dev only. |
+| `SECURITY_HEADERS` | `true` | Adds security headers to all responses. Disable if your reverse proxy handles them. |
+| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated allowed origins |
+| `DOWNLOAD_TOKEN_TTL` | `86400` | Download link expiry in seconds (default: 24 hours) |
+
+### Application
+
+| Variable | Default | Description |
+|---|---|---|
+| `TEMPLATE_DIR` | `./templates/example` | Active community template |
+| `DATA_DIR` | `./data` | Upload and export storage path |
+| `MAX_UPLOAD_SIZE_MB` | `10` | Maximum file upload size |
+| `EXTRACTION_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
+| `EXTRACTION_MODEL` | `gpt-5.4` | Model for OCR extraction |
+
+### Email (SMTP)
+
+All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SMTP_HOST` | *(none)* | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | *(none)* | SMTP username |
+| `SMTP_PASSWORD` | *(none)* | SMTP password |
+| `SMTP_FROM` | *(none)* | Sender address (overridden by manifest `notifications.from`) |
+| `SMTP_TLS` | `true` | STARTTLS with certificate verification |
+| `SMTP_NOTIFY` | *(none)* | Fallback operator emails (overridden by manifest `notifications.notify`) |
+
 ## Creating a Template
 
 ```
@@ -120,24 +187,7 @@ templates/my-rec/
     success.md           # shown after submission
 ```
 
-The manifest declares everything the platform needs to customize for this community: name, branding, consent document versions and locations, coverage rules, wizard step order, and notification recipients. See `AGENTS.md` for the full manifest schema.
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | Yes | For bill extraction |
-| `DATABASE_URL` | Yes | PostgreSQL async connection string |
-| `ADMIN_TOKEN` | Yes (prod) | Bearer token for `/api/admin/*` |
-| `TEMPLATE_DIR` | No | Path to community template (default: `templates/example`) |
-| `EXTRACTION_MODEL` | No | OpenAI model (default: `gpt-5.4`) |
-| `CORS_ORIGINS` | No | Comma-separated origins (default: localhost) |
-| `DATA_DIR` | No | Where uploads and exports live (default: `./data`) |
-| `SMTP_HOST` | No | SMTP server for email notifications |
-| `SMTP_PORT` | No | Default: 587 |
-| `SMTP_USER` | No | SMTP username |
-| `SMTP_PASSWORD` | No | SMTP password |
-| `SMTP_TLS` | No | Default: true |
+The manifest declares everything the platform needs to customize for this community: name, branding, consent document versions and locations, coverage rules, wizard step order, notification recipients, optional storage backend, and optional webhook. See `AGENTS.md` for the full manifest schema.
 
 ## Development
 
@@ -153,8 +203,8 @@ task export-csv           # export submissions to data/exports/
 
 ### Adding a field
 
-1. Add the column to `src/celine/onboarding/models/submission.py`
-2. Add to `SubmissionUpdate` and `SubmissionRead` in `models/schemas.py`
+1. Add the column to `src/celine/onboarding/models/submission.py` — use `EncryptedString` for PII fields
+2. Add to `SubmissionUpdate` and `SubmissionRead` in `models/schemas.py` — add to `SubmissionAdminRead` if it should be admin-only
 3. Run `task migration -- "add_field_name"` then `task migrate`
 4. Add the form field in `ui/src/routes/onboarding/+page.svelte`
 5. Add i18n keys in `ui/src/lib/i18n/{it,en}/onboarding.json`

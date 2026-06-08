@@ -61,6 +61,40 @@ consent:
     file: consent/statute.pdf
     required: true
 
+notifications:
+  from: "noreply@example.com"
+  notify:
+    - admin@example.com
+  # email: true                         # default true; set false to disable email entirely
+  # base_url: "https://onboarding.example.com"  # for download links; defaults to first CORS origin
+
+  # Storage backend — upload submission PDF + documents to external storage.
+  # When configured, email contains a link to storage instead of a download link.
+  # Without storage, email includes a time-bound download link (DOWNLOAD_TOKEN_TTL, default 72h).
+  #
+  # Google Drive (per-template service account):
+  # storage:
+  #   backend: gdrive
+  #   folder_id: "1abc..."
+  #   credentials_file: "credentials/gdrive-sa.json"
+  #
+  # S3 / MinIO (secrets via ${VAR} from .env or per-template env_file):
+  # storage:
+  #   backend: s3
+  #   bucket: "${S3_BUCKET}"
+  #   endpoint_url: "${S3_ENDPOINT_URL}"
+  #   access_key_id: "${S3_ACCESS_KEY_ID}"
+  #   secret_access_key: "${S3_SECRET_ACCESS_KEY}"
+  #   region: "${S3_REGION}"
+  #   prefix: "uploads"
+  #   url_expiry_seconds: 604800
+  #   env_file: ".env"                   # optional per-template .env override
+
+  # Webhook — POST submission ID on submit for automated processing:
+  # webhook:
+  #   url: "https://example.com/hooks/onboarding"
+  #   secret: "${WEBHOOK_SECRET}"
+
 steps:
   - consents
   - utility
