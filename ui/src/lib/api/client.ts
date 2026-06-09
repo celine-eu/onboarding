@@ -5,6 +5,33 @@ export interface SubmissionResponse {
 	[key: string]: unknown;
 }
 
+export class ValidationError extends Error {
+	fieldErrors: Record<string, string>;
+
+	constructor(fieldErrors: Record<string, string>) {
+		super('Validation failed');
+		this.name = 'ValidationError';
+		this.fieldErrors = fieldErrors;
+	}
+}
+
+function parseValidationErrors(body: string): Record<string, string> | null {
+	try {
+		const parsed = JSON.parse(body);
+		if (!Array.isArray(parsed?.detail)) return null;
+		const fieldErrors: Record<string, string> = {};
+		for (const err of parsed.detail) {
+			if (!Array.isArray(err.loc) || !err.msg) continue;
+			const field = err.loc[err.loc.length - 1];
+			if (typeof field !== 'string') continue;
+			fieldErrors[field] = String(err.msg).replace(/^Value error,\s*/i, '');
+		}
+		return Object.keys(fieldErrors).length > 0 ? fieldErrors : null;
+	} catch {
+		return null;
+	}
+}
+
 let sessionToken: string | null = null;
 
 export function setSessionToken(token: string) {
@@ -33,6 +60,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 	if (!res.ok) {
 		const body = await res.text();
+		if (res.status === 422) {
+			const fieldErrors = parseValidationErrors(body);
+			if (fieldErrors) throw new ValidationError(fieldErrors);
+		}
 		throw new Error(`API error ${res.status}: ${body}`);
 	}
 

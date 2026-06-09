@@ -63,8 +63,9 @@
 	}
 
 	.hero-logo {
-		max-height: 60px;
+		height: 60px;
 		max-width: 260px;
+		width: auto;
 		object-fit: contain;
 	}
 

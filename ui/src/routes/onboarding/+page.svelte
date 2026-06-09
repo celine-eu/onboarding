@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { t, locale } from '$lib/i18n';
-	import { api, setSessionToken, getSessionToken, type SiteConfig } from '$lib/api/client';
+	import { api, setSessionToken, getSessionToken, ValidationError, type SiteConfig } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -133,6 +134,32 @@
 	let errors = $state<Record<string, string>>({});
 	let validated = $state(false);
 
+	$effect(() => {
+		void [firstName, lastName, email, phone, fiscalCode, podCode];
+		untrack(() => {
+			if (validated) {
+				errors = {};
+				validated = false;
+			}
+		});
+	});
+
+	const FIELD_ERROR_KEYS: Record<string, string> = {
+		fiscal_code: 'onboarding.invalid_cf',
+		pod_code: 'onboarding.invalid_pod',
+		email: 'onboarding.invalid_email',
+		phone: 'onboarding.invalid_phone',
+	};
+
+	function translateFieldErrors(fieldErrors: Record<string, string>): Record<string, string> {
+		const result: Record<string, string> = {};
+		for (const [field, msg] of Object.entries(fieldErrors)) {
+			const key = FIELD_ERROR_KEYS[field];
+			result[field] = key ? $t(key) : msg;
+		}
+		return result;
+	}
+
 	const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 	const PHONE_RE = /^\+?[\d\s\-()]{7,}$/;
 	const CF_RE = /^[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]$/i;
@@ -244,6 +271,10 @@
 					extra_data: extraData,
 				});
 			} catch (e) {
+				if (e instanceof ValidationError) {
+					errors = { ...errors, ...translateFieldErrors(e.fieldErrors) };
+					return;
+				}
 				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
 				return;
 			}
@@ -459,7 +490,11 @@
 			});
 			submitted = true;
 		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Submission failed';
+			if (e instanceof ValidationError) {
+				errorMsg = Object.values(translateFieldErrors(e.fieldErrors)).join(', ');
+			} else {
+				errorMsg = e instanceof Error ? e.message : 'Submission failed';
+			}
 		} finally {
 			submitting = false;
 		}

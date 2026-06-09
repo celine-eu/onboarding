@@ -21,6 +21,7 @@ dependencies = [
     "fpdf2>=2.8.7",
     "slowapi>=0.1.9",
     "cryptography>=44.0",
+    "pymupdf>=1.25",
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "boto3>=1.35",

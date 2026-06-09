@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import pymupdf
 from markitdown import MarkItDown
 from openai import AsyncOpenAI
 from PIL import Image
@@ -94,6 +95,10 @@ def _compress_image(image_bytes: bytes) -> tuple[bytes, str]:
     return buf.getvalue(), "image/jpeg"
 
 
+MIN_TEXT_LENGTH = 100
+PDF_DPI = 200
+
+
 def _pdf_to_text(pdf_bytes: bytes) -> str:
     md = MarkItDown()
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -104,6 +109,18 @@ def _pdf_to_text(pdf_bytes: bytes) -> str:
         return result.text_content
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def _pdf_to_images(pdf_bytes: bytes) -> list[tuple[bytes, str]]:
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    images = []
+    for page in doc:
+        pix = page.get_pixmap(dpi=PDF_DPI)
+        img_bytes = pix.tobytes("jpeg")
+        compressed, cmime = _compress_image(img_bytes)
+        images.append((compressed, cmime))
+    doc.close()
+    return images
 
 
 class OpenAIExtractor:
@@ -130,10 +147,18 @@ class OpenAIExtractor:
 
             if mime == "application/pdf":
                 text = _pdf_to_text(data)
-                content.append({
-                    "type": "text",
-                    "text": f"--- Page {i + 1} (PDF text) ---\n{text}",
-                })
+                if len(text.strip()) >= MIN_TEXT_LENGTH:
+                    content.append({
+                        "type": "text",
+                        "text": f"--- Page {i + 1} (PDF text) ---\n{text}",
+                    })
+                else:
+                    for img_bytes, img_mime in _pdf_to_images(data):
+                        b64 = base64.b64encode(img_bytes).decode("utf-8")
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{img_mime};base64,{b64}"},
+                        })
             elif mime in IMAGE_MIME_TYPES:
                 compressed, cmime = _compress_image(data)
                 b64 = base64.b64encode(compressed).decode("utf-8")
