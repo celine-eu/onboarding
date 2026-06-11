@@ -43,6 +43,7 @@
 	"submit_success": "Application submitted successfully!",
 	"submit_success_detail": "You will receive a confirmation email.",
 	"download_pdf": "Download PDF summary",
+	"upload_id_intro": "To speed things up, please upload an ID document belonging to the same person as the utility bill. If that's not possible, no worries — we'll collect it later.",
 	"upload_id": "Upload your ID document",
 	"upload_id_hint": "Identity card, electronic ID (CIE), or passport (photo or scan, front and back)",
 	"upload_id_format": "Take a photo or upload a file (PDF, JPG, PNG)",

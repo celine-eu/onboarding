@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from fpdf import FPDF
 
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 
 def generate_submission_pdf(submission: Submission) -> bytes:
-    manifest = load_manifest()
+    manifest = template_service.load_manifest(submission.rec_slug)
     rec_name = manifest.get("name", "CER Onboarding")
 
     pdf = FPDF()

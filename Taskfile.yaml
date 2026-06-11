@@ -81,6 +81,12 @@ tasks:
     cmds:
       - pnpm lint
 
+  import-templates:
+    desc: Import template manifests into database
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run cer import-templates {{.CLI_ARGS}}
+
   export-csv:
     desc: Export submissions to CSV
     dir: "{{.SRC_DIR}}"

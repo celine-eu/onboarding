@@ -115,10 +115,8 @@ notifications:
 
 steps:
   - consents
-  - utility
   - personal
   - energy
-  - statute
   - review
 
 content:

@@ -3,7 +3,7 @@ from typing import Protocol
 
 import httpx
 
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 
 @dataclass
@@ -75,8 +75,8 @@ class NoRestrictionChecker:
         return EligibilityResult(eligible=True)
 
 
-def get_checker() -> EligibilityChecker:
-    manifest = load_manifest()
+def get_checker(rec_slug: str) -> EligibilityChecker:
+    manifest = template_service.load_manifest(rec_slug)
     coverage = manifest.get("coverage")
     if not coverage:
         return NoRestrictionChecker()
@@ -90,6 +90,24 @@ def get_checker() -> EligibilityChecker:
         return NoRestrictionChecker()
 
     return RulesChecker(rules)
+
+
+def find_recs_for_location(lat: float, lng: float) -> list[dict]:
+    results = []
+    for slug in template_service.get_slugs():
+        checker = get_checker(slug)
+        result = checker.check(lat, lng)
+        if result.eligible:
+            manifest = template_service.load_manifest(slug)
+            results.append({
+                "slug": slug,
+                "name": manifest.get("name", slug),
+                "branding": manifest.get("branding", {}),
+                "locale": manifest.get("locale", "it"),
+                "matched_rule": result.matched_rule,
+                "matched_value": result.matched_value,
+            })
+    return results
 
 
 def _parse_address(addr: dict) -> dict:

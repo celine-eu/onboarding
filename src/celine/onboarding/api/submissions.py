@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import limiter
+from celine.onboarding.api.deps import limiter, valid_rec_slug
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
     ConsentCreate,
@@ -24,11 +24,18 @@ SESSION_TTL_SECONDS = 600
 
 
 async def _get_live_submission(
-    submission_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
+    submission_id: uuid.UUID,
+    request: Request,
+    *,
+    rec_slug: str | None = None,
+    db: AsyncSession,
 ) -> Submission:
     submission = await submission_service.get_submission(db, submission_id)
     if not submission:
         raise HTTPException(404, "Submission not found")
+
+    if rec_slug is not None and submission.rec_slug != rec_slug:
+        raise HTTPException(403, "Submission does not belong to this REC")
 
     token = request.headers.get("x-session-token", "")
     if not token or not secrets.compare_digest(token, submission.session_token):
@@ -50,27 +57,36 @@ async def _get_live_submission(
 async def create_submission(
     request: Request,
     data: ConsentCreate,
+    rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
     client_ip = request.headers.get(
         "x-forwarded-for", request.client.host if request.client else "unknown"
     )
-    submission = await submission_service.create_from_consent(db, data, client_ip)
+    submission = await submission_service.create_from_consent(db, data, client_ip, rec_slug)
     return submission
 
 
 @router.get("/{submission_id}", response_model=SubmissionRead)
-async def get_submission(submission: Submission = Depends(_get_live_submission)):
-    return submission
+async def get_submission(
+    submission_id: uuid.UUID,
+    request: Request,
+    rec_slug: str = Depends(valid_rec_slug),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
 
 
 @router.patch("/{submission_id}", response_model=SubmissionRead)
 async def update_submission(
+    submission_id: uuid.UUID,
     data: SubmissionUpdate,
+    request: Request,
     background_tasks: BackgroundTasks,
-    submission: Submission = Depends(_get_live_submission),
+    rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
+    submission = await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
     try:
         return await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
@@ -82,11 +98,14 @@ async def update_submission(
 @router.get("/{submission_id}/pdf")
 @limiter.limit("5/minute")
 async def download_submission_pdf(
+    submission_id: uuid.UUID,
     request: Request,
-    submission: Submission = Depends(_get_live_submission),
+    rec_slug: str = Depends(valid_rec_slug),
+    db: AsyncSession = Depends(get_db),
 ):
     from celine.onboarding.services.pdf_service import generate_submission_pdf
 
+    submission = await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
     pdf_bytes = generate_submission_pdf(submission)
     return Response(
         content=pdf_bytes,

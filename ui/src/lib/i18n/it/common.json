@@ -12,5 +12,10 @@
 	"loading": "Caricamento...",
 	"error": "Errore",
 	"success": "Operazione completata",
-	"start_onboarding": "Inizia adesione"
+	"start_onboarding": "Inizia adesione",
+	"find_your_rec": "Inserisci il tuo indirizzo per trovare la tua comunita energetica",
+	"address_placeholder": "Via Roma 1, Borgo Valsugana",
+	"search": "Cerca",
+	"no_rec_found": "Nessuna comunita energetica trovata per questo indirizzo.",
+	"show_all_recs": "Mostra tutte le comunita"
 }

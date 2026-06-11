@@ -7,7 +7,7 @@ from email.message import EmailMessage
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def send_submission_email(
     if not settings.smtp_host:
         return
 
-    manifest = load_manifest()
+    manifest = template_service.load_manifest(submission.rec_slug)
     rec_name = manifest.get("name", "CER")
     notifications = manifest.get("notifications", {})
 

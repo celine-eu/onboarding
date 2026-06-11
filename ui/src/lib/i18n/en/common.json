@@ -12,5 +12,10 @@
 	"loading": "Loading...",
 	"error": "Error",
 	"success": "Operation completed",
-	"start_onboarding": "Start onboarding"
+	"start_onboarding": "Start onboarding",
+	"find_your_rec": "Enter your address to find your energy community",
+	"address_placeholder": "123 Main Street, City",
+	"search": "Search",
+	"no_rec_found": "No energy community found for this address.",
+	"show_all_recs": "Show all communities"
 }

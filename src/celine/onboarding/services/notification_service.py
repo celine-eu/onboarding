@@ -8,7 +8,7 @@ from celine.onboarding.models.submission import Submission
 from celine.onboarding.outputs.base import StorageResult
 from celine.onboarding.outputs.registry import get_backend
 from celine.onboarding.outputs.webhook import fire_webhook, resolve_env
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,12 @@ def _build_download_url(submission: Submission) -> str | None:
     token = generate_download_token(submission.id)
     if token is None:
         return None
-    base = notifications_base_url()
+    base = notifications_base_url(submission.rec_slug)
     return f"{base}/api/downloads/{quote(token, safe='')}"
 
 
-def notifications_base_url() -> str:
-    manifest = load_manifest()
+def notifications_base_url(rec_slug: str) -> str:
+    manifest = template_service.load_manifest(rec_slug)
     notifications = manifest.get("notifications", {})
     base = notifications.get("base_url", "").rstrip("/")
     if base:
@@ -47,14 +47,17 @@ def notifications_base_url() -> str:
 
 
 async def handle_submission_notification(submission: Submission) -> None:
-    manifest = load_manifest()
+    manifest = template_service.load_manifest(submission.rec_slug)
     notifications = manifest.get("notifications", {})
 
     storage_result: StorageResult | None = None
     storage_config = notifications.get("storage")
     if storage_config:
         try:
-            backend = get_backend(storage_config, settings.template_dir)
+            backend = get_backend(
+                storage_config,
+                str(template_service.template_dir_for(submission.rec_slug)),
+            )
             if backend:
                 from celine.onboarding.services.pdf_service import generate_submission_pdf
 

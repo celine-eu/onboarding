@@ -14,11 +14,12 @@ from celine.onboarding.workflows.engine import validate_transition, can_submit, 
 
 
 async def create_from_consent(
-    db: AsyncSession, data: ConsentCreate, client_ip: str
+    db: AsyncSession, data: ConsentCreate, client_ip: str, rec_slug: str,
 ) -> Submission:
     now = datetime.now(timezone.utc)
 
     submission = Submission(
+        rec_slug=rec_slug,
         consent_ip=client_ip,
         gdpr_consent=data.gdpr_consent,
         gdpr_consent_at=now if data.gdpr_consent else None,
@@ -46,10 +47,13 @@ async def get_submission(db: AsyncSession, submission_id: uuid.UUID) -> Submissi
 
 
 async def list_submissions(
-    db: AsyncSession, *, skip: int = 0, limit: int = 50
+    db: AsyncSession, *, rec_slug: str, skip: int = 0, limit: int = 50,
 ) -> list[Submission]:
     result = await db.execute(
-        select(Submission).order_by(Submission.created_at.desc()).offset(skip).limit(limit)
+        select(Submission)
+        .where(Submission.rec_slug == rec_slug)
+        .order_by(Submission.created_at.desc())
+        .offset(skip).limit(limit)
     )
     return list(result.scalars().all())
 

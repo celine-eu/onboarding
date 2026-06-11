@@ -45,7 +45,8 @@ async def save_document(
 
     submission = await get_submission(db, submission_id)
     folder_name = submission.ref if submission else str(submission_id)
-    relative_path = f"submissions/{folder_name}/{doc_id}{ext}"
+    rec_slug = submission.rec_slug if submission else "default"
+    relative_path = f"{rec_slug}/submissions/{folder_name}/{doc_id}{ext}"
     from celine.onboarding.services.crypto import encrypt
 
     full_path = Path(settings.data_dir) / relative_path

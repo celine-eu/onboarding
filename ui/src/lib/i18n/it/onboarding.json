@@ -43,6 +43,7 @@
 	"submit_success": "Adesione inviata con successo!",
 	"submit_success_detail": "Riceverai una conferma via email.",
 	"download_pdf": "Scarica riepilogo PDF",
+	"upload_id_intro": "Per velocizzare la procedura, ti chiediamo di caricare un documento d'identita intestato alla stessa persona della bolletta. Se non e possibile, nessun problema: lo raccoglieremo in un secondo momento.",
 	"upload_id": "Carica il tuo documento d'identita",
 	"upload_id_hint": "Carta d'identita, CIE o passaporto (foto o scansione, fronte e retro)",
 	"upload_id_format": "Scatta una foto o carica un file (PDF, JPG, PNG)",

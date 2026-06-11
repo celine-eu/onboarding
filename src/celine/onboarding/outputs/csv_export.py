@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 BASE_FIELDS = [
     "id",
@@ -25,18 +25,29 @@ BASE_FIELDS = [
 ]
 
 
-def _extra_field_keys() -> list[str]:
-    manifest = load_manifest()
+def _extra_field_keys(rec_slug: str | None) -> list[str]:
+    if not rec_slug:
+        keys: list[str] = []
+        for slug in template_service.get_slugs():
+            manifest = template_service.load_manifest(slug)
+            for f in manifest.get("fields", {}).get("extra", []):
+                if "key" in f and f["key"] not in keys:
+                    keys.append(f["key"])
+        return keys
+    manifest = template_service.load_manifest(rec_slug)
     return [f["key"] for f in manifest.get("fields", {}).get("extra", []) if "key" in f]
 
 
-async def export_submissions_csv(db: AsyncSession, output_path: str | Path) -> int:
-    result = await db.execute(
-        select(Submission).order_by(Submission.created_at.desc())
-    )
+async def export_submissions_csv(
+    db: AsyncSession, output_path: str | Path, *, rec_slug: str | None = None
+) -> int:
+    query = select(Submission).order_by(Submission.created_at.desc())
+    if rec_slug:
+        query = query.where(Submission.rec_slug == rec_slug)
+    result = await db.execute(query)
     submissions = result.scalars().all()
 
-    extra_keys = _extra_field_keys()
+    extra_keys = _extra_field_keys(rec_slug)
     fieldnames = BASE_FIELDS + extra_keys
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:

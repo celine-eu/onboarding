@@ -51,6 +51,7 @@ class SubmissionUpdate(BaseModel):
 class SubmissionRead(BaseModel):
     id: uuid.UUID
     ref: str
+    rec_slug: str
     status: SubmissionStatus
     first_name: str | None
     last_name: str | None

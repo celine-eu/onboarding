@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     extraction_model: str = "gpt-5.4"
 
     data_dir: str = str(REPO_ROOT / "data")
-    template_dir: str = str(REPO_ROOT / "templates" / "example")
+    templates_dir: str = str(REPO_ROOT / "templates")
+    template_dir: str = ""
     max_upload_size_mb: int = 10
 
     encryption_key: str = ""

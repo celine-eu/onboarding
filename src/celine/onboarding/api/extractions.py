@@ -22,7 +22,6 @@ async def extract_from_upload(
     files: Annotated[list[UploadFile], File()],
     _session: Submission = Depends(require_session),
 ):
-    """Extract structured data from bill pages (images/PDFs)."""
     from celine.onboarding.extractors.openai_extractor import OpenAIExtractor
 
     pages = []
@@ -43,7 +42,6 @@ async def extract_from_id_upload(
     files: Annotated[list[UploadFile], File()],
     _session: Submission = Depends(require_session),
 ):
-    """Extract structured data from ID card pages (images/PDFs)."""
     from celine.onboarding.extractors.openai_extractor import (
         ID_CARD_SYSTEM_PROMPT,
         ID_CARD_USER_PROMPT,

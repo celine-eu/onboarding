@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.api.deps import valid_rec_slug
 from celine.onboarding.api.submissions import _get_live_submission
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.document import DocumentType
@@ -22,9 +23,10 @@ async def upload_document(
     request: Request,
     file: UploadFile,
     doc_type: DocumentType = DocumentType.UTILITY_BILL,
+    rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
-    await _get_live_submission(submission_id, request, db)
+    await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
     try:
         return await document_service.save_document(db, submission_id, file, doc_type)
     except ValueError as e:
@@ -38,7 +40,8 @@ async def upload_document(
 async def list_documents(
     submission_id: uuid.UUID,
     request: Request,
+    rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
-    await _get_live_submission(submission_id, request, db)
+    await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
     return await document_service.list_documents(db, submission_id)

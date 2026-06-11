@@ -1,15 +1,17 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t, locale } from '$lib/i18n';
-	import { api, setSessionToken, getSessionToken, ValidationError, type SiteConfig } from '$lib/api/client';
+	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
 	import ExtractionReview from '$lib/components/ExtractionReview.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 
-	let config = $state<SiteConfig | null>(null);
-	let configError = $state('');
+	let { data } = $props();
+	let config: SiteConfig = $derived(data.config);
+	let rec: string = $derived(data.rec);
+	let recApi: RecApi = $derived(data.recApi);
 
 	const STEP_LABELS: Record<string, string> = {
 		consents: 'onboarding.step_data_consents',
@@ -23,8 +25,18 @@
 
 	let steps = $derived(
 		config
-			? config.steps.map((s) => (typeof s === 'string' ? s : s.title))
-			: ['consents', 'utility', 'personal', 'statute', 'review']
+			? config.steps.map((s) => (typeof s === 'string' ? s : s.custom))
+			: ['consents', 'personal', 'review']
+	);
+
+	let stepLabelOverrides = $derived<Record<string, string>>(
+		config
+			? Object.fromEntries(
+					config.steps
+						.filter((s): s is { custom: string; title: string } => typeof s !== 'string')
+						.map((s) => [s.custom, s.title])
+				)
+			: {}
 	);
 
 	let consentVersions = $derived(
@@ -37,24 +49,17 @@
 			: { gdpr: '1.0', policy: '1.0', statute: '1.0' }
 	);
 
-	$effect(() => {
-		api.getConfig().then((c) => (config = c)).catch((e) => (configError = String(e)));
-	});
-
 	let currentStep = $state(0);
 	let submitting = $state(false);
 	let submitted = $state(false);
 	let errorMsg = $state('');
 
-	// Submission — created on consent, used to link everything
 	let submissionId: string | null = $state(null);
 	let submissionRef: string | null = $state(null);
 
-	// Data collection consents (step 0)
 	let gdprConsent = $state(false);
 	let policyConsent = $state(false);
 
-	// Bill & extraction (step 1 — optional)
 	interface UploadedFile {
 		file: File;
 		status: 'uploading' | 'done' | 'error';
@@ -66,7 +71,6 @@
 	let extractionTimer: ReturnType<typeof setTimeout> | null = null;
 	let extractionVersion = 0;
 
-	// ID card upload & extraction (in personal step)
 	let idUploadedFiles = $state<UploadedFile[]>([]);
 	let idExtractionData: Record<string, string | null> | null = $state(null);
 	let idExtracting = $state(false);
@@ -74,7 +78,6 @@
 	let idExtractionTimer: ReturnType<typeof setTimeout> | null = null;
 	let idExtractionVersion = 0;
 
-	// Personal data (step 2 — prefilled from extraction)
 	let firstName = $state('');
 	let lastName = $state('');
 	let email = $state('');
@@ -82,7 +85,6 @@
 	let fiscalCode = $state('');
 	let podCode = $state('');
 
-	// Eligibility
 	let eligibilityAddress = $state('');
 	let eligibilityChecking = $state(false);
 	let eligibilityResult = $state<{
@@ -95,13 +97,8 @@
 		reason?: string;
 	} | null>(null);
 
-	// Statute
 	let statuteConsent = $state(false);
-
-	// Optional marketing opt-in
 	let keepMeUpdated = $state(false);
-
-	// Dynamic extra fields from manifest
 	let extraData = $state<Record<string, unknown>>({});
 
 	function fieldLabel(field: { label: string; [k: string]: unknown }): string {
@@ -130,7 +127,6 @@
 		extraData = updated;
 	}
 
-	// Validation
 	let errors = $state<Record<string, string>>({});
 	let validated = $state(false);
 
@@ -189,7 +185,7 @@
 	let idUploading = $derived(idUploadedFiles.some((f) => f.status === 'uploading'));
 	let stepBusy = $derived(
 		(currentStepName === 'utility' && (uploading || extractionPending || extracting)) ||
-		(currentStepName === 'personal' && (idUploading || idExtractionPending || idExtracting))
+		(currentStepName === 'personal' && (uploading || extractionPending || extracting || idUploading || idExtractionPending || idExtracting))
 	);
 
 	function cancelProcessing() {
@@ -200,12 +196,24 @@
 			clearTimeout(extractionTimer);
 			extractionTimer = null;
 		}
+		idExtractionVersion++;
+		idExtracting = false;
+		idExtractionPending = false;
+		if (idExtractionTimer) {
+			clearTimeout(idExtractionTimer);
+			idExtractionTimer = null;
+		}
 	}
 
 	function canProceed(): boolean {
-		if (currentStepName === 'consents') return gdprConsent && policyConsent;
+		if (currentStepName === 'consents') {
+			if (!gdprConsent || !policyConsent) return false;
+			if (!steps.includes('statute') && !statuteConsent) return false;
+			return true;
+		}
 		if (currentStepName === 'utility') return !stepBusy;
 		if (currentStepName === 'personal') {
+			if (stepBusy) return false;
 			if (!validated) return !!firstName && !!lastName && (!!email || !!phone) && !!fiscalCode && !!podCode;
 			return Object.keys(errors).length === 0;
 		}
@@ -231,12 +239,12 @@
 		if (currentStepName === 'consents' && !submissionId) {
 			submitting = true;
 			try {
-				const res = await api.createSubmission({
+				const res = await recApi.createSubmission({
 					gdpr_consent: gdprConsent,
 					gdpr_consent_version: consentVersions.gdpr,
 					policy_consent: policyConsent,
 					policy_consent_version: consentVersions.policy,
-					statute_consent: false,
+					statute_consent: statuteConsent,
 					statute_consent_version: consentVersions.statute,
 				});
 				submissionId = res.id;
@@ -259,7 +267,7 @@
 			if (!validateStep2()) return;
 			if (!submissionId) return;
 			try {
-				await api.updateSubmission(submissionId, {
+				await recApi.updateSubmission(submissionId, {
 					first_name: firstName,
 					last_name: lastName,
 					email: email || null,
@@ -283,7 +291,7 @@
 		const stepExtraFields = extraFieldsForStep(currentStepName);
 		if (stepExtraFields.length > 0 && currentStepName !== 'personal' && submissionId) {
 			try {
-				await api.updateSubmission(submissionId, { extra_data: extraData });
+				await recApi.updateSubmission(submissionId, { extra_data: extraData });
 			} catch (e) {
 				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
 				return;
@@ -291,6 +299,13 @@
 		}
 
 		currentStep++;
+
+		if (steps[currentStep] === 'eligibility' && eligibilityAddress.trim() && !eligibilityResult) {
+			await checkEligibility();
+		}
+		if (steps[currentStep] === 'eligibility' && eligibilityResult?.eligible) {
+			currentStep++;
+		}
 	}
 
 	async function onFileAdded(file: File) {
@@ -300,7 +315,7 @@
 
 		if (submissionId) {
 			try {
-				await api.uploadDocument(submissionId, file, 'utility_bill');
+				await recApi.uploadDocument(submissionId, file, 'utility_bill');
 				uploadedFiles[idx].status = 'done';
 				uploadedFiles = [...uploadedFiles];
 			} catch (e) {
@@ -330,7 +345,7 @@
 		extracting = true;
 		errorMsg = '';
 		try {
-			const newData = await api.extractBill(allFiles);
+			const newData = await recApi.extractBill(allFiles);
 			if (thisVersion !== extractionVersion) return;
 			extractionData = mergeExtraction(extractionData, newData);
 			applyExtraction(extractionData);
@@ -372,7 +387,7 @@
 		eligibilityResult = null;
 		errorMsg = '';
 		try {
-			eligibilityResult = await api.checkEligibility({ address: eligibilityAddress });
+			eligibilityResult = await recApi.checkEligibility({ address: eligibilityAddress });
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Eligibility check failed';
 		} finally {
@@ -385,7 +400,6 @@
 		applyExtraction(data);
 	}
 
-	// ID card upload & extraction handlers
 	async function onIdFileAdded(file: File) {
 		const entry: UploadedFile = { file, status: 'uploading' };
 		idUploadedFiles = [...idUploadedFiles, entry];
@@ -393,7 +407,7 @@
 
 		if (submissionId) {
 			try {
-				await api.uploadDocument(submissionId, file, 'id_card');
+				await recApi.uploadDocument(submissionId, file, 'id_card');
 				idUploadedFiles[idx].status = 'done';
 				idUploadedFiles = [...idUploadedFiles];
 			} catch {
@@ -423,7 +437,7 @@
 		idExtracting = true;
 		errorMsg = '';
 		try {
-			const newData = await api.extractIdCard(allFiles);
+			const newData = await recApi.extractIdCard(allFiles);
 			if (thisVersion !== idExtractionVersion) return;
 			idExtractionData = mergeExtraction(idExtractionData, newData);
 			applyIdExtraction(idExtractionData);
@@ -446,7 +460,6 @@
 		applyIdExtraction(data);
 	}
 
-	// Cross-validation: bill vs ID card
 	interface MismatchField {
 		field: string;
 		bill: string;
@@ -482,7 +495,7 @@
 		submitting = true;
 		errorMsg = '';
 		try {
-			await api.updateSubmission(submissionId, {
+			await recApi.updateSubmission(submissionId, {
 				statute_consent: statuteConsent,
 				keep_me_updated: keepMeUpdated,
 				extra_data: extraData,
@@ -505,7 +518,7 @@
 		const headers: Record<string, string> = {};
 		const token = getSessionToken();
 		if (token) headers['X-Session-Token'] = token;
-		const res = await fetch(`/api/submissions/${submissionId}/pdf`, { headers });
+		const res = await fetch(`/api/${rec}/submissions/${submissionId}/pdf`, { headers });
 		if (!res.ok) return;
 		const blob = await res.blob();
 		const url = URL.createObjectURL(blob);
@@ -534,24 +547,22 @@
 					{$t('onboarding.download_pdf')}
 				</button>
 			{/if}
-			<a href="/" class="btn btn-secondary">{$t('common.back')}</a>
+			<a href="/{rec}" class="btn btn-secondary">{$t('common.back')}</a>
 		</div>
 	</div>
 {:else}
 	<div class="wizard">
 		<h2 class="wizard-title">{$t('onboarding.title')}</h2>
 
-		<!-- Step indicator -->
 		<div class="steps">
 			{#each steps as step, i}
 				<div class="step" class:active={i === currentStep} class:done={i < currentStep}>
 					<div class="step-bar"></div>
-					<span class="step-label">{$t(STEP_LABELS[step] ?? step)}</span>
+					<span class="step-label">{stepLabelOverrides[step] ?? $t(STEP_LABELS[step] ?? step)}</span>
 				</div>
 			{/each}
 		</div>
 
-		<!-- Step content -->
 		<div class="step-content">
 			{#if currentStepName === 'consents'}
 				<div class="consents">
@@ -564,16 +575,25 @@
 						label={$t('onboarding.gdpr_consent')}
 						bind:checked={gdprConsent}
 						required
-						documentUrl={config?.consent?.gdpr?.url ?? '/api/consent-documents/gdpr'}
+						documentUrl={config?.consent?.gdpr?.url ?? `/api/${rec}/consent-documents/gdpr`}
 						documentLabel={$t('onboarding.view_document')}
 					/>
 					<ConsentCheckbox
 						label={$t('onboarding.policy_consent')}
 						bind:checked={policyConsent}
 						required
-						documentUrl={config?.consent?.policy?.url ?? '/api/consent-documents/policy'}
+						documentUrl={config?.consent?.policy?.url ?? `/api/${rec}/consent-documents/policy`}
 						documentLabel={$t('onboarding.view_document')}
 					/>
+					{#if !steps.includes('statute')}
+						<ConsentCheckbox
+							label={$t('onboarding.statute_consent')}
+							bind:checked={statuteConsent}
+							required
+							documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
 					<ConsentCheckbox
 						label={$t('onboarding.keep_me_updated')}
 						bind:checked={keepMeUpdated}
@@ -601,7 +621,9 @@
 					{/if}
 				</div>
 			{:else if currentStepName === 'personal'}
-				<div class="step-section id-upload-section">
+				<div class="personal-step">
+				<p class="step-hint">{$t('onboarding.upload_id_intro')}</p>
+				<div class="step-section">
 					<FileUpload
 						label={$t('onboarding.upload_id')}
 						hint={$t('onboarding.upload_id_hint')}
@@ -621,6 +643,29 @@
 					{/if}
 				</div>
 
+				{#if !steps.includes('utility')}
+					<div class="step-section">
+						<p class="step-hint">{$t('onboarding.upload_bill_optional')}</p>
+						<FileUpload
+							label={$t('onboarding.upload_bill')}
+							hint={$t('onboarding.upload_bill_hint')}
+							files={uploadedFiles}
+							onadd={onFileAdded}
+						/>
+
+						{#if extracting}
+							<div class="loading-box">
+								<div class="spinner"></div>
+								<span>{$t('onboarding.extracting')}</span>
+							</div>
+						{/if}
+
+						{#if extractionData}
+							<ExtractionReview data={extractionData} onchange={onExtractionChange} />
+						{/if}
+					</div>
+				{/if}
+
 				{#if mismatches.length > 0}
 					<div class="mismatch-banner">
 						<strong>{$t('onboarding.mismatch_title')}</strong>
@@ -639,10 +684,10 @@
 				<div class="form-grid">
 					<FormField label={$t('onboarding.first_name')} name="first_name" bind:value={firstName} required error={errors.first_name ?? ''} />
 					<FormField label={$t('onboarding.last_name')} name="last_name" bind:value={lastName} required error={errors.last_name ?? ''} />
-					<FormField label={$t('onboarding.email')} name="email" type="email" bind:value={email} error={errors.email ?? ''} placeholder="email@example.com" />
-					<FormField label={$t('onboarding.phone')} name="phone" type="tel" bind:value={phone} error={errors.phone ?? ''} placeholder="+39 ..." />
 					<FormField label={$t('onboarding.fiscal_code')} name="fiscal_code" bind:value={fiscalCode} required maxlength={16} error={errors.fiscal_code ?? ''} placeholder="RSSMRA80A01H501U" />
 					<FormField label={$t('onboarding.pod_code')} name="pod_code" bind:value={podCode} required maxlength={20} error={errors.pod_code ?? ''} placeholder="IT001E12345678" />
+					<FormField label={$t('onboarding.email')} name="email" type="email" bind:value={email} error={errors.email ?? ''} placeholder="email@example.com" />
+					<FormField label={$t('onboarding.phone')} name="phone" type="tel" bind:value={phone} error={errors.phone ?? ''} placeholder="+39 ..." />
 				</div>
 				{#if extraFieldsForStep('personal').length > 0}
 					<div class="extra-fields">
@@ -681,6 +726,7 @@
 						{/each}
 					</div>
 				{/if}
+				</div>
 			{:else if currentStepName === 'eligibility'}
 				<div class="step-section">
 					<p class="step-hint">{$t('onboarding.eligibility_intro')}</p>
@@ -773,7 +819,7 @@
 						label={$t('onboarding.statute_consent')}
 						bind:checked={statuteConsent}
 						required
-						documentUrl={config?.consent?.statute?.url ?? '/api/consent-documents/statute'}
+						documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
 						documentLabel={$t('onboarding.view_document')}
 					/>
 				</div>
@@ -860,11 +906,10 @@
 			<div class="error-banner">{errorMsg}</div>
 		{/if}
 
-		<!-- Navigation -->
 		<div class="wizard-nav">
 			<button
 				class="btn btn-secondary"
-				disabled={currentStep === 0 || !config}
+				disabled={currentStep === 0}
 				onclick={() => currentStep--}
 			>
 				{$t('common.back')}
@@ -872,7 +917,7 @@
 
 			{#if currentStep < steps.length - 1}
 				<div class="nav-right">
-					{#if currentStepName === 'utility' && stepBusy}
+					{#if stepBusy}
 						<button class="btn btn-danger-ghost" onclick={cancelProcessing}>
 							{$t('common.cancel')}
 						</button>
@@ -969,6 +1014,12 @@
 		color: var(--celine-text-secondary);
 		font-size: 0.9375rem;
 		margin: 0 0 var(--celine-space-sm);
+	}
+
+	.personal-step {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-lg);
 	}
 
 	.form-grid {
@@ -1304,11 +1355,6 @@
 		font-size: 1.25rem;
 		font-weight: 700;
 		color: var(--celine-text);
-		margin: 0;
-	}
-
-	.success-detail {
-		color: var(--celine-text-secondary);
 		margin: 0;
 	}
 

@@ -15,27 +15,28 @@ from celine.onboarding.config.settings import settings
 async def lifespan(app: FastAPI):
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
-    from celine.onboarding.services.template_service import load_manifest
-    manifest = load_manifest()
-    steps = manifest.get("steps", [])
-    if any(s in steps for s in ("utility", "identity")) and not settings.dpa_signed:
-        raise RuntimeError(
-            "\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-            "  DPA_SIGNED=yes is required in .env\n"
-            "═══════════════════════════════════════════════════════════════\n\n"
-            "This instance uses LLM-based extraction (bill/ID processing),\n"
-            "which sends personal data to an external AI provider.\n\n"
-            "GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
-            "with your provider before processing personal data.\n\n"
-            "  1. Sign the DPA with your LLM provider:\n"
-            "     - OpenAI:  https://privacy.openai.com\n"
-            "     - Mistral: https://mistral.ai/terms/#dpa\n"
-            "     - Azure:   covered by your Microsoft DPA\n"
-            "  2. Download and keep a copy on file for audits\n"
-            "  3. Set DPA_SIGNED=yes in your .env file\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-        )
+    from celine.onboarding.services.template_service import load_recs_from_db
+    await load_recs_from_db()
+
+    from celine.onboarding.services.template_service import get_slugs, load_manifest
+
+    for slug in get_slugs():
+        manifest = load_manifest(slug)
+        steps = manifest.get("steps", [])
+        if any(s in steps for s in ("utility", "identity", "personal")) and not settings.dpa_signed:
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  DPA_SIGNED=yes is required in .env (REC: {slug})\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' uses LLM-based extraction (bill/ID processing),\n"
+                f"which sends personal data to an external AI provider.\n\n"
+                f"GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
+                f"with your provider before processing personal data.\n\n"
+                f"  1. Sign the DPA with your LLM provider\n"
+                f"  2. Set DPA_SIGNED=yes in your .env file\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
 
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(
@@ -90,10 +91,12 @@ def create_app() -> FastAPI:
         allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
+        allow_headers=["Content-Type", "Authorization", "X-Session-Token"],
     )
 
     from celine.onboarding.api.health import router as health_router
+    from celine.onboarding.api.recs import router as recs_router
+    from celine.onboarding.api.downloads import router as downloads_router
     from celine.onboarding.api.config import router as config_router
     from celine.onboarding.api.submissions import router as submissions_router
     from celine.onboarding.api.documents import router as documents_router
@@ -101,17 +104,18 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.eligibility import router as eligibility_router
     from celine.onboarding.api.admin import router as admin_router
-    from celine.onboarding.api.downloads import router as downloads_router
 
     app.include_router(health_router, prefix="/api")
-    app.include_router(config_router, prefix="/api")
-    app.include_router(submissions_router, prefix="/api")
-    app.include_router(documents_router, prefix="/api")
-    app.include_router(extractions_router, prefix="/api")
-    app.include_router(consent_docs_router, prefix="/api")
-    app.include_router(eligibility_router, prefix="/api")
+    app.include_router(recs_router, prefix="/api")
     app.include_router(downloads_router, prefix="/api")
-    app.include_router(admin_router, prefix="/api/admin")
+
+    app.include_router(config_router, prefix="/api/{rec_slug}")
+    app.include_router(submissions_router, prefix="/api/{rec_slug}")
+    app.include_router(documents_router, prefix="/api/{rec_slug}")
+    app.include_router(extractions_router, prefix="/api/{rec_slug}")
+    app.include_router(consent_docs_router, prefix="/api/{rec_slug}")
+    app.include_router(eligibility_router, prefix="/api/{rec_slug}")
+    app.include_router(admin_router, prefix="/api/{rec_slug}/admin")
 
     return app
 

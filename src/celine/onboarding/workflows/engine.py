@@ -1,5 +1,5 @@
 from celine.onboarding.models.submission import Submission, SubmissionStatus
-from celine.onboarding.services.template_service import load_manifest
+from celine.onboarding.services import template_service
 
 TRANSITIONS: dict[SubmissionStatus, set[SubmissionStatus]] = {
     SubmissionStatus.DRAFT: {SubmissionStatus.SUBMITTED},
@@ -43,7 +43,7 @@ def can_submit(submission: Submission) -> list[str]:
     if not submission.statute_consent:
         errors.append("Statute consent is required")
 
-    manifest = load_manifest()
+    manifest = template_service.load_manifest(submission.rec_slug)
     extra_fields = manifest.get("fields", {}).get("extra", [])
     extra_data = submission.extra_data or {}
     for field in extra_fields:

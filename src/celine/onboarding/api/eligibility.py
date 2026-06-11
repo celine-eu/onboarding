@@ -1,7 +1,8 @@
 from pydantic import BaseModel
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from celine.onboarding.api.deps import valid_rec_slug
 from celine.onboarding.services.eligibility import geocode_address, get_checker
 
 router = APIRouter(tags=["eligibility"])
@@ -27,7 +28,10 @@ class EligibilityResponse(BaseModel):
 
 
 @router.post("/eligibility", response_model=EligibilityResponse)
-async def check_eligibility(req: EligibilityRequest):
+async def check_eligibility(
+    req: EligibilityRequest,
+    rec_slug: str = Depends(valid_rec_slug),
+):
     if req.lat is not None and req.lng is not None:
         lat, lng = req.lat, req.lng
     elif req.address:
@@ -39,7 +43,7 @@ async def check_eligibility(req: EligibilityRequest):
     else:
         raise HTTPException(400, "Provide lat/lng or address")
 
-    checker = get_checker()
+    checker = get_checker(rec_slug)
     result = checker.check(lat, lng)
 
     addr = result.address

@@ -3,7 +3,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,11 +27,18 @@ class SubmissionStatus(str, enum.Enum):
 
 class Submission(Base):
     __tablename__ = "submissions"
+    __table_args__ = (
+        Index("ix_submissions_rec_created", "rec_slug", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     ref: Mapped[str] = mapped_column(String(20), unique=True, default=_sortable_ref)
+    rec_slug: Mapped[str] = mapped_column(
+        String(40), ForeignKey("recs.slug"), nullable=False, index=True,
+        server_default="default",
+    )
     status: Mapped[SubmissionStatus] = mapped_column(
         Enum(SubmissionStatus), default=SubmissionStatus.DRAFT
     )
