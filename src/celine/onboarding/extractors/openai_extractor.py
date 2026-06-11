@@ -26,7 +26,8 @@ EXTRACTION_SYSTEM_PROMPT = (
     '  "pod": "POD code (starts with IT, 3 digits, letter E, then 8 digits, e.g. IT221E00450738)",\n'
     '  "indirizzo": "full supply address",\n'
     '  "fornitore": "energy provider name",\n'
-    '  "numero_contratto": "contract number"\n'
+    '  "numero_contratto": "contract number",\n'
+    '  "consumo_annuo": "annual consumption in kWh as integer (e.g. 2700)"\n'
     "}\n\n"
     "Rules:\n"
     "- Return ONLY the JSON, no additional text.\n"
@@ -35,6 +36,9 @@ EXTRACTION_SYSTEM_PROMPT = (
     "Look for labels like 'Codice POD', 'POD', or 'Punto di Prelievo'.\n"
     "- The codice fiscale is 16 alphanumeric characters. "
     "Look for labels like 'Codice Fiscale', 'C.F.', or 'CF'.\n"
+    "- For consumo_annuo, look for labels like 'Consumo annuo', 'kWh/anno', 'Consumo stimato', "
+    "'Totale consumo', or similar. Return the yearly figure as an integer in kWh. "
+    "If only a partial period is shown, extrapolate to 12 months.\n"
     "- Search ALL provided pages. The POD is often on a different page than the personal details."
 )
 

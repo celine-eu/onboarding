@@ -8,6 +8,24 @@ branding:
 
 fields:
   extra:
+    - key: property_type
+      label: "Tipo di immobile"
+      "label:en": "Property type"
+      type: select
+      step: energy
+      options:
+        - value: residential
+          label: "Abitazione"
+          "label:en": "Residential"
+        - value: condominium
+          label: "Condominio"
+          "label:en": "Condominium"
+        - value: commercial
+          label: "Attivita' commerciale"
+          "label:en": "Commercial"
+        - value: other
+          label: "Altro"
+          "label:en": "Other"
     - key: has_pv
       label: "Ho un impianto fotovoltaico"
       "label:en": "I have a photovoltaic system"

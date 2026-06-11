@@ -58,6 +58,7 @@
 	"field_indirizzo": "Indirizzo",
 	"field_fornitore": "Fornitore",
 	"field_numero_contratto": "N. Contratto",
+	"field_consumo_annuo": "Consumo annuo (kWh)",
 	"field_tipo_documento": "Tipo documento",
 	"field_data_nascita": "Data di nascita",
 	"field_luogo_nascita": "Luogo di nascita",
