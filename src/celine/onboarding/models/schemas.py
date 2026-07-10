@@ -85,6 +85,10 @@ class SubmissionCreatedRead(SubmissionRead):
 
 class SubmissionAdminRead(SubmissionRead):
     consent_ip: str
+    dataspace_subject_id: str | None
+    dataspace_did: str | None
+    dataspace_vc_id: str | None
+    dataspace_vc_issued_at: datetime | None
 
 
 class DocumentRead(BaseModel):

@@ -82,6 +82,12 @@ async def update_submission(
             if errors:
                 raise ValueError(f"Cannot submit: {'; '.join(errors)}")
         submission.status = target_status
+        if target_status == SubmissionStatus.APPROVED:
+            from celine.onboarding.services.dataspace_identity import provision_user_identity
+            from celine.onboarding.services.keycloak_identity import provision_keycloak_user
+
+            await provision_user_identity(submission)
+            await provision_keycloak_user(submission)
 
     await db.commit()
 

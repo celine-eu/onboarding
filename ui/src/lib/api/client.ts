@@ -1,8 +1,29 @@
 export interface SubmissionResponse {
 	id: string;
+	ref?: string;
 	status: string;
 	session_token?: string;
 	[key: string]: unknown;
+}
+
+export interface AdminSubmission extends SubmissionResponse {
+	ref: string;
+	rec_slug: string;
+	first_name?: string | null;
+	last_name?: string | null;
+	email?: string | null;
+	phone?: string | null;
+	fiscal_code?: string | null;
+	pod_code?: string | null;
+	extra_data?: Record<string, unknown> | null;
+	notes?: string | null;
+	created_at: string;
+	updated_at: string;
+	consent_ip?: string | null;
+	dataspace_subject_id?: string | null;
+	dataspace_did?: string | null;
+	dataspace_vc_id?: string | null;
+	dataspace_vc_issued_at?: string | null;
 }
 
 export class ValidationError extends Error {
@@ -124,6 +145,34 @@ export interface RecApi {
 	}>;
 	extractBill: (files: File[]) => Promise<Record<string, string | null>>;
 	extractIdCard: (files: File[]) => Promise<Record<string, string | null>>;
+}
+
+export interface RecAdminApi {
+	listSubmissions: () => Promise<AdminSubmission[]>;
+	updateSubmissionStatus: (id: string, status: string) => Promise<AdminSubmission>;
+}
+
+function adminRequest<T>(path: string, token: string, options?: RequestInit): Promise<T> {
+	return request<T>(path, {
+		...options,
+		headers: {
+			Authorization: `Bearer ${token}`,
+			...(options?.headers as Record<string, string> | undefined)
+		}
+	});
+}
+
+export function createRecAdminApi(recSlug: string, token: string): RecAdminApi {
+	const base = `/api/${recSlug}/admin`;
+
+	return {
+		listSubmissions: () => adminRequest<AdminSubmission[]>(`${base}/submissions`, token),
+		updateSubmissionStatus: (id, status) =>
+			adminRequest<AdminSubmission>(`${base}/submissions/${id}`, token, {
+				method: 'PATCH',
+				body: JSON.stringify({ status })
+			})
+	};
 }
 
 export function createRecApi(recSlug: string): RecApi {

@@ -30,6 +30,7 @@
 	<a href="/{rec}/onboarding" class="cta-btn">
 		{$t('common.start_onboarding')}
 	</a>
+	<a href="/{rec}/admin" class="admin-link">Admin pratiche</a>
 </div>
 
 <style>
@@ -95,5 +96,16 @@
 
 	.cta-btn:hover {
 		background: var(--celine-primary-hover);
+	}
+
+	.admin-link {
+		color: var(--celine-text-secondary);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+	}
+
+	.admin-link:hover {
+		color: var(--celine-primary);
 	}
 </style>

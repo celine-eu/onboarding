@@ -25,6 +25,8 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
 
+When dataspace provisioning is enabled, changing a submission to `approved` also issues a DSSC-style user DID and Verifiable Credential through the sibling `ds` project. The credential is written to the dataspace credential store, while onboarding keeps only the subject id, DID, credential id, and issuance timestamp.
+
 ### For the community
 
 Each REC gets a template folder that customizes the platform without code changes:
@@ -171,6 +173,25 @@ All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
 | `SMTP_FROM` | *(none)* | Sender address (overridden by manifest `notifications.from`) |
 | `SMTP_TLS` | `true` | STARTTLS with certificate verification |
 | `SMTP_NOTIFY` | *(none)* | Fallback operator emails (overridden by manifest `notifications.notify`) |
+
+### Dataspace DID/VC Provisioning
+
+Optional. Set `DATASPACE_VC_ENABLED=true` to issue a user VC when an admin approves a submission.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATASPACE_VC_ENABLED` | `false` | Enables fail-closed VC issuance on approval |
+| `DATASPACE_REPO_DIR` | `../ds` | Path to the dataspace project containing `scripts/credential_issuer.py` |
+| `DATASPACE_ENV_FILE` | *(none)* | Optional dataspace env file, e.g. `.env.production` |
+| `DATASPACE_CREDENTIALS_DIR` | *(issuer default)* | Credential store path, usually `data/credentials` |
+| `DATASPACE_STATUS_LIST_PATH` | *(issuer default)* | Credential status registry JSON path |
+| `DATASPACE_DID_DOCUMENTS_DIR` | *(issuer default)* | Root folder for `did:web` documents served by Caddy |
+| `DATASPACE_USER_PROFILE_ENDPOINT` | *(issuer default)* | Service endpoint inserted in the generated user DID document |
+| `DATASPACE_ISSUER_DID` | *(issuer default)* | Trust-anchor DID issuing the VC |
+| `DATASPACE_TRUST_ANCHOR_KEY` | *(issuer default)* | Trust-anchor private JWK used by the issuer |
+| `DATASPACE_USERS_DID_PREFIX` | *(issuer default)* | User DID prefix, e.g. `did:web:users.dataspaces.test` |
+| `DATASPACE_LINKED_PARTICIPANT_DID` | *(consumer DID)* | Participant DID the user is linked to |
+| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject id source. `email_hash` links login email to DID/VC without placing raw email in DID paths |
 
 ## Creating a Template
 

@@ -7,7 +7,8 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN uv sync --no-dev --no-install-project
 
-COPY src/ .
+COPY src/ src/
+COPY templates/ templates/
 COPY alembic.ini .
 COPY alembic/ alembic/
 RUN uv sync --no-dev

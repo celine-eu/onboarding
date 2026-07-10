@@ -34,6 +34,37 @@ class Settings(BaseSettings):
     smtp_tls: bool = True
     smtp_notify: str = ""
 
+    dataspace_vc_enabled: bool = False
+    dataspace_repo_dir: str = str(REPO_ROOT.parent / "ds")
+    dataspace_python_bin: str = "python3"
+    dataspace_env_file: str = ""
+    dataspace_vc_profile: str = "onboarding"
+    dataspace_credentials_dir: str = ""
+    dataspace_status_list_path: str = ""
+    dataspace_status_list_url: str = ""
+    dataspace_did_documents_dir: str = ""
+    dataspace_user_profile_endpoint: str = ""
+    dataspace_issuer_did: str = ""
+    dataspace_trust_anchor_key: str = ""
+    dataspace_users_did_prefix: str = ""
+    dataspace_linked_participant_did: str = ""
+    dataspace_user_role: str = "DataSubject"
+    dataspace_allowed_actions: str = "consent.manage,data.share"
+    dataspace_vc_ttl_days: int = 365
+    dataspace_subject_source: str = "email_hash"
+
+    dataspace_keycloak_enabled: bool = False
+    dataspace_keycloak_base_url: str = ""
+    dataspace_keycloak_realm: str = "dataspaces"
+    dataspace_keycloak_admin_realm: str = "master"
+    dataspace_keycloak_admin_client_id: str = "admin-cli"
+    dataspace_keycloak_admin_client_secret: str = ""
+    dataspace_keycloak_admin_username: str = ""
+    dataspace_keycloak_admin_password: str = ""
+    dataspace_keycloak_default_password: str = ""
+    dataspace_keycloak_temporary_password: bool = False
+    dataspace_keycloak_update_existing: bool = True
+
     model_config = {"env_file": str(REPO_ROOT / ".env"), "env_file_encoding": "utf-8"}
 
     def resolve_path(self, value: str) -> Path:

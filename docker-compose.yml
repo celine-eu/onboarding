@@ -47,10 +47,15 @@ services:
       - "8040:8040"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-securepassword123}@${DB_HOST:-postgres}:${DB_PORT:-5432}/rec_onboarding
+      DATASPACE_REPO_DIR: /ds
+      DATASPACE_KEYCLOAK_BASE_URL: ${DATASPACE_KEYCLOAK_BASE_URL:-http://host.docker.internal:8080}
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+      - ../ds:/ds
     depends_on:
       seed-templates:
         condition: service_completed_successfully
@@ -62,6 +67,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    environment:
+      API_BASE_URL: http://backend:8040
     volumes:
       - ./ui/src:/app/src
     depends_on:
