@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
 
-When dataspace provisioning is enabled, changing a submission to `approved` also issues a DSSC-style user DID and Verifiable Credential through the sibling `ds` project. The credential is written to the dataspace credential store, while onboarding keeps only the subject id, DID, credential id, and issuance timestamp.
+When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. See [Dataspace Integration](docs/dataspace-integration.md) for details.
 
 ### For the community
 
@@ -174,24 +174,22 @@ All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
 | `SMTP_TLS` | `true` | STARTTLS with certificate verification |
 | `SMTP_NOTIFY` | *(none)* | Fallback operator emails (overridden by manifest `notifications.notify`) |
 
-### Dataspace DID/VC Provisioning
+### Dataspace Identity Provisioning
 
-Optional. Set `DATASPACE_VC_ENABLED=true` to issue a user VC when an admin approves a submission.
+Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_VC_ENABLED` | `false` | Enables fail-closed VC issuance on approval |
-| `DATASPACE_REPO_DIR` | `../ds` | Path to the dataspace project containing `scripts/credential_issuer.py` |
-| `DATASPACE_ENV_FILE` | *(none)* | Optional dataspace env file, e.g. `.env.production` |
-| `DATASPACE_CREDENTIALS_DIR` | *(issuer default)* | Credential store path, usually `data/credentials` |
-| `DATASPACE_STATUS_LIST_PATH` | *(issuer default)* | Credential status registry JSON path |
-| `DATASPACE_DID_DOCUMENTS_DIR` | *(issuer default)* | Root folder for `did:web` documents served by Caddy |
-| `DATASPACE_USER_PROFILE_ENDPOINT` | *(issuer default)* | Service endpoint inserted in the generated user DID document |
-| `DATASPACE_ISSUER_DID` | *(issuer default)* | Trust-anchor DID issuing the VC |
-| `DATASPACE_TRUST_ANCHOR_KEY` | *(issuer default)* | Trust-anchor private JWK used by the issuer |
-| `DATASPACE_USERS_DID_PREFIX` | *(issuer default)* | User DID prefix, e.g. `did:web:users.dataspaces.test` |
-| `DATASPACE_LINKED_PARTICIPANT_DID` | *(consumer DID)* | Participant DID the user is linked to |
-| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject id source. `email_hash` links login email to DID/VC without placing raw email in DID paths |
+| `DATASPACE_VC_ENABLED` | `false` | Master toggle for identity provisioning on approval |
+| `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service |
+| `OIDC_BASE_URL` | *(none)* | OIDC issuer URL for M2M token acquisition |
+| `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M auth |
+| `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M auth |
+| `DATASPACE_LINKED_PARTICIPANT_DID` | *(none)* | Participant DID the user is linked to |
+| `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
+| `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
+| `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
+| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` hashes login email for DID paths) |
 
 ## Creating a Template
 

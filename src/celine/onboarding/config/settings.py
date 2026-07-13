@@ -35,18 +35,10 @@ class Settings(BaseSettings):
     smtp_notify: str = ""
 
     dataspace_vc_enabled: bool = False
-    dataspace_repo_dir: str = str(REPO_ROOT.parent / "ds")
-    dataspace_python_bin: str = "python3"
-    dataspace_env_file: str = ""
-    dataspace_vc_profile: str = "onboarding"
-    dataspace_credentials_dir: str = ""
-    dataspace_status_list_path: str = ""
-    dataspace_status_list_url: str = ""
-    dataspace_did_documents_dir: str = ""
-    dataspace_user_profile_endpoint: str = ""
-    dataspace_issuer_did: str = ""
-    dataspace_trust_anchor_key: str = ""
-    dataspace_users_did_prefix: str = ""
+    identity_registry_url: str = ""
+    oidc_base_url: str = ""
+    ds_onboarding_client_id: str = "svc-ds-onboarding"
+    ds_onboarding_client_secret: str = ""
     dataspace_linked_participant_did: str = ""
     dataspace_user_role: str = "DataSubject"
     dataspace_allowed_actions: str = "consent.manage,data.share"
