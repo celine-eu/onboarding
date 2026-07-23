@@ -1,5 +1,5 @@
 import csv
-import io
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -10,19 +10,42 @@ from celine.onboarding.services import template_service
 
 BASE_FIELDS = [
     "id",
+    "ref",
     "status",
     "first_name",
     "last_name",
     "email",
     "phone",
+    "phone_verified",
+    "phone_verified_at",
     "fiscal_code",
     "pod_code",
+    # Consent status with timestamps and versions (3A.2) — needed to filter by
+    # who actually consented, and to which document version, before any sharing.
     "gdpr_consent",
+    "gdpr_consent_at",
+    "gdpr_consent_version",
     "policy_consent",
+    "policy_consent_at",
+    "policy_consent_version",
     "statute_consent",
+    "statute_consent_at",
+    "statute_consent_version",
+    # Dataspace identity provisioned on approval (3A.1).
+    "dataspace_did",
+    "dataspace_subject_id",
     "created_at",
     "updated_at",
 ]
+
+
+def _fmt(value: object) -> str:
+    """Render a cell: None → empty string (not the literal 'None')."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _extra_field_keys(rec_slug: str | None) -> list[str]:
@@ -54,10 +77,10 @@ async def export_submissions_csv(
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for sub in submissions:
-            row = {field: str(getattr(sub, field, "")) for field in BASE_FIELDS}
+            row = {field: _fmt(getattr(sub, field, None)) for field in BASE_FIELDS}
             extra = sub.extra_data or {}
             for key in extra_keys:
-                row[key] = str(extra.get(key, ""))
+                row[key] = _fmt(extra.get(key))
             writer.writerow(row)
 
     return len(submissions)

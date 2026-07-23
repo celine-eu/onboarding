@@ -145,6 +145,28 @@ export interface RecApi {
 	}>;
 	extractBill: (files: File[]) => Promise<Record<string, string | null>>;
 	extractIdCard: (files: File[]) => Promise<Record<string, string | null>>;
+	verifyPhone: (submissionId: string, phone?: string) => Promise<PhoneVerifyStatus>;
+	confirmPhone: (
+		submissionId: string,
+		code: string,
+		phone?: string
+	) => Promise<PhoneVerifyStatus>;
+}
+
+export interface PhoneVerifyStatus {
+	phone_verified: boolean;
+	sent: boolean;
+	phone_verified_at?: string | null;
+}
+
+/** Thrown by phone verification with the human-readable detail from the API. */
+export class PhoneVerifyError extends Error {
+	status: number;
+	constructor(status: number, detail: string) {
+		super(detail);
+		this.name = 'PhoneVerifyError';
+		this.status = status;
+	}
 }
 
 export interface RecAdminApi {
@@ -237,8 +259,39 @@ export function createRecApi(recSlug: string): RecApi {
 			for (const file of files) form.append('files', file);
 			const res = await fetchWithSession(`${base}/extract-id`, { method: 'POST', body: form });
 			return res.json();
-		}
+		},
+
+		verifyPhone: (submissionId, phone) =>
+			phoneRequest(`${base}/submissions/${submissionId}/verify-phone`, { phone: phone ?? null }),
+
+		confirmPhone: (submissionId, code, phone) =>
+			phoneRequest(`${base}/submissions/${submissionId}/confirm-phone`, {
+				code,
+				phone: phone ?? null
+			})
 	};
+}
+
+/** Phone endpoints return a plain {detail} on error; surface it verbatim. */
+async function phoneRequest(path: string, body: Record<string, unknown>): Promise<PhoneVerifyStatus> {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	if (sessionToken) headers['X-Session-Token'] = sessionToken;
+	const res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
+	if (res.status === 410) {
+		window.location.reload();
+		throw new Error('Session expired');
+	}
+	if (!res.ok) {
+		let detail = `Error ${res.status}`;
+		try {
+			const parsed = await res.json();
+			if (typeof parsed?.detail === 'string') detail = parsed.detail;
+		} catch {
+			/* keep default */
+		}
+		throw new PhoneVerifyError(res.status, detail);
+	}
+	return res.json();
 }
 
 export const globalApi = {

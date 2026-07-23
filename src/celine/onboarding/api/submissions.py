@@ -48,6 +48,11 @@ async def _get_live_submission(
 
     submission.last_active_at = now
     await db.commit()
+    # The commit issues an UPDATE, so server-computed columns (updated_at has
+    # onupdate=func.now()) are expired. Refresh inside the async context, or
+    # response serialization would lazy-load them outside the greenlet and 500
+    # with MissingGreenlet.
+    await db.refresh(submission)
 
     return submission
 

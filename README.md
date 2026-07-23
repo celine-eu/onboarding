@@ -77,7 +77,8 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
 - Right to erasure: `DELETE /api/admin/submissions/{id}` removes files from disk and all DB records
 - Audit trail: all admin operations logged with action, entity, IP, and detail
-- DPA enforcement: app refuses to start with LLM extraction steps unless `DPA_SIGNED=yes`
+- DPA enforcement: app refuses to start with LLM extraction steps unless `DPA_SIGNED=yes` (and SMS providers unless `DPA_SMS_SIGNED=yes`)
+- CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins
 - Markdown content sanitized with DOMPurify to prevent XSS
 

@@ -229,6 +229,19 @@ async def _delete_membership(
         logger.exception("Failed to delete membership %s/%s during rollback", did, org_alias)
 
 
+def _warn_if_partial_sync(resp: httpx.Response, did: str) -> None:
+    try:
+        body = resp.json()
+    except ValueError:
+        return
+    if body.get("keycloak_attribute_synced") is False or body.get("status") == "partial":
+        logger.warning(
+            "Keycloak sync for %s is partial: %s",
+            did,
+            body.get("warning", "dataspace_did attribute may be missing on the KC user"),
+        )
+
+
 async def _sync_keycloak(
     base_url: str,
     headers: dict[str, str],
@@ -258,6 +271,11 @@ async def _sync_keycloak(
                     headers=headers,
                 )
                 if resp.status_code < 400:
+                    # A 2xx with status "partial" means the DID mapping was
+                    # stored but the dataspace_did attribute push to Keycloak
+                    # failed. That is retriable and does not orphan the
+                    # credential, so we accept it but surface it for operators.
+                    _warn_if_partial_sync(resp, did)
                     return
                 last_error = ValueError(
                     f"KC sync failed ({resp.status_code}): {resp.text}"

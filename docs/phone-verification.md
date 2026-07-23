@@ -104,9 +104,40 @@ fails.
 Sending a phone number to an SMS gateway makes that gateway a data processor
 under GDPR Art. 28, exactly like the LLM extraction provider. The app enforces a
 signed DPA via `DPA_SMS_SIGNED=yes` before it will start with a real provider.
-The legal basis for the processing is legitimate interest (Art. 6(1)(f)) —
-identity verification for REC enrolment — and must be documented in the REC's
-privacy policy template.
+The legal basis for the processing is **legitimate interest (Art. 6(1)(f))** —
+identity verification for REC enrolment and prevention of fraudulent
+applications.
+
+### Privacy-notice clause (Block 2.8)
+
+Each REC's own privacy notice (the `gdpr` consent document in its template) must
+describe this processing. Because the consent document is a per-community legal
+PDF, the platform cannot inject the text; below is ready-to-use boilerplate to
+incorporate into the community's informativa. **Have it reviewed by a legal
+adviser** and complete the bracketed fields.
+
+**Italiano**
+> **Verifica del numero di telefono (codice OTP via SMS).** Finalità: accertare
+> che il richiedente abbia il controllo del recapito dichiarato, a fini di
+> verifica dell'identità in fase di adesione e di prevenzione di adesioni
+> fraudolente. Base giuridica: legittimo interesse del titolare
+> (art. 6(1)(f)). Dati trattati: numero di telefono (formato E.164) ed esito
+> della verifica. Il numero è comunicato a un fornitore di servizi SMS che
+> agisce quale responsabile del trattamento (art. 28) sulla base di un DPA
+> sottoscritto con il titolare; il codice OTP non è conservato in chiaro.
+> L'interessato ha diritto di opporsi al trattamento; l'opposizione può però
+> impedire il completamento dell'adesione ove la verifica del recapito sia
+> richiesta dalla comunità.
+
+**English**
+> **Phone number verification (SMS OTP).** Purpose: to confirm the applicant
+> controls the declared phone number, for identity verification at enrolment and
+> to prevent fraudulent applications. Legal basis: the controller's legitimate
+> interest (Art. 6(1)(f)). Data processed: phone number (E.164) and the
+> verification outcome. The number is disclosed to an SMS provider acting as a
+> processor (Art. 28) under a signed DPA; the OTP is never stored in clear text.
+> The data subject may object to this processing; objecting may prevent
+> completing enrolment where the community requires the phone check.
 
 ## Provider extension
 
@@ -133,9 +164,16 @@ endpoints remain callable but optional. This gate is enforced in
 ## Wizard integration
 
 Add `phone_verify` to a REC manifest's `steps` (between `personal` and
-`energy`) to activate the gate above.
+`energy`) to activate both the wizard step and the approval gate above. The
+`example` template enables it by default.
 
-> **Not yet implemented:** the SvelteKit wizard step for `phone_verify`
-> (Block 2.6) and the GDPR privacy-policy template text for phone verification
-> (Block 2.8). The backend endpoints, gating, and DPA guard are in place; the
-> UI currently has no dedicated screen for entering the OTP.
+The SvelteKit wizard renders a dedicated `phone_verify` step
+(`ui/src/routes/[rec]/onboarding/+page.svelte`): the participant sees their
+phone number (editable), requests a code (`Send code`), enters it, and confirms.
+Rate-limit / lockout / wrong-code messages from the API are shown inline. The
+step's "next" button is disabled until `phone_verified` is true. Editing the
+phone number resets the verification state. The client calls
+`recApi.verifyPhone` / `recApi.confirmPhone` (`ui/src/lib/api/client.ts`).
+
+In local development with `SMS_PROVIDER=log`, the OTP is written to the backend
+log instead of being sent, so the flow is fully testable without a gateway.

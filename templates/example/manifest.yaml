@@ -116,6 +116,7 @@ notifications:
 steps:
   - consents
   - personal
+  - phone_verify
   - energy
   - review
 

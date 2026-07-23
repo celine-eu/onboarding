@@ -17,6 +17,7 @@
 		consents: 'onboarding.step_data_consents',
 		utility: 'onboarding.step_utility',
 		personal: 'onboarding.step_personal',
+		phone_verify: 'onboarding.step_phone_verify',
 		energy: 'onboarding.step_energy',
 		eligibility: 'onboarding.step_eligibility',
 		statute: 'onboarding.step_statute',
@@ -100,6 +101,13 @@
 	let statuteConsent = $state(false);
 	let keepMeUpdated = $state(false);
 	let extraData = $state<Record<string, unknown>>({});
+
+	// Phone verification (SMS OTP) step
+	let otpSent = $state(false);
+	let otpCode = $state('');
+	let otpBusy = $state(false);
+	let otpError = $state('');
+	let phoneVerified = $state(false);
 
 	function fieldLabel(field: { label: string; [k: string]: unknown }): string {
 		const localized = field[`label:${$locale}`];
@@ -218,6 +226,7 @@
 			return Object.keys(errors).length === 0;
 		}
 		if (currentStepName === 'eligibility') return eligibilityResult?.eligible === true;
+		if (currentStepName === 'phone_verify') return phoneVerified;
 		if (currentStepName === 'statute') return statuteConsent;
 
 		const stepFields = extraFieldsForStep(currentStepName);
@@ -392,6 +401,35 @@
 			errorMsg = e instanceof Error ? e.message : 'Eligibility check failed';
 		} finally {
 			eligibilityChecking = false;
+		}
+	}
+
+	async function sendOtp() {
+		if (!submissionId || !phone.trim()) return;
+		otpBusy = true;
+		otpError = '';
+		try {
+			await recApi.verifyPhone(submissionId, phone);
+			otpSent = true;
+			otpCode = '';
+		} catch (e) {
+			otpError = e instanceof Error ? e.message : $t('onboarding.phone_send_failed');
+		} finally {
+			otpBusy = false;
+		}
+	}
+
+	async function confirmOtp() {
+		if (!submissionId || !otpCode.trim()) return;
+		otpBusy = true;
+		otpError = '';
+		try {
+			const res = await recApi.confirmPhone(submissionId, otpCode.trim(), phone);
+			phoneVerified = res.phone_verified;
+		} catch (e) {
+			otpError = e instanceof Error ? e.message : $t('onboarding.phone_confirm_failed');
+		} finally {
+			otpBusy = false;
 		}
 	}
 
@@ -771,6 +809,71 @@
 						{/if}
 					{/if}
 				</div>
+			{:else if currentStepName === 'phone_verify'}
+				<div class="step-section">
+					<p class="step-hint">{$t('onboarding.phone_verify_intro')}</p>
+					<div class="phone-verify">
+						<div class="field">
+							<label class="field-label" for="verify_phone">{$t('onboarding.phone')}</label>
+							<input
+								class="field-input"
+								id="verify_phone"
+								type="tel"
+								bind:value={phone}
+								disabled={phoneVerified}
+								placeholder="+39 333 1234567"
+								oninput={() => { otpSent = false; phoneVerified = false; otpError = ''; }}
+							/>
+						</div>
+
+						{#if phoneVerified}
+							<div class="eligibility-ok">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M20 6 9 17l-5-5"/>
+								</svg>
+								<span>{$t('onboarding.phone_verified')}</span>
+							</div>
+						{:else if !otpSent}
+							<button
+								class="btn btn-primary"
+								disabled={!phone.trim() || otpBusy}
+								onclick={sendOtp}
+							>
+								{otpBusy ? $t('onboarding.phone_sending') : $t('onboarding.phone_send_code')}
+							</button>
+						{:else}
+							<p class="step-hint">{$t('onboarding.phone_code_sent')}</p>
+							<div class="phone-code-row">
+								<div class="field">
+									<label class="field-label" for="otp_code">{$t('onboarding.phone_code')}</label>
+									<input
+										class="field-input"
+										id="otp_code"
+										type="text"
+										inputmode="numeric"
+										autocomplete="one-time-code"
+										bind:value={otpCode}
+										placeholder="123456"
+									/>
+								</div>
+								<button
+									class="btn btn-primary"
+									disabled={!otpCode.trim() || otpBusy}
+									onclick={confirmOtp}
+								>
+									{otpBusy ? $t('onboarding.phone_confirming') : $t('onboarding.phone_confirm')}
+								</button>
+							</div>
+							<button class="btn-link" disabled={otpBusy} onclick={sendOtp}>
+								{$t('onboarding.phone_resend')}
+							</button>
+						{/if}
+
+						{#if otpError}
+							<div class="eligibility-fail"><span>{otpError}</span></div>
+						{/if}
+					</div>
+				</div>
 			{:else if extraFieldsForStep(currentStepName).length > 0}
 				<div class="extra-fields-step">
 					{#each extraFieldsForStep(currentStepName) as field (field.key)}
@@ -1122,6 +1225,48 @@
 	.eligibility-btn {
 		flex-shrink: 0;
 		height: 2.625rem;
+	}
+
+	.phone-verify {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-md);
+		align-items: flex-start;
+	}
+
+	.phone-verify .field {
+		width: 100%;
+	}
+
+	.phone-code-row {
+		display: flex;
+		gap: var(--celine-space-sm);
+		align-items: flex-end;
+		width: 100%;
+	}
+
+	.phone-code-row .field {
+		flex: 1;
+	}
+
+	.phone-code-row .btn {
+		flex-shrink: 0;
+		height: 2.625rem;
+	}
+
+	.btn-link {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--celine-primary);
+		cursor: pointer;
+		font-size: 0.875rem;
+		text-decoration: underline;
+	}
+
+	.btn-link:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 
 	.eligibility-ok {

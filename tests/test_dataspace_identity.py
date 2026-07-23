@@ -367,6 +367,47 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
     assert "keycloak/sync" in calls[1]
 
 
+async def test_kc_sync_partial_is_accepted_and_warned(
+    monkeypatch, submission, _enable_vc, caplog
+):
+    """A 200 'partial' sync must succeed (no rollback) but log a warning."""
+    di._token_provider = _mock_token_provider()
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url))
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "keycloak/sync" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "partial",
+                    "did": CREDENTIAL_RESPONSE["subjectDid"],
+                    "keycloak_attribute_synced": False,
+                    "warning": "attribute push failed",
+                },
+            )
+        return httpx.Response(404)
+
+    _patch_httpx(monkeypatch, handler)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        await di.provision_user_identity(
+            submission,
+            keycloak_user_id="kc-user-123",
+            keycloak_realm="dataspaces",
+        )
+
+    # succeeded: credential kept, no DELETE issued
+    assert not any(m == "DELETE" for m, _ in calls)
+    assert submission.dataspace_vc_id == CREDENTIAL_RESPONSE["credentialId"]
+    assert any("partial" in r.message for r in caplog.records)
+
+
 async def test_kc_sync_skipped_without_user_id(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
     calls = []
