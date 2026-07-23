@@ -38,6 +38,25 @@ async def lifespan(app: FastAPI):
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 
+    # A real SMS gateway receives the participant's phone number, making it a
+    # processor under GDPR Art. 28 exactly as the LLM provider is above.
+    sms_is_real = settings.sms_provider.strip().lower() not in {"log", "console", "dev"}
+    if sms_is_real and not settings.dpa_sms_signed:
+        raise RuntimeError(
+            f"\n\n"
+            f"═══════════════════════════════════════════════════════════════\n"
+            f"  DPA_SMS_SIGNED=yes is required in .env\n"
+            f"═══════════════════════════════════════════════════════════════\n\n"
+            f"SMS_PROVIDER={settings.sms_provider} sends participant phone\n"
+            f"numbers to an external SMS gateway.\n\n"
+            f"GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
+            f"with your provider before processing personal data.\n\n"
+            f"  1. Sign the DPA with your SMS provider\n"
+            f"  2. Set DPA_SMS_SIGNED=yes in your .env file\n\n"
+            f"For development, use SMS_PROVIDER=log instead.\n\n"
+            f"═══════════════════════════════════════════════════════════════\n"
+        )
+
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(
             "\n\n"
@@ -103,6 +122,7 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.extractions import router as extractions_router
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.eligibility import router as eligibility_router
+    from celine.onboarding.api.phone_verify import router as phone_verify_router
     from celine.onboarding.api.admin import router as admin_router
 
     app.include_router(health_router, prefix="/api")
@@ -111,6 +131,7 @@ def create_app() -> FastAPI:
 
     app.include_router(config_router, prefix="/api/{rec_slug}")
     app.include_router(submissions_router, prefix="/api/{rec_slug}")
+    app.include_router(phone_verify_router, prefix="/api/{rec_slug}")
     app.include_router(documents_router, prefix="/api/{rec_slug}")
     app.include_router(extractions_router, prefix="/api/{rec_slug}")
     app.include_router(consent_docs_router, prefix="/api/{rec_slug}")

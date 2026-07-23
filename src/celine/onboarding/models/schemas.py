@@ -72,6 +72,8 @@ class SubmissionRead(BaseModel):
     statute_consent_at: datetime | None
     statute_consent_version: str | None
     keep_me_updated: bool
+    phone_verified: bool
+    phone_verified_at: datetime | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
@@ -128,3 +130,20 @@ class AuditLogRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PhoneVerifyRequest(BaseModel):
+    """Request an OTP. `phone` defaults to the number already on the submission."""
+
+    phone: str | None = Field(None, max_length=30)
+
+
+class PhoneConfirmRequest(BaseModel):
+    phone: str | None = Field(None, max_length=30)
+    code: str = Field(..., min_length=4, max_length=10)
+
+
+class PhoneVerifyStatus(BaseModel):
+    phone_verified: bool
+    sent: bool = False
+    phone_verified_at: datetime | None = None

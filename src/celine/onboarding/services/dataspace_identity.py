@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 _SAFE_SUBJECT = re.compile(r"^[A-Za-z0-9._+-]{1,128}$")
 
+# Mirrors the identity-registry CreateOwnerRequest.id constraint.
+_SAFE_ORG_ALIAS = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+
 _token_provider: OidcClientCredentialsProvider | None = None
 
 _KC_SYNC_MAX_RETRIES = 3
@@ -131,6 +134,11 @@ async def provision_user_identity(
             "Identity-registry response is missing subjectDid or credentialId"
         )
 
+    org_alias = _organization_alias()
+    if org_alias:
+        await _ensure_organization(base_url, headers, org_alias)
+        await _register_membership(base_url, headers, submission.dataspace_did, org_alias)
+
     if keycloak_user_id and keycloak_realm:
         await _sync_keycloak(
             base_url,
@@ -140,7 +148,85 @@ async def provision_user_identity(
             keycloak_realm=keycloak_realm,
             email=submission.email,
             credential_id=submission.dataspace_vc_id,
+            organization_alias=org_alias,
         )
+
+
+def _organization_alias() -> str:
+    alias = settings.dataspace_organization_alias.strip().lower()
+    if not alias:
+        return ""
+    if not _SAFE_ORG_ALIAS.fullmatch(alias):
+        raise ValueError(
+            "DATASPACE_ORGANIZATION_ALIAS must be lowercase alphanumeric with inner "
+            f"hyphens (got {alias!r})"
+        )
+    return alias
+
+
+async def _ensure_organization(
+    base_url: str, headers: dict[str, str], org_alias: str
+) -> None:
+    """Create the REC organization in ds if missing. 409 means it already exists."""
+    if not settings.dataspace_organization_auto_create:
+        return
+
+    body: dict[str, Any] = {
+        "id": org_alias,
+        "name": settings.dataspace_organization_name.strip() or org_alias,
+    }
+    if settings.dataspace_organization_did:
+        body["did"] = settings.dataspace_organization_did
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(f"{base_url}/admin/owners", json=body, headers=headers)
+
+    if resp.status_code == 409:
+        return
+    if resp.status_code >= 400:
+        raise ValueError(
+            f"Organization provisioning failed ({resp.status_code}): {resp.text}"
+        )
+
+
+async def _register_membership(
+    base_url: str, headers: dict[str, str], did: str, org_alias: str
+) -> None:
+    """Register the user DID as a member of the REC organization.
+
+    Membership is what the ds consent endpoints check, so a user without it holds a
+    valid credential but cannot manage data sharing.
+    """
+    body = {
+        "user_did": did,
+        "organization_alias": org_alias,
+        "role": settings.dataspace_membership_role,
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{base_url}/admin/memberships", json=body, headers=headers
+        )
+
+    if resp.status_code == 409:
+        logger.info("Membership for %s in %s already exists", did, org_alias)
+        return
+    if resp.status_code >= 400:
+        raise ValueError(
+            f"Membership registration failed ({resp.status_code}): {resp.text}"
+        )
+
+
+async def _delete_membership(
+    base_url: str, headers: dict[str, str], did: str, org_alias: str
+) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            await client.delete(
+                f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers
+            )
+    except Exception:
+        logger.exception("Failed to delete membership %s/%s during rollback", did, org_alias)
 
 
 async def _sync_keycloak(
@@ -152,6 +238,7 @@ async def _sync_keycloak(
     keycloak_realm: str,
     email: str | None,
     credential_id: str,
+    organization_alias: str = "",
 ) -> None:
     sync_body = {
         "did": did,
@@ -182,6 +269,8 @@ async def _sync_keycloak(
             logger.warning("KC sync attempt %d/%d failed, retrying", attempt, _KC_SYNC_MAX_RETRIES)
 
     logger.error("KC sync failed after %d attempts, revoking credential %s", _KC_SYNC_MAX_RETRIES, credential_id)
+    if organization_alias:
+        await _delete_membership(base_url, headers, did, organization_alias)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             await client.delete(

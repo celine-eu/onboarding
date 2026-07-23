@@ -50,6 +50,7 @@
 │   │   ├── documents.py        # Upload/list (TTL-gated)
 │   │   ├── extractions.py      # OCR extraction (session-gated, rate-limited)
 │   │   ├── eligibility.py      # Coverage check (geocoding)
+│   │   ├── phone_verify.py     # SMS OTP send/confirm (session-gated)
 │   │   ├── consent_documents.py # PDF/URL serving
 │   │   ├── config.py           # Template config + assets
 │   │   ├── downloads.py        # Token-authenticated document download
@@ -57,7 +58,7 @@
 │   ├── models/                 # SQLAlchemy + Pydantic schemas
 │   │   ├── encrypted.py        # EncryptedString + EncryptedJSON TypeDecorators
 │   │   └── ...
-│   ├── services/               # Business logic, email, PDF, templates, eligibility
+│   ├── services/               # Business logic, email, PDF, templates, eligibility, sms + otp
 │   ├── extractors/             # OpenAI Vision + markitdown
 │   ├── validators/             # CF checksum, POD format
 │   ├── workflows/              # Status state machine
@@ -89,6 +90,7 @@ All settings are driven by environment variables, loaded via Pydantic Settings f
 | `OPENAI_API_KEY` | Required for bill/ID extraction. No extraction without it. |
 | `ENCRYPTION_KEY` | Fernet key for PII encryption at rest (files + DB columns). Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. App refuses to start without it unless `REQUIRE_ENCRYPTION=false`. |
 | `DPA_SIGNED` | Set to `yes` when the manifest includes LLM extraction steps (`utility`/`identity`). Requires a signed Data Processing Agreement with your LLM provider (GDPR Art. 28). App refuses to start without it. |
+| `DPA_SMS_SIGNED` | Set to `yes` when `SMS_PROVIDER` is a real gateway (not `log`). Requires a signed DPA with the SMS provider (GDPR Art. 28). App refuses to start otherwise. |
 | `ADMIN_TOKEN` | Bearer token for `/api/admin/*`. Admin endpoints return 503 if unset. |
 
 ### Security
@@ -272,6 +274,8 @@ When `SECURITY_HEADERS=true` (default), all responses include:
 | `POST` | `/api/extract-id` | session | ID card OCR (10/hr) |
 | `POST` | `/api/documents/{id}/extract` | session | Extract from uploaded doc (ownership check) |
 | `POST` | `/api/extractions/{id}/confirm` | session | Confirm extraction (ownership check) |
+| `POST` | `/api/{rec}/submissions/{id}/verify-phone` | session | Send SMS OTP (10/hr) |
+| `POST` | `/api/{rec}/submissions/{id}/confirm-phone` | session | Confirm OTP, mark verified (20/hr) |
 | `POST` | `/api/eligibility` | none | Coverage check |
 | `GET` | `/api/config` | none | Template config |
 | `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |

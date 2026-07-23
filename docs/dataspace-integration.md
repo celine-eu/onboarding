@@ -6,7 +6,10 @@ When a user completes onboarding and `DATASPACE_VC_ENABLED` is `true`, the syste
 
 - A **DID** (Decentralized Identifier) for the user as a data subject
 - A **Verifiable Credential** (VC) binding the user to a participant organization
+- An **organization membership** registering the DID as a member of the REC in the identity-registry
 - A **Keycloak `dataspace_did` attribute** linking the user's login identity to their DID
+
+The membership matters as much as the credential: ds consent endpoints (`/consent/my/shares`) check membership before allowing a data subject to manage sharing preferences. A user with a VC but no membership holds a valid identity that cannot do anything.
 
 Identity provisioning is triggered when an admin changes a submission's status to `approved`. The onboarding service communicates with the **identity-registry** HTTP API using machine-to-machine (M2M) authentication. If provisioning fails, the approval is rejected -- no partial state is left behind.
 
@@ -38,6 +41,12 @@ sequenceDiagram
     Onboarding->>IdRegistry: POST /admin/credentials/data-subject<br/>{participantDid, role, allowedActions, ttlDays}
     IdRegistry-->>Onboarding: {subjectDid, credentialId, generatedAt}
 
+    Onboarding->>IdRegistry: POST /admin/owners<br/>{id, name, did}
+    IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
+
+    Onboarding->>IdRegistry: POST /admin/memberships<br/>{user_did, organization_alias, role}
+    IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
+
     Onboarding->>IdRegistry: POST /admin/keycloak/sync<br/>{subjectDid, userId, realm}
     IdRegistry->>KC: Set dataspace_did attribute
     IdRegistry-->>Onboarding: 200 OK
@@ -48,8 +57,9 @@ sequenceDiagram
     rect rgb(255, 240, 240)
         Onboarding->>IdRegistry: POST /admin/keycloak/sync (retry, up to 3x)
         IdRegistry--xOnboarding: failure
+        Onboarding->>IdRegistry: DELETE /admin/memberships/{did}/{alias}
         Onboarding->>IdRegistry: DELETE /admin/credentials/{credentialId}
-        Note over Onboarding: Credential revoked, approval rejected
+        Note over Onboarding: Membership removed, credential revoked,<br/>approval rejected
     end
 ```
 
@@ -59,9 +69,15 @@ sequenceDiagram
 
 2. **Credential issuance** -- `POST /admin/credentials/data-subject` sends the participant DID, role, allowed actions, and TTL to the identity-registry. The registry generates a DID for the user, issues a Verifiable Credential, and returns `{subjectDid, credentialId, generatedAt}`.
 
-3. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
+3. **Organization ensure** -- `POST /admin/owners` creates the REC organization if it does not exist yet. A `409 Conflict` means it is already registered and is treated as success, so the call is safe to repeat on every approval. Set `DATASPACE_ORGANIZATION_AUTO_CREATE=false` if the organization is provisioned out-of-band and onboarding should not attempt to create it.
 
-4. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the credential is revoked via `DELETE /admin/credentials/{credentialId}` and the approval is rejected. This prevents orphaned credentials that have no corresponding Keycloak mapping.
+4. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization with `DATASPACE_MEMBERSHIP_ROLE`. A `409 Conflict` is treated as success. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
+
+5. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
+
+6. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping.
+
+Steps 3 and 4 are skipped entirely when `DATASPACE_ORGANIZATION_ALIAS` is unset, which keeps existing deployments working unchanged.
 
 ## Authentication
 
@@ -97,13 +113,24 @@ These settings control what goes into the issued credential:
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. |
 | `DATASPACE_SUBJECT_SOURCE` | `email_hash` | How the subject identifier is derived. `email_hash` hashes the login email to produce a stable ID without placing raw email in DID paths. |
 
+### Organization membership settings
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATASPACE_ORGANIZATION_ALIAS` | *(none)* | Alias (owner `id`) of the REC organization in the identity-registry. Must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$`. When unset, organization and membership registration are skipped. |
+| `DATASPACE_ORGANIZATION_NAME` | *(alias)* | Display name used when creating the organization. Defaults to the alias. |
+| `DATASPACE_ORGANIZATION_DID` | *(none)* | Optional DID for the organization record (e.g. `did:web:rec.example.com`). |
+| `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | When `true`, onboarding ensures the organization exists via `POST /admin/owners` before registering the membership. Set `false` if the organization is managed out-of-band. |
+| `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership. |
+
 ## Error Handling
 
 The integration follows a **fail-closed** strategy:
 
 - If `DATASPACE_VC_ENABLED` is `true` and identity provisioning fails, the submission status change to `approved` is rejected. The admin sees an error and can retry.
-- **Credential revocation on sync failure**: If the credential is issued successfully but the Keycloak sync fails after 3 retries, the credential is revoked via `DELETE /admin/credentials/{credentialId}`. This ensures there are no orphaned credentials without a corresponding Keycloak DID mapping.
-- **No partial state**: Either the full provisioning succeeds (credential + KC sync) or nothing is committed. The submission remains in its previous status.
+- **Credential revocation on sync failure**: If the credential is issued successfully but the Keycloak sync fails after 3 retries, the membership is deleted and the credential is revoked via `DELETE /admin/credentials/{credentialId}`. This ensures there are no orphaned credentials or memberships without a corresponding Keycloak DID mapping.
+- **Idempotent organization and membership calls**: `409 Conflict` from `POST /admin/owners` and `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. Any other 4xx/5xx aborts the approval.
+- **No partial state**: Either the full provisioning succeeds (credential + organization + membership + KC sync) or nothing is committed. The submission remains in its previous status.
 
 ## Dependencies
 

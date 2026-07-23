@@ -13,6 +13,19 @@ from celine.onboarding.models.schemas import ConsentCreate, SubmissionUpdate
 from celine.onboarding.workflows.engine import validate_transition, can_submit, InvalidTransition
 
 
+def _assert_phone_verified(submission: Submission) -> None:
+    """Block approval when the REC requires phone verification and it is missing.
+
+    Only enforced for RECs whose manifest lists the `phone_verify` step, so RECs
+    that never opted into SMS verification are unaffected.
+    """
+    from celine.onboarding.services import template_service
+
+    manifest = template_service.load_manifest(submission.rec_slug)
+    if "phone_verify" in manifest.get("steps", []) and not submission.phone_verified:
+        raise ValueError("Cannot approve: phone number is not verified")
+
+
 async def create_from_consent(
     db: AsyncSession, data: ConsentCreate, client_ip: str, rec_slug: str,
 ) -> Submission:
@@ -81,6 +94,8 @@ async def update_submission(
             errors = can_submit(submission)
             if errors:
                 raise ValueError(f"Cannot submit: {'; '.join(errors)}")
+        if target_status == SubmissionStatus.APPROVED:
+            _assert_phone_verified(submission)
         submission.status = target_status
         if target_status == SubmissionStatus.APPROVED:
             from celine.onboarding.config.settings import settings

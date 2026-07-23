@@ -45,6 +45,24 @@ class Settings(BaseSettings):
     dataspace_vc_ttl_days: int = 365
     dataspace_subject_source: str = "email_hash"
 
+    sms_provider: str = "log"
+    brevo_api_key: str = ""
+    brevo_sms_sender: str = ""
+    sms_otp_template: str = "Il tuo codice di verifica e' {code}"
+    dpa_sms_signed: bool = False
+
+    otp_code_length: int = 6
+    otp_ttl_seconds: int = 600
+    otp_max_attempts: int = 3
+    otp_max_sends_per_hour: int = 3
+    otp_lockout_seconds: int = 3600
+
+    dataspace_organization_alias: str = ""
+    dataspace_organization_name: str = ""
+    dataspace_organization_did: str = ""
+    dataspace_organization_auto_create: bool = True
+    dataspace_membership_role: str = "member"
+
     dataspace_keycloak_enabled: bool = False
     dataspace_keycloak_base_url: str = ""
     dataspace_keycloak_realm: str = "dataspaces"

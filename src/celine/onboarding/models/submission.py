@@ -82,6 +82,11 @@ class Submission(Base):
 
     keep_me_updated: Mapped[bool] = mapped_column(default=False)
 
+    phone_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     dataspace_subject_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

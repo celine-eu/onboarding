@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
 
-When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. See [Dataspace Integration](docs/dataspace-integration.md) for details.
+When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. See [Dataspace Integration](docs/dataspace-integration.md) for details.
 
 ### For the community
 
@@ -174,9 +174,26 @@ All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
 | `SMTP_TLS` | `true` | STARTTLS with certificate verification |
 | `SMTP_NOTIFY` | *(none)* | Fallback operator emails (overridden by manifest `notifications.notify`) |
 
+### Phone Verification (SMS OTP)
+
+Optional. When a REC manifest's `steps` includes `phone_verify`, participants verify their phone via an SMS one-time code, and approval is gated on successful verification. Defaults to a `log` provider (prints the code) for local dev; any real provider requires a signed DPA. See [docs/phone-verification.md](docs/phone-verification.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `SMS_PROVIDER` | `log` | `log` (dev) or `brevo` |
+| `BREVO_API_KEY` | *(none)* | Required for `brevo` |
+| `BREVO_SMS_SENDER` | *(none)* | Alphanumeric sender id or E.164; required for `brevo` |
+| `SMS_OTP_TEMPLATE` | `Il tuo codice di verifica e' {code}` | Message body (must contain `{code}`) |
+| `DPA_SMS_SIGNED` | `false` | Must be `yes` for any non-`log` provider (GDPR Art. 28) |
+| `OTP_CODE_LENGTH` | `6` | Digits in the code |
+| `OTP_TTL_SECONDS` | `600` | Code validity |
+| `OTP_MAX_ATTEMPTS` | `3` | Wrong guesses before lockout |
+| `OTP_MAX_SENDS_PER_HOUR` | `3` | Per phone number |
+| `OTP_LOCKOUT_SECONDS` | `3600` | Lockout duration |
+
 ### Dataspace Identity Provisioning
 
-Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
+Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + REC organization membership + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -190,6 +207,11 @@ Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
 | `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` hashes login email for DID paths) |
+| `DATASPACE_ORGANIZATION_ALIAS` | *(none)* | REC organization alias in identity-registry; unset skips membership registration |
+| `DATASPACE_ORGANIZATION_NAME` | *(alias)* | Display name used when creating the organization |
+| `DATASPACE_ORGANIZATION_DID` | *(none)* | Optional DID for the organization record |
+| `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | Ensure the organization exists via `POST /admin/owners` before membership |
+| `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership |
 
 ## Creating a Template
 

@@ -168,6 +168,180 @@ async def test_uses_oidc_token(monkeypatch, submission, _enable_vc):
     di._token_provider.get_token.assert_awaited_once()
 
 
+# ── organization membership ───────────────────────────────────────
+
+
+@pytest.fixture()
+def _enable_membership(monkeypatch):
+    monkeypatch.setattr(di.settings, "dataspace_organization_alias", "rec-example")
+    monkeypatch.setattr(di.settings, "dataspace_organization_name", "REC Example")
+    monkeypatch.setattr(di.settings, "dataspace_organization_did", "")
+    monkeypatch.setattr(di.settings, "dataspace_organization_auto_create", True)
+    monkeypatch.setattr(di.settings, "dataspace_membership_role", "member")
+
+
+def _membership_handler(calls, *, owners_status=201, membership_status=201):
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url, req.content.decode() if req.content else ""))
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/owners" in url:
+            return httpx.Response(owners_status, json={"id": "rec-example"})
+        if "admin/memberships" in url:
+            return httpx.Response(membership_status, json={"user_did": "x"})
+        if "keycloak/sync" in url:
+            return httpx.Response(200, json={"status": "synced"})
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_membership_skipped_without_org_alias(monkeypatch, submission, _enable_vc):
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls))
+
+    await di.provision_user_identity(submission)
+
+    assert not any("memberships" in url for _, url, _ in calls)
+
+
+async def test_membership_registered_after_credential(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls))
+
+    await di.provision_user_identity(submission)
+
+    paths = [url for _, url, _ in calls]
+    assert "credentials/data-subject" in paths[0]
+    assert "admin/owners" in paths[1]
+    assert "admin/memberships" in paths[2]
+
+    body = json.loads(calls[2][2])
+    assert body == {
+        "user_did": CREDENTIAL_RESPONSE["subjectDid"],
+        "organization_alias": "rec-example",
+        "role": "member",
+    }
+
+
+async def test_organization_created_with_name_and_did(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    monkeypatch.setattr(di.settings, "dataspace_organization_did", "did:web:rec.example")
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls))
+
+    await di.provision_user_identity(submission)
+
+    owner_body = json.loads(next(c[2] for c in calls if "admin/owners" in c[1]))
+    assert owner_body == {
+        "id": "rec-example",
+        "name": "REC Example",
+        "did": "did:web:rec.example",
+    }
+
+
+async def test_organization_conflict_is_success(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls, owners_status=409))
+
+    await di.provision_user_identity(submission)
+
+    assert any("admin/memberships" in url for _, url, _ in calls)
+
+
+async def test_membership_conflict_is_success(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls, membership_status=409))
+
+    await di.provision_user_identity(submission)
+
+    assert submission.dataspace_did == CREDENTIAL_RESPONSE["subjectDid"]
+
+
+async def test_membership_failure_raises(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls, membership_status=500))
+
+    with pytest.raises(ValueError, match="Membership registration failed"):
+        await di.provision_user_identity(submission)
+
+
+async def test_organization_creation_skipped_when_disabled(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    monkeypatch.setattr(di.settings, "dataspace_organization_auto_create", False)
+    di._token_provider = _mock_token_provider()
+    calls = []
+    _patch_httpx(monkeypatch, _membership_handler(calls))
+
+    await di.provision_user_identity(submission)
+
+    assert not any("admin/owners" in url for _, url, _ in calls)
+    assert any("admin/memberships" in url for _, url, _ in calls)
+
+
+async def test_invalid_org_alias_rejected(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    monkeypatch.setattr(di.settings, "dataspace_organization_alias", "REC_Example!")
+    di._token_provider = _mock_token_provider()
+    _patch_httpx(monkeypatch, _membership_handler([]))
+
+    with pytest.raises(ValueError, match="DATASPACE_ORGANIZATION_ALIAS"):
+        await di.provision_user_identity(submission)
+
+
+async def test_membership_deleted_on_kc_sync_failure(
+    monkeypatch, submission, _enable_vc, _enable_membership
+):
+    di._token_provider = _mock_token_provider()
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url))
+        if "credentials/data-subject" in url and req.method == "POST":
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/owners" in url:
+            return httpx.Response(409)
+        if "admin/memberships" in url and req.method == "POST":
+            return httpx.Response(201, json={})
+        if "keycloak/sync" in url:
+            return httpx.Response(500, text="KC unavailable")
+        if req.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    _patch_httpx(monkeypatch, handler)
+
+    with pytest.raises(ValueError, match="credential .* has been revoked"):
+        await di.provision_user_identity(
+            submission,
+            keycloak_user_id="kc-user-123",
+            keycloak_realm="dataspaces",
+        )
+
+    deletes = [url for method, url in calls if method == "DELETE"]
+    assert any("memberships" in u and "rec-example" in u for u in deletes)
+    assert any("credentials/urn:uuid:cred-001" in u for u in deletes)
+
+
 # ── KC sync ───────────────────────────────────────────────────────
 
 
