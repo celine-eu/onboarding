@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     dataspace_vc_ttl_days: int = 365
     dataspace_subject_source: str = "email_hash"
 
+    # Connector base URL for provisioning standing data-sharing consent after
+    # approval (POST /consent/admin/shares). Empty disables share provisioning.
+    # ds_ns_url is the public vocabulary base (GET /ns/sharing-offers) the wizard
+    # renders offers from; empty falls back to the connector's /ns path.
+    ds_connector_url: str = ""
+    ds_ns_url: str = ""
+
     sms_provider: str = "log"
     brevo_api_key: str = ""
     brevo_sms_sender: str = ""

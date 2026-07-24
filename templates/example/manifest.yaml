@@ -78,6 +78,16 @@ consent:
     version: "1.0"
     file: consent/statute.pdf
     required: true
+  # Data-sharing consent — OPTIONAL. GDPR Art. 7(4): REC membership must never be
+  # conditioned on dataspace sharing, so the wizard permits completion with this
+  # off and can_submit does not list it. No version/file here — the version comes
+  # from each offer's consent_text_version served by the connector, so it cannot
+  # drift from what ds enforces. `offers` is an optional allow-list; omit it to
+  # offer every consent-based offer the connector publishes.
+  data_sharing:
+    required: false
+    offers:
+      - household-energy-flexibility
 
 notifications:
   from: "noreply@example.com"

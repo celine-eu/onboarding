@@ -12,6 +12,12 @@ async def get_config(rec_slug: str = Depends(valid_rec_slug)):
     return template_service.get_config(rec_slug)
 
 
+@router.get("/sharing-offers")
+async def get_sharing_offers(rec_slug: str = Depends(valid_rec_slug)):
+    """Public: the data-sharing offers the wizard renders (codes + English fallback)."""
+    return await template_service.get_sharing_offers(rec_slug)
+
+
 @router.get("/template/{path:path}")
 async def get_template_file(path: str, rec_slug: str = Depends(valid_rec_slug)):
     file_path = template_service.get_asset_path(rec_slug, path)

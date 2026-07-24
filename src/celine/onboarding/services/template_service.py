@@ -78,6 +78,50 @@ def get_config(rec_slug: str) -> dict[str, Any]:
     }
 
 
+async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
+    """Resolve the data-sharing offers a REC's wizard should render.
+
+    Offers are served by the connector (`GET /ns/sharing-offers`) as codes plus
+    an English fallback — the wizard composes its own sentences per locale. The
+    manifest's optional `consent.data_sharing.offers` is an allow-list; without
+    it, every consent-based offer the connector publishes is offered.
+
+    Returns an empty list when the REC has no `data_sharing` block or no
+    connector is configured — the step simply does not appear.
+    """
+    import httpx
+
+    manifest = load_manifest(rec_slug)
+    data_sharing = manifest.get("consent", {}).get("data_sharing")
+    if data_sharing is None:
+        return []
+
+    base = (settings.ds_ns_url or settings.ds_connector_url).rstrip("/")
+    if not base:
+        return []
+
+    allow = data_sharing.get("offers")  # None → all consent-based
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/ns/sharing-offers")
+            resp.raise_for_status()
+            offers = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+
+    result = []
+    for offer in offers:
+        if allow is not None:
+            if offer.get("id") not in allow:
+                continue
+        elif not offer.get("requires_consent"):
+            # Default set is consent-based offers; an explicit allow-list may
+            # still include a contract offer for disclosure.
+            continue
+        result.append(offer)
+    return result
+
+
 def get_consent_dir(rec_slug: str) -> Path:
     tpl = template_dir_for(rec_slug)
     consent_dir = tpl / "consent"

@@ -131,6 +131,39 @@ async def delete_submission(
                  detail=f"rec={rec_slug} ref={ref} — GDPR erasure")
 
 
+@router.post("/submissions/{submission_id}/retry-share", response_model=SubmissionAdminRead)
+async def retry_share(
+    submission_id: uuid.UUID,
+    request: Request,
+    rec_slug: str = Depends(valid_rec_slug),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-attempt data-sharing provisioning for an already-provisioned identity.
+
+    A failed share does not fail approval (§3.5), so a submission can be approved
+    with ``share_provisioned = false``. This retries just the connector push;
+    idempotent, and raises 422 if the connector rejects an offer.
+    """
+    from celine.onboarding.services.dataspace_identity import provision_user_shares
+
+    submission = await submission_service.get_submission(db, submission_id)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    if submission.rec_slug != rec_slug:
+        raise HTTPException(404, "Submission not found")
+
+    try:
+        await provision_user_shares(submission, raise_on_error=True)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await db.commit()
+
+    await _audit(db, action="retry_share", entity_type="submission",
+                 entity_id=str(submission_id), ip=_client_ip(request),
+                 detail=f"share_provisioned={submission.share_provisioned}")
+    return submission
+
+
 @router.get("/submissions/{submission_id}/pdf")
 async def download_submission_pdf(
     submission_id: uuid.UUID,

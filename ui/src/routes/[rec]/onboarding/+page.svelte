@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t, locale } from '$lib/i18n';
-	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi } from '$lib/api/client';
+	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi, type SharingOffer } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -101,6 +101,77 @@
 	let statuteConsent = $state(false);
 	let keepMeUpdated = $state(false);
 	let extraData = $state<Record<string, unknown>>({});
+
+	// Data-sharing consent (optional — never a condition of membership). Offers
+	// are fetched from the connector via the backend as codes + English fallback;
+	// the wizard composes its own sentence per locale.
+	let sharingOffers = $state<SharingOffer[]>([]);
+	let sharingOffersLoaded = $state(false);
+	// offerId → accepted. Only consent-based offers get an entry; contract-based
+	// offers are disclosed, not toggled.
+	let dataSharingSelections = $state<Record<string, boolean>>({});
+
+	$effect(() => {
+		if (!config?.consent?.data_sharing || sharingOffersLoaded) return;
+		sharingOffersLoaded = true;
+		recApi
+			.getSharingOffers()
+			.then((offers) => { sharingOffers = offers; })
+			.catch(() => { sharingOffers = []; });
+	});
+
+	/** ISO-8601 duration → a short localized phrase; falls back to the raw code
+	 *  (sveltekit-i18n returns the key itself when a translation is missing). */
+	function isoLabel(value: string | null | undefined): string {
+		if (!value) return '';
+		const key = `onboarding.iso_${value}`;
+		const label = $t(key);
+		return label === key ? value : label;
+	}
+
+	/** A deterministic English-based description of an offer — the string hashed
+	 *  as evidence of what was shown, and the base of the localized rendering. */
+	function offerFacts(offer: SharingOffer): string[] {
+		const facts: string[] = [];
+		if (offer.measures.length) facts.push(`${$t('onboarding.ds_measures')}: ${offer.measures.join(', ')}`);
+		if (offer.resolution) facts.push(`${$t('onboarding.ds_resolution')}: ${isoLabel(offer.resolution)}`);
+		const cov = [offer.coverage.retrospective, offer.coverage.prospective]
+			.filter(Boolean)
+			.map((c) => isoLabel(c))
+			.join(' / ');
+		if (cov) facts.push(`${$t('onboarding.ds_coverage')}: ${cov}`);
+		if (offer.retention) facts.push(`${$t('onboarding.ds_retention')}: ${isoLabel(offer.retention)}`);
+		facts.push(`${$t('onboarding.ds_recipients')}: ${offer.fallback_text_en.processor_category}`);
+		return facts;
+	}
+
+	/** The exact text shown for an accepted offer, hashed for the audit trail. */
+	function offerRenderedText(offer: SharingOffer): string {
+		const fb = offer.fallback_text_en;
+		return [
+			`purpose=${offer.purpose}`,
+			`label=${fb.purpose_label}`,
+			`definition=${fb.purpose_definition}`,
+			`controller=${offer.recipients.controller}`,
+			`processors=${fb.processor_category}`,
+			`measures=${offer.measures.join(',')}`,
+			`resolution=${offer.resolution ?? ''}`,
+			`coverage=${offer.coverage.retrospective ?? ''}/${offer.coverage.prospective ?? ''}`,
+			`retention=${offer.retention ?? ''}`,
+			`version=${offer.consent_text_version}`
+		].join('|');
+	}
+
+	async function sha256Hex(text: string): Promise<string> {
+		const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+		return Array.from(new Uint8Array(buf))
+			.map((b) => b.toString(16).padStart(2, '0'))
+			.join('');
+	}
+
+	let acceptedOffers = $derived(
+		sharingOffers.filter((o) => o.requires_consent && dataSharingSelections[o.id])
+	);
 
 	// Phone verification (SMS OTP) step
 	let otpSent = $state(false);
@@ -533,10 +604,27 @@
 		submitting = true;
 		errorMsg = '';
 		try {
+			let dataSharing: Record<string, unknown> = {};
+			if (sharingOffers.length > 0) {
+				const acceptedIds = acceptedOffers.map((o) => o.id);
+				const consented = acceptedIds.length > 0;
+				const versions = [...new Set(acceptedOffers.map((o) => o.consent_text_version))].join(',');
+				const sha = consented
+					? await sha256Hex(acceptedOffers.map(offerRenderedText).join('\n'))
+					: null;
+				dataSharing = {
+					data_sharing_consent: consented,
+					data_sharing_consent_offer_ids: acceptedIds,
+					data_sharing_consent_text_version: versions || null,
+					data_sharing_consent_locale: $locale,
+					data_sharing_consent_text_sha256: sha,
+				};
+			}
 			await recApi.updateSubmission(submissionId, {
 				statute_consent: statuteConsent,
 				keep_me_updated: keepMeUpdated,
 				extra_data: extraData,
+				...dataSharing,
 				status: 'submitted',
 			});
 			submitted = true;
@@ -925,6 +1013,49 @@
 						documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
 						documentLabel={$t('onboarding.view_document')}
 					/>
+
+					{#if sharingOffers.length > 0}
+						<div class="data-sharing">
+							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
+							<p class="consent-intro">{$t('onboarding.data_sharing_intro')}</p>
+							{#each sharingOffers as offer (offer.id)}
+								<div class="offer-card">
+									<div class="offer-head">
+										<span class="offer-label">{offer.fallback_text_en.purpose_label}</span>
+										{#if !offer.requires_consent}
+											<span class="offer-badge">{$t('onboarding.data_sharing_disclosed')}</span>
+										{/if}
+									</div>
+									{#if offer.fallback_text_en.purpose_definition}
+										<p class="offer-def">{offer.fallback_text_en.purpose_definition}</p>
+									{/if}
+									<ul class="offer-facts">
+										{#each offerFacts(offer) as fact}
+											<li>{fact}</li>
+										{/each}
+									</ul>
+									{#if offer.requires_consent}
+										<label class="toggle-field">
+											<input
+												type="checkbox"
+												checked={!!dataSharingSelections[offer.id]}
+												onchange={(e) => {
+													dataSharingSelections = {
+														...dataSharingSelections,
+														[offer.id]: e.currentTarget.checked,
+													};
+												}}
+											/>
+											<span>{$t('onboarding.data_sharing_accept')}</span>
+										</label>
+									{:else}
+										<p class="offer-disclosed-note">{$t('onboarding.data_sharing_disclosed_note')}</p>
+									{/if}
+								</div>
+							{/each}
+							<p class="data-sharing-optional">{$t('onboarding.data_sharing_optional')}</p>
+						</div>
+					{/if}
 				</div>
 			{:else}
 				<div class="review">
@@ -1117,6 +1248,87 @@
 		color: var(--celine-text-secondary);
 		font-size: 0.9375rem;
 		margin: 0 0 var(--celine-space-sm);
+	}
+
+	.data-sharing {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-sm);
+		margin-top: var(--celine-space-lg);
+		padding-top: var(--celine-space-lg);
+		border-top: 1px solid var(--celine-border);
+	}
+
+	.data-sharing-title {
+		font-size: 0.9375rem;
+		font-weight: 700;
+		color: var(--celine-text);
+		margin: 0;
+	}
+
+	.offer-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-xs);
+		padding: var(--celine-space-md);
+		background: var(--celine-bg-sunken);
+		border: 1px solid var(--celine-border);
+		border-radius: var(--celine-radius-md);
+	}
+
+	.offer-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--celine-space-sm);
+	}
+
+	.offer-label {
+		font-weight: 600;
+		color: var(--celine-text);
+		font-size: 0.9375rem;
+	}
+
+	.offer-badge {
+		font-size: 0.6875rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--celine-text-secondary);
+		background: var(--celine-bg-hover);
+		border: 1px solid var(--celine-border);
+		border-radius: var(--celine-radius-full);
+		padding: 0.125rem 0.5rem;
+	}
+
+	.offer-def {
+		font-size: 0.875rem;
+		color: var(--celine-text-secondary);
+		margin: 0;
+	}
+
+	.offer-facts {
+		margin: 0;
+		padding-left: 1.1em;
+		font-size: 0.8125rem;
+		color: var(--celine-text-secondary);
+	}
+
+	.offer-facts li {
+		margin-bottom: 0.15em;
+	}
+
+	.offer-disclosed-note {
+		font-size: 0.8125rem;
+		color: var(--celine-text-tertiary);
+		margin: 0;
+		font-style: italic;
+	}
+
+	.data-sharing-optional {
+		font-size: 0.8125rem;
+		color: var(--celine-text-tertiary);
+		margin: 0;
 	}
 
 	.personal-step {

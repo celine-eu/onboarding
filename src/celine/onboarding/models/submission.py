@@ -96,6 +96,27 @@ class Submission(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Data-sharing consent — deliberately optional. Conditioning REC membership
+    # on dataspace sharing would breach GDPR Art. 7(4), so this is never a
+    # submit requirement (see workflows/engine.can_submit). The offers, version,
+    # locale and rendered-text hash record *what* the person saw, so the
+    # connector can enforce exactly that and re-consent only on a material change.
+    data_sharing_consent: Mapped[bool] = mapped_column(default=False)
+    data_sharing_consent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    data_sharing_consent_offer_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    data_sharing_consent_text_version: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    data_sharing_consent_locale: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    data_sharing_consent_text_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    # Whether the standing share was pushed to the connector after approval. A
+    # failed push never fails approval (§3.5) — it is retried from the admin UI.
+    share_provisioned: Mapped[bool] = mapped_column(default=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

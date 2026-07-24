@@ -126,6 +126,15 @@ All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
 | `SMTP_TLS` | `true` | STARTTLS with certificate verification via `ssl.create_default_context()`. |
 | `SMTP_NOTIFY` | *(none)* | Fallback operator email list (overridden by manifest `notifications.notify`). |
 
+### Dataspace sharing
+
+Optional. Enable data-sharing consent collection in the wizard and its provisioning to the dataspace connector on approval. Both empty by default; `DS_CONNECTOR_URL` empty disables share provisioning entirely. See [docs/data-sharing.md](docs/data-sharing.md).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DS_CONNECTOR_URL` | *(none)* | Connector base URL used to provision standing consent (`POST /consent/admin/shares`) after approval. Empty disables share provisioning. |
+| `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. Empty falls back to the connector's `/ns` path. |
+
 ## Template System
 
 Each community gets a `templates/<slug>/` folder:
@@ -178,6 +187,10 @@ consent:
   gdpr: { version: "1.0", url: "https://..." }      # external URL
   policy: { version: "1.0", file: consent/policy.pdf } # local file
   statute: { version: "1.0", url: "https://..." }
+  data_sharing:                                     # optional; collected in the statute step
+    required: false                                 # GDPR Art. 7(4): NEVER required, never blocks submission
+    offers: [household-energy-flexibility]          # optional allow-list; omit to offer every consent-based offer the connector publishes
+    # No version/file here — the version comes from each offer's consent_text_version served by the connector.
 coverage:
   rules:
     - type: municipality
@@ -216,8 +229,10 @@ Selected via `TEMPLATE_DIR` env var.
 3. **Personal Data** — Name, email, phone, CF, POD (validated, prefilled from extraction) + manifest extra fields. Optional ID card upload with cross-validation against bill data.
 4. **Energy System** — PV, battery, EV, heat pump questions (manifest-driven, with conditional visibility).
 5. **Eligibility** — Address geocoded and checked against coverage rules (if configured).
-6. **Statute** — Separate consent for community statute.
+6. **Statute** — Separate consent for community statute. Also collects **optional data-sharing consent** when the manifest declares `consent.data_sharing`: offers are rendered from `GET {DS_NS_URL}/ns/sharing-offers` (consent-based offers show a toggle; contract-based offers are disclosed without one), and the SHA-256 of the exact consent text shown is recorded. Placed here — not in the consents step, which runs before any data is collected and would be uninformed consent.
 7. **Review** — Summary of all entered data. Submit triggers PDF generation + email notification.
+
+Data-sharing consent is **optional** (GDPR Art. 7(4)): it is never required and never blocks `can_submit()`. On the submission it records `data_sharing_consent`, `data_sharing_consent_at`, `data_sharing_consent_offer_ids`, `data_sharing_consent_text_version`, `data_sharing_consent_locale`, `data_sharing_consent_text_sha256`, and `share_provisioned` (whether the consent was pushed to the connector). On approval these offers are provisioned to the dataspace connector — see [docs/data-sharing.md](docs/data-sharing.md) and [docs/dataspace-integration.md](docs/dataspace-integration.md).
 
 ## Security Model
 
@@ -278,6 +293,7 @@ When `SECURITY_HEADERS=true` (default), all responses include:
 | `POST` | `/api/{rec}/submissions/{id}/confirm-phone` | session | Confirm OTP, mark verified (20/hr) |
 | `POST` | `/api/eligibility` | none | Coverage check |
 | `GET` | `/api/config` | none | Template config |
+| `GET` | `/api/{rec}/sharing-offers` | none | Data-sharing offers for the wizard, proxied from the connector's `/ns/sharing-offers` and filtered by the manifest allow-list |
 | `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |
 | `GET` | `/api/downloads/{token}` | token | Time-limited document download |
 
@@ -289,6 +305,7 @@ When `SECURITY_HEADERS=true` (default), all responses include:
 | `GET/PATCH` | `/api/admin/submissions/{id}` | View/update (includes consent_ip) |
 | `DELETE` | `/api/admin/submissions/{id}` | GDPR erasure (files + DB) |
 | `GET` | `/api/admin/submissions/{id}/pdf` | Download summary |
+| `POST` | `/api/admin/submissions/{id}/retry-share` | Re-run data-sharing provisioning to the connector (`raise_on_error=True`; 422 on connector rejection) |
 | `GET` | `/api/admin/audit-logs` | Paginated audit trail |
 
 ## Local Development

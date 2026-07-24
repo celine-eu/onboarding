@@ -83,6 +83,13 @@ async def update_submission(
     if "statute_consent" in updates and updates["statute_consent"] and not submission.statute_consent:
         updates["statute_consent_at"] = now
 
+    if (
+        "data_sharing_consent" in updates
+        and updates["data_sharing_consent"]
+        and not submission.data_sharing_consent
+    ):
+        updates["data_sharing_consent_at"] = now
+
     target_status = updates.pop("status", None)
 
     for key, value in updates.items():

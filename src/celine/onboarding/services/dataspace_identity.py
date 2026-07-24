@@ -151,6 +151,103 @@ async def provision_user_identity(
             organization_alias=org_alias,
         )
 
+    # Standing data-sharing consent, if the person opted in. Deliberately the
+    # LAST step and deliberately non-fatal: a failed share is recoverable, and
+    # tearing down a valid identity because a consent row didn't write is the
+    # wrong trade (§3.5). The rollback above does not extend here.
+    if settings.ds_connector_url and submission.data_sharing_consent:
+        try:
+            await provision_user_shares(submission)
+        except Exception:
+            logger.exception(
+                "Share provisioning failed for %s; identity kept, retry from admin",
+                submission.ref,
+            )
+            submission.share_provisioned = False
+
+
+async def provision_user_shares(
+    submission: Submission, *, raise_on_error: bool = False
+) -> bool:
+    """Push the subject's standing data-sharing consent to the connector.
+
+    Called at the end of :func:`provision_user_identity` and again by the admin
+    retry endpoint.  Names an ``offer_id`` per recorded offer — never a dataset —
+    so the connector expands each into the datasets the offer describes and the
+    onboarding config can never drift from what the person read.
+
+    ``raise_on_error`` is False on the approval path (a failure must not fail
+    approval) and True on explicit retry (the operator wants to see it fail).
+    Returns whether every offer was provisioned.  Idempotent: the connector's
+    ``set_subject_data_sharing`` returns the existing row on a re-run.
+    """
+    if not settings.ds_connector_url:
+        return False
+    if not submission.data_sharing_consent:
+        return False
+    if not submission.dataspace_did:
+        logger.warning("Cannot provision shares for %s: no dataspace DID", submission.ref)
+        return False
+
+    offer_ids = list(submission.data_sharing_consent_offer_ids or [])
+    if not offer_ids:
+        logger.warning("data_sharing_consent set but no offers recorded for %s", submission.ref)
+        if raise_on_error:
+            raise ValueError("No data-sharing offers recorded for this submission")
+        return False
+
+    connector_url = settings.ds_connector_url.rstrip("/")
+    headers = await _auth_headers()
+    accepted_at = (
+        submission.data_sharing_consent_at.isoformat()
+        if submission.data_sharing_consent_at
+        else None
+    )
+
+    failures: list[str] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for offer_id in offer_ids:
+            legal_basis = {
+                "source": "onboarding",
+                "rec_slug": submission.rec_slug,
+                "consent_text_version": submission.data_sharing_consent_text_version,
+                "locale": submission.data_sharing_consent_locale,
+                "rendered_text_sha256": submission.data_sharing_consent_text_sha256,
+                "accepted_at": accepted_at,
+                # The submission ref is the only identifier that leaves onboarding.
+                # Never a name, email, CF or POD — the connector DB is not a PII store.
+                "submission_ref": submission.ref,
+            }
+            try:
+                resp = await client.post(
+                    f"{connector_url}/consent/admin/shares",
+                    json={
+                        "subject_id": submission.dataspace_did,
+                        "offer_id": offer_id,
+                        "enabled": True,
+                        "legal_basis": legal_basis,
+                    },
+                    headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                logger.error("Share provisioning for offer %s failed: %s", offer_id, exc)
+                failures.append(f"{offer_id}: {exc}")
+                continue
+            if resp.status_code >= 400:
+                logger.error(
+                    "Share provisioning for offer %s failed (%s): %s",
+                    offer_id,
+                    resp.status_code,
+                    resp.text,
+                )
+                failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
+
+    ok = not failures
+    submission.share_provisioned = ok
+    if failures and raise_on_error:
+        raise ValueError("Share provisioning failed: " + "; ".join(failures))
+    return ok
+
 
 def _organization_alias() -> str:
     alias = settings.dataspace_organization_alias.strip().lower()

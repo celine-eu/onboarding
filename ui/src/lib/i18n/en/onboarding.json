@@ -79,5 +79,21 @@
 	"field_numero_documento": "Document No.",
 	"field_scadenza": "Expiry date",
 	"yes": "Yes",
-	"no": "No"
+	"no": "No",
+	"data_sharing_title": "Share your data with the community",
+	"data_sharing_intro": "Optionally, you can let the energy community use your data for the purposes below. You can change your mind at any time.",
+	"data_sharing_accept": "Yes, I agree to share my data for this purpose",
+	"data_sharing_disclosed": "Disclosed",
+	"data_sharing_disclosed_note": "This use rests on a contractual basis, so it is disclosed for your information — no separate consent is required.",
+	"data_sharing_optional": "Sharing is entirely optional and is never a condition of joining the community.",
+	"ds_measures": "Data",
+	"ds_resolution": "Frequency",
+	"ds_coverage": "Time span",
+	"ds_retention": "Kept for",
+	"ds_recipients": "Recipients",
+	"iso_PT15M": "every 15 minutes",
+	"iso_PT1H": "hourly",
+	"iso_P1Y": "1 year",
+	"iso_P2Y": "2 years",
+	"iso_P5Y": "5 years"
 }

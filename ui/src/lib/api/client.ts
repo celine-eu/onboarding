@@ -111,9 +111,39 @@ export interface SiteConfig {
 		}>;
 		hidden: string[];
 	};
-	consent: Record<string, { version: string; file?: string; url?: string; required: boolean }>;
+	consent: Record<
+		string,
+		{ version?: string; file?: string; url?: string; required: boolean; offers?: string[] }
+	>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;
+}
+
+export interface SharingOffer {
+	id: string;
+	purpose: string;
+	purpose_broader: string[];
+	legal_basis: string;
+	requires_consent: boolean;
+	recipients: {
+		controller: string;
+		controller_role: string | null;
+		processors: { category: string };
+	};
+	subject_scope: string;
+	measures: string[];
+	resolution: string | null;
+	coverage: { retrospective: string | null; prospective: string | null };
+	consent_text_version: string;
+	revocable: boolean;
+	retention: string | null;
+	user_visible_hash: string;
+	dataset_count: number;
+	fallback_text_en: {
+		purpose_label: string;
+		purpose_definition: string;
+		processor_category: string;
+	};
 }
 
 export interface RecSummary {
@@ -130,6 +160,7 @@ export interface RecMatch extends RecSummary {
 
 export interface RecApi {
 	getConfig: () => Promise<SiteConfig>;
+	getSharingOffers: () => Promise<SharingOffer[]>;
 	createSubmission: (data: Record<string, unknown>) => Promise<SubmissionResponse>;
 	getSubmission: (id: string) => Promise<SubmissionResponse>;
 	updateSubmission: (id: string, data: Record<string, unknown>) => Promise<SubmissionResponse>;
@@ -218,6 +249,8 @@ export function createRecApi(recSlug: string): RecApi {
 
 	return {
 		getConfig: () => request<SiteConfig>(`${base}/config`),
+
+		getSharingOffers: () => request<SharingOffer[]>(`${base}/sharing-offers`),
 
 		createSubmission: (data) =>
 			request<SubmissionResponse>(`${base}/submissions`, {

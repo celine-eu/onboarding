@@ -16,7 +16,7 @@ This platform automates the process: a public-facing wizard collects data from a
 2. **Upload utility bill** (optional) — photos or PDFs of the electricity bill. The system uses AI vision to extract the holder's name, fiscal code, POD code, address, and provider. Multiple pages can be uploaded; each one refines the extracted data.
 3. **Confirm personal data** — a form pre-filled with extracted data. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats. Optional ID card upload provides cross-validation against bill data.
 4. **Eligibility check** (if configured) — the applicant's address is geocoded and checked against the community's coverage area (municipalities, postal codes, or regions).
-5. **Accept statute** — the community's founding document, presented separately from the data-collection consents.
+5. **Accept statute** — the community's founding document, presented separately from the data-collection consents. If the community enables it, this step also offers an **optional data-sharing consent**: the applicant can authorise sharing specific offers into the dataspace. It is never required and does not block submission (GDPR Art. 7(4)).
 6. **Review and submit** — summary of all entered data. On submit, the applicant receives a PDF summary and the operator is notified by email.
 
 The entire process has a 10-minute inactivity window. After that, the session token expires and the public API rejects further requests. This limits the exposure window for personal data.
@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
 
-When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. See [Dataspace Integration](docs/dataspace-integration.md) for details.
+When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried via `POST /api/admin/submissions/{id}/retry-share`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
 ### For the community
 
@@ -213,6 +213,8 @@ Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID
 | `DATASPACE_ORGANIZATION_DID` | *(none)* | Optional DID for the organization record |
 | `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | Ensure the organization exists via `POST /admin/owners` before membership |
 | `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership |
+| `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |
+| `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from; empty falls back to the connector's `/ns` path |
 
 ## Creating a Template
 

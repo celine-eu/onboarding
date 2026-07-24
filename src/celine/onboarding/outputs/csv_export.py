@@ -31,6 +31,15 @@ BASE_FIELDS = [
     "statute_consent",
     "statute_consent_at",
     "statute_consent_version",
+    # Data-sharing consent (Block B) — optional, with the offers, version, locale
+    # and rendered-text hash that record what the person actually saw.
+    "data_sharing_consent",
+    "data_sharing_consent_at",
+    "data_sharing_consent_offer_ids",
+    "data_sharing_consent_text_version",
+    "data_sharing_consent_locale",
+    "data_sharing_consent_text_sha256",
+    "share_provisioned",
     # Dataspace identity provisioned on approval (3A.1).
     "dataspace_did",
     "dataspace_subject_id",

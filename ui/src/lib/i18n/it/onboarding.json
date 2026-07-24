@@ -79,5 +79,21 @@
 	"field_numero_documento": "N. Documento",
 	"field_scadenza": "Scadenza",
 	"yes": "Si",
-	"no": "No"
+	"no": "No",
+	"data_sharing_title": "Condividi i tuoi dati con la comunità",
+	"data_sharing_intro": "Facoltativamente, puoi permettere alla comunità energetica di usare i tuoi dati per le finalità indicate qui sotto. Puoi cambiare idea in qualsiasi momento.",
+	"data_sharing_accept": "Sì, acconsento a condividere i miei dati per questa finalità",
+	"data_sharing_disclosed": "Informativa",
+	"data_sharing_disclosed_note": "Questo trattamento si basa su un obbligo contrattuale, quindi è indicato a titolo informativo — non è richiesto un consenso separato.",
+	"data_sharing_optional": "La condivisione è del tutto facoltativa e non è mai una condizione per aderire alla comunità.",
+	"ds_measures": "Dati",
+	"ds_resolution": "Frequenza",
+	"ds_coverage": "Periodo",
+	"ds_retention": "Conservati per",
+	"ds_recipients": "Destinatari",
+	"iso_PT15M": "ogni 15 minuti",
+	"iso_PT1H": "ogni ora",
+	"iso_P1Y": "1 anno",
+	"iso_P2Y": "2 anni",
+	"iso_P5Y": "5 anni"
 }

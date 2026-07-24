@@ -8,6 +8,7 @@ When a user completes onboarding and `DATASPACE_VC_ENABLED` is `true`, the syste
 - A **Verifiable Credential** (VC) binding the user to a participant organization
 - An **organization membership** registering the DID as a member of the REC in the identity-registry
 - A **Keycloak `dataspace_did` attribute** linking the user's login identity to their DID
+- **Data-sharing shares** provisioned to the dataspace connector for the offers the user consented to during onboarding (optional; runs last and is non-fatal)
 
 The membership matters as much as the credential: ds consent endpoints (`/consent/my/shares`) check membership before allowing a data subject to manage sharing preferences. A user with a VC but no membership holds a valid identity that cannot do anything.
 
@@ -20,7 +21,7 @@ Onboarding stores only the subject ID, DID, credential ID, and issuance timestam
 When a submission is approved and `DATASPACE_VC_ENABLED` is true:
 
 1. `provision_keycloak_user()` creates or locates the Keycloak user and returns the `user_id`.
-2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak.
+2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak, then provisions any data-sharing shares to the connector as its last step.
 
 ```mermaid
 sequenceDiagram
@@ -28,6 +29,7 @@ sequenceDiagram
     participant Onboarding
     participant IdRegistry as identity-registry
     participant KC as Keycloak
+    participant Connector as ds-connector
 
     Admin->>Onboarding: PATCH /api/admin/submissions/{id}<br/>status: approved
 
@@ -50,6 +52,13 @@ sequenceDiagram
     Onboarding->>IdRegistry: POST /admin/keycloak/sync<br/>{subjectDid, userId, realm}
     IdRegistry->>KC: Set dataspace_did attribute
     IdRegistry-->>Onboarding: 200 OK
+
+    Note over Onboarding: provision_user_shares() — last step,<br/>only if DS_CONNECTOR_URL set + consent given
+    loop each consented offer id
+        Onboarding->>Connector: POST /consent/admin/shares<br/>{subject_id: DID, offer_id, enabled: true, legal_basis}
+        Connector-->>Onboarding: 200 OK
+    end
+    Note over Onboarding: On share failure: non-fatal —<br/>leave share_provisioned=false, do NOT roll back
 
     Onboarding-->>Admin: 200 OK (approved + identity provisioned)
 
@@ -77,7 +86,13 @@ sequenceDiagram
 
 6. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping.
 
-Steps 3 and 4 are skipped entirely when `DATASPACE_ORGANIZATION_ALIAS` is unset, which keeps existing deployments working unchanged.
+7. **Data-sharing share provisioning** -- `provision_user_shares()` runs as the last step, after the Keycloak DID sync. When `DS_CONNECTOR_URL` is set and the submission's `data_sharing_consent` is true, it POSTs once per recorded offer id to `{DS_CONNECTOR_URL}/consent/admin/shares` with body `{subject_id: <dataspace DID>, offer_id, enabled: true, legal_basis: {source: "onboarding", rec_slug, consent_text_version, locale, rendered_text_sha256, accepted_at, submission_ref}}`. It names an offer, never a dataset. The call is idempotent and sets `share_provisioned=true` on success. Unlike step 6, it is **deliberately non-fatal**: a failed share never rolls back the identity or rejects the approval -- it leaves `share_provisioned=false` for retry. Onboarding authenticates with its `svc-ds-onboarding` service token (scope `connector.consent.provision`, audience `svc-ds-connector`).
+
+Steps 3 and 4 are skipped entirely when `DATASPACE_ORGANIZATION_ALIAS` is unset, which keeps existing deployments working unchanged. Step 7 is skipped when `DS_CONNECTOR_URL` is unset.
+
+### Retrying a failed share
+
+`POST /api/admin/submissions/{id}/retry-share` re-runs `provision_user_shares()` with `raise_on_error=True`, returning `422` if the connector rejects the request. Use it to complete provisioning for a submission left at `share_provisioned=false`.
 
 ## Authentication
 
@@ -87,7 +102,7 @@ The onboarding service authenticates to identity-registry using **M2M (machine-t
 - **Auth provider**: `celine.sdk.auth.OidcClientCredentialsProvider` from `celine-sdk>=1.13.0`
 - **Token handling**: The provider acquires tokens via the OIDC client credentials flow, caches them in memory, and auto-refreshes before expiry. No manual token management is needed.
 
-The `httpx.AsyncClient` is configured with the auth provider, so all outgoing requests to identity-registry automatically include a valid Bearer token.
+The `httpx.AsyncClient` is configured with the auth provider, so all outgoing requests to identity-registry automatically include a valid Bearer token. The same `svc-ds-onboarding` service token is used for the connector share-provisioning calls, carrying the `connector.consent.provision` scope and `svc-ds-connector` audience.
 
 ## Configuration
 
@@ -123,6 +138,15 @@ These settings control what goes into the issued credential:
 | `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | When `true`, onboarding ensures the organization exists via `POST /admin/owners` before registering the membership. Set `false` if the organization is managed out-of-band. |
 | `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership. |
 
+### Data-sharing share settings
+
+These control provisioning of data-sharing consent to the dataspace connector (step 7).
+
+| Variable | Default | Description |
+|---|---|---|
+| `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning standing consent (`POST /consent/admin/shares`). When unset, share provisioning is skipped. |
+| `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. When unset, falls back to the connector's `/ns` path. |
+
 ## Error Handling
 
 The integration follows a **fail-closed** strategy:
@@ -131,10 +155,12 @@ The integration follows a **fail-closed** strategy:
 - **Credential revocation on sync failure**: If the credential is issued successfully but the Keycloak sync fails after 3 retries, the membership is deleted and the credential is revoked via `DELETE /admin/credentials/{credentialId}`. This ensures there are no orphaned credentials or memberships without a corresponding Keycloak DID mapping.
 - **Idempotent organization and membership calls**: `409 Conflict` from `POST /admin/owners` and `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. Any other 4xx/5xx aborts the approval.
 - **No partial state**: Either the full provisioning succeeds (credential + organization + membership + KC sync) or nothing is committed. The submission remains in its previous status.
+- **Share provisioning is non-fatal**: Data-sharing share provisioning (step 7) runs after the identity is committed and is exempt from fail-closed. A connector rejection or error leaves `share_provisioned=false` and logs, but never rolls back the identity or the approval. Operators retry via `POST /api/admin/submissions/{id}/retry-share` (which surfaces connector rejections as `422`).
 
 ## Dependencies
 
 - `celine-sdk>=1.13.0` -- provides `celine.sdk.auth.OidcClientCredentialsProvider` for M2M token management
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
-- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions
+- **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`
+- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions, including the `connector.consent.provision` scope and `svc-ds-connector` audience for share provisioning

@@ -29,6 +29,15 @@ class SubmissionUpdate(BaseModel):
     id_extracted_data: dict | None = None
     extra_data: dict | None = None
     statute_consent: bool | None = None
+    # Data-sharing consent — collected in the statute step (after data exists, so
+    # the choice is informed), optional by design. The offers, version, locale and
+    # rendered-text hash record what the person saw; the connector enforces exactly
+    # that.
+    data_sharing_consent: bool | None = None
+    data_sharing_consent_offer_ids: list[str] | None = None
+    data_sharing_consent_text_version: str | None = Field(None, max_length=20)
+    data_sharing_consent_locale: str | None = Field(None, max_length=20)
+    data_sharing_consent_text_sha256: str | None = Field(None, max_length=64)
     keep_me_updated: bool | None = None
     status: SubmissionStatus | None = None
     notes: str | None = Field(None, max_length=2000)
@@ -71,6 +80,13 @@ class SubmissionRead(BaseModel):
     statute_consent: bool
     statute_consent_at: datetime | None
     statute_consent_version: str | None
+    data_sharing_consent: bool
+    data_sharing_consent_at: datetime | None
+    data_sharing_consent_offer_ids: list[str] | None
+    data_sharing_consent_text_version: str | None
+    data_sharing_consent_locale: str | None
+    data_sharing_consent_text_sha256: str | None
+    share_provisioned: bool
     keep_me_updated: bool
     phone_verified: bool
     phone_verified_at: datetime | None
