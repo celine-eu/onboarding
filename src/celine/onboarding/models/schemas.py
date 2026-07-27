@@ -35,7 +35,7 @@ class SubmissionUpdate(BaseModel):
     # that.
     data_sharing_consent: bool | None = None
     data_sharing_consent_offer_ids: list[str] | None = None
-    data_sharing_consent_text_version: str | None = Field(None, max_length=20)
+    data_sharing_consent_text_version: str | None = Field(None, max_length=200)
     data_sharing_consent_locale: str | None = Field(None, max_length=20)
     data_sharing_consent_text_sha256: str | None = Field(None, max_length=64)
     keep_me_updated: bool | None = None

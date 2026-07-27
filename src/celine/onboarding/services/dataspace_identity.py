@@ -188,7 +188,7 @@ async def provision_user_identity(
     keycloak_user_id: str | None = None,
     keycloak_realm: str | None = None,
 ) -> None:
-    if not settings.dataspace_vc_enabled:
+    if not settings.dataspace_enabled:
         return
     if submission.dataspace_vc_id:
         return
@@ -202,6 +202,18 @@ async def provision_user_identity(
     # "this community is not in the dataspace".
     await template_service.ensure_fresh()
     binding = template_service.dataspace_binding(submission.rec_slug)
+
+    # Two gates, and both must be open. `DATASPACE_ENABLED` says this deployment
+    # talks to a dataspace at all; the manifest block says *this community* is in
+    # one. A REC without a block gets no credential — issuing one would hand
+    # somebody an identity belonging to no organisation, which the consent
+    # endpoints refuse to act on anyway.
+    if not binding.enabled:
+        logger.debug(
+            "REC %r declares no dataspace binding; skipping identity provisioning",
+            submission.rec_slug,
+        )
+        return
 
     base_url = settings.identity_registry_url.rstrip("/")
     subject_id = _subject_id(submission)

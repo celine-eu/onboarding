@@ -106,7 +106,7 @@ All settings are driven by environment variables, loaded via Pydantic Settings f
 
 | Variable | Default | Notes |
 |---|---|---|
-| `TEMPLATE_DIR` | `./templates/example` | Active community template. |
+| `TEMPLATES_DIR` | `./templates` | Root directory `task import-templates` reads community templates from. |
 | `DATA_DIR` | `./data` | Where uploads and exports are stored. |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Max file size per upload. |
 | `EXTRACTION_BASE_URL` | `https://api.openai.com/v1` | Override for OpenAI-compatible APIs. |
@@ -140,9 +140,9 @@ Optional. Enable data-sharing consent collection in the wizard and its provision
 REC's members belong to lives in that REC's `manifest.yaml`, under `dataspace:`
 (see Template System below). It is per community because this platform is
 multi-tenant; as deployment settings it filed every community's members into one
-organization, silently. `DATASPACE_ORGANIZATION_ALIAS`,
-`DATASPACE_ORGANIZATION_DID`, `DATASPACE_LINKED_PARTICIPANT_DID` and
-`DATASPACE_MEMBERSHIP_ROLE` are read only as a deprecated fallback and warn on use.
+organization, silently. There is deliberately no deployment-wide fallback —
+leaving one would let the defect return the first time a manifest was written
+without a block.
 
 **Startup refuses a dataspace misconfiguration.** A REC declaring
 `consent.data_sharing` with neither `DS_NS_URL` nor `DS_CONNECTOR_URL` set, or a
@@ -239,7 +239,7 @@ content:
   success: content/success.md
 ```
 
-Selected via `TEMPLATE_DIR` env var.
+Imported into the `Rec` table with `task import-templates`, then served per community at `/{rec}` — one deployment hosts several.
 
 ### Dataspace binding (optional, per community)
 
@@ -253,7 +253,9 @@ dataspace:
 
 `organization` is **one identifier** across the platform: the owner `id` in the
 deployment's `owners.yaml`, the Keycloak organization alias, and the owner id in
-the identity registry. No mapping table. `task import-templates` validates it.
+the identity registry. No mapping table. `task import-templates` validates it,
+and it is **required** whenever the block is present — a credential with no
+membership is an identity the consent endpoints will not act on.
 
 Omit the block and the community is not in the dataspace: the full wizard runs,
 no sharing consent is collected, no identity is provisioned. Supported, not

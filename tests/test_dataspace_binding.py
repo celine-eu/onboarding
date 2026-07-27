@@ -20,6 +20,18 @@ def test_no_block_means_not_in_the_dataspace(bind_rec):
     assert binding.organization == ""
 
 
+def test_a_block_must_name_an_organization(bind_rec):
+    """There is no "in the dataspace, but a member of nothing" state.
+
+    A credential without a membership is an identity that cannot do anything —
+    the consent endpoints gate on membership. Rather than let a manifest express
+    it and warn, it is not expressible: omit the block to stay out.
+    """
+    bind_rec("rec-a", linked_participant_did="did:web:consumer.dataspaces.localhost")
+    with pytest.raises(ValueError, match="'dataspace.organization' is required"):
+        ts.dataspace_binding("rec-a")
+
+
 def test_block_resolves_every_field(bind_rec):
     bind_rec(
         "rec-a",
@@ -57,7 +69,7 @@ def test_absent_block_validates():
 
 @pytest.mark.parametrize(
     "alias",
-    ["rec-example", "greenland2", "a", "x-y-z"],
+    ["rec-example", "community2", "a", "x-y-z"],
 )
 def test_accepts_aliases_the_owners_schema_accepts(alias):
     """Including the single-character form, which the owners schema permits.
@@ -90,42 +102,32 @@ def test_rejects_a_did_that_is_not_a_did(key):
         )
 
 
-def test_block_without_organization_is_allowed_but_warned(bind_rec, caplog):
-    """Legal — a credential with no membership — but almost always a mistake.
-
-    The consent endpoints gate on membership, so such a member holds an identity
-    that cannot do anything. Preserved rather than refused because it was the
-    behaviour before the binding moved into the manifest.
-    """
-    with caplog.at_level("WARNING"):
+def test_block_without_organization_is_refused():
+    with pytest.raises(ValueError, match="'dataspace.organization' is required"):
         ts.validate_dataspace_block(
             {"linked_participant_did": "did:web:consumer.dataspaces.localhost"},
             where="test",
         )
-    assert "no 'organization'" in caplog.text
 
 
-# ── the deprecated global fallback ────────────────────────────────────────────
+def test_there_is_no_deployment_wide_binding():
+    """The binding is per community, with no global fallback.
 
+    A deployment-wide alias would file every community's members into one
+    dataspace organisation — silently, since the wrong membership is still a
+    successful 201. There is deliberately nothing to fall back to.
+    """
+    from celine.onboarding.config.settings import Settings
 
-def test_env_fallback_applies_and_warns(bind_rec, monkeypatch, caplog):
-    bind_rec("legacy")  # no dataspace block
-    monkeypatch.setattr(ts.settings, "dataspace_organization_alias", "rec-legacy")
-    monkeypatch.setattr(ts.settings, "dataspace_organization_did", "did:web:legacy")
-    ts._env_fallback_warned.clear()
-
-    with caplog.at_level("WARNING"):
-        binding = ts.dataspace_binding("legacy")
-
-    assert binding.organization == "rec-legacy"
-    assert binding.organization_did == "did:web:legacy"
-    assert "deprecated" in caplog.text
-
-
-def test_manifest_wins_over_the_global(bind_rec, monkeypatch):
-    bind_rec("rec-a", organization="from-manifest")
-    monkeypatch.setattr(ts.settings, "dataspace_organization_alias", "from-env")
-    assert ts.dataspace_binding("rec-a").organization == "from-manifest"
+    fields = Settings.model_fields
+    for removed in (
+        "dataspace_organization_alias",
+        "dataspace_organization_did",
+        "dataspace_organization_name",
+        "dataspace_linked_participant_did",
+        "dataspace_membership_role",
+    ):
+        assert removed not in fields
 
 
 # ── the public config payload must not carry it ───────────────────────────────

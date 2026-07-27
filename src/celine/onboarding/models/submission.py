@@ -106,8 +106,10 @@ class Submission(Base):
         DateTime(timezone=True), nullable=True
     )
     data_sharing_consent_offer_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Comma-joined, deduplicated versions of every accepted offer. Sized for the
+    # multi-offer case consent scoping is built for, not just today's single one.
     data_sharing_consent_text_version: Mapped[str | None] = mapped_column(
-        String(20), nullable=True
+        String(200), nullable=True
     )
     data_sharing_consent_locale: Mapped[str | None] = mapped_column(String(20), nullable=True)
     data_sharing_consent_text_sha256: Mapped[str | None] = mapped_column(

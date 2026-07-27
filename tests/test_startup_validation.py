@@ -38,7 +38,7 @@ def _registry_says(monkeypatch):
 
 async def test_rec_without_a_block_starts(bind_rec, monkeypatch):
     bind_rec("plain")
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", True)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     await app_main._validate_dataspace_config()
 
 
@@ -46,7 +46,7 @@ async def test_missing_organization_refuses_to_start(
     bind_rec, monkeypatch, _registry_says
 ):
     bind_rec("rec-a", organization="org-a")
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", True)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     _registry_says(False)
 
     with pytest.raises(RuntimeError, match="does not exist"):
@@ -63,7 +63,7 @@ async def test_unreachable_registry_does_not_block_boot(
     every registry blip into a failure to start.
     """
     bind_rec("rec-a", organization="org-a")
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", True)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     _registry_says(None)
 
     await app_main._validate_dataspace_config()
@@ -71,7 +71,7 @@ async def test_unreachable_registry_does_not_block_boot(
 
 async def test_known_organization_starts(bind_rec, monkeypatch, _registry_says):
     bind_rec("rec-a", organization="org-a")
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", True)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     _registry_says(True)
 
     await app_main._validate_dataspace_config()
@@ -81,7 +81,7 @@ async def test_binding_ignored_when_vc_disabled(
     bind_rec, monkeypatch, _registry_says
 ):
     bind_rec("rec-a", organization="org-a")
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", False)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
     _registry_says(False)
 
     await app_main._validate_dataspace_config()
@@ -108,7 +108,7 @@ async def test_data_sharing_with_a_vocabulary_starts(
 ):
     manifest = bind_rec("rec-a")
     manifest["consent"] = {"data_sharing": {"required": False}}
-    monkeypatch.setattr(app_main.settings, "dataspace_vc_enabled", False)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
 
     await app_main._validate_dataspace_config()
 

@@ -22,10 +22,13 @@ def _reset_token_provider():
 @pytest.fixture()
 def _enable_vc(monkeypatch, bind_rec):
     # The dataspace binding is per-REC and lives in the manifest, so every test
-    # that provisions an identity needs its community bound. Binding without an
-    # `organization` is the "in the dataspace, no membership" case.
-    bind_rec("default", linked_participant_did="did:web:rec.example")
-    monkeypatch.setattr(di.settings, "dataspace_vc_enabled", True)
+    # that provisions an identity needs its community bound.
+    bind_rec(
+        "default",
+        organization="rec-example",
+        linked_participant_did="did:web:rec.example",
+    )
+    monkeypatch.setattr(di.settings, "dataspace_enabled", True)
     monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
@@ -65,8 +68,28 @@ def _patch_httpx(monkeypatch, handler):
 # ── skip when disabled ────────────────────────────────────────────
 
 
-async def test_skip_when_vc_disabled(monkeypatch, submission):
-    monkeypatch.setattr(di.settings, "dataspace_vc_enabled", False)
+async def test_skip_when_dataspace_disabled(monkeypatch, submission):
+    monkeypatch.setattr(di.settings, "dataspace_enabled", False)
+    await di.provision_user_identity(submission)
+    assert submission.dataspace_did is None
+
+
+async def test_skip_when_the_rec_has_no_binding(monkeypatch, submission, bind_rec):
+    """Both gates must be open: the deployment *and* this community.
+
+    Issuing a credential for a REC that is not in the dataspace would hand
+    somebody an identity belonging to no organisation — one the consent
+    endpoints refuse to act on, since they gate on membership.
+    """
+    bind_rec("default")  # no dataspace block
+    monkeypatch.setattr(di.settings, "dataspace_enabled", True)
+    monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
+
+    def handler(req):
+        raise AssertionError(f"should not have called {req.url}")
+
+    _patch_httpx(monkeypatch, handler)
+
     await di.provision_user_identity(submission)
     assert submission.dataspace_did is None
 
@@ -96,9 +119,12 @@ async def test_request_body_contents(monkeypatch, submission, _enable_vc):
     captured = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["body"] = req.content
-        captured["auth"] = req.headers.get("authorization")
+        # Capture the credential request specifically: membership follows it, and
+        # a last-write-wins capture would silently assert against the wrong body.
+        if "credentials/data-subject" in str(req.url):
+            captured["url"] = str(req.url)
+            captured["body"] = req.content
+            captured["auth"] = req.headers.get("authorization")
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
 
     _patch_httpx(monkeypatch, handler)
@@ -174,16 +200,6 @@ async def test_uses_oidc_token(monkeypatch, submission, _enable_vc):
 # ── organization membership ───────────────────────────────────────
 
 
-@pytest.fixture()
-def _enable_membership(bind_rec):
-    bind_rec(
-        "default",
-        organization="rec-example",
-        linked_participant_did="did:web:rec.example",
-        membership_role="member",
-    )
-
-
 def _membership_handler(calls, *, membership_status=201):
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
@@ -199,18 +215,8 @@ def _membership_handler(calls, *, membership_status=201):
     return handler
 
 
-async def test_membership_skipped_without_org_alias(monkeypatch, submission, _enable_vc):
-    di._token_provider = _mock_token_provider()
-    calls = []
-    _patch_httpx(monkeypatch, _membership_handler(calls))
-
-    await di.provision_user_identity(submission)
-
-    assert not any("memberships" in url for _, url, _ in calls)
-
-
 async def test_membership_registered_after_credential(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     di._token_provider = _mock_token_provider()
     calls = []
@@ -231,7 +237,7 @@ async def test_membership_registered_after_credential(
 
 
 async def test_organization_is_never_created(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     """Onboarding must not mint dataspace trust state.
 
@@ -250,7 +256,7 @@ async def test_organization_is_never_created(
 
 
 async def test_missing_organization_is_an_actionable_error(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     """A 404 on membership means the org was never seeded — say so."""
     di._token_provider = _mock_token_provider()
@@ -262,7 +268,7 @@ async def test_missing_organization_is_an_actionable_error(
 
 
 async def test_membership_conflict_is_success(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     di._token_provider = _mock_token_provider()
     calls = []
@@ -274,7 +280,7 @@ async def test_membership_conflict_is_success(
 
 
 async def test_membership_failure_raises(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     di._token_provider = _mock_token_provider()
     calls = []
@@ -317,7 +323,7 @@ async def test_binding_is_per_rec(monkeypatch, submission, _enable_vc, bind_rec)
 
 
 async def test_membership_deleted_on_kc_sync_failure(
-    monkeypatch, submission, _enable_vc, _enable_membership
+    monkeypatch, submission, _enable_vc
 ):
     di._token_provider = _mock_token_provider()
     calls = []
@@ -371,9 +377,10 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
         keycloak_realm="dataspaces",
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert "credentials/data-subject" in calls[0]
-    assert "keycloak/sync" in calls[1]
+    assert "admin/memberships" in calls[1]
+    assert "keycloak/sync" in calls[2]
 
 
 async def test_kc_sync_partial_is_accepted_and_warned(
@@ -388,6 +395,8 @@ async def test_kc_sync_partial_is_accepted_and_warned(
         calls.append((req.method, url))
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/memberships" in url:
+            return httpx.Response(201, json={"user_did": "x"})
         if "keycloak/sync" in url:
             return httpx.Response(
                 200,
@@ -428,8 +437,7 @@ async def test_kc_sync_skipped_without_user_id(monkeypatch, submission, _enable_
     _patch_httpx(monkeypatch, handler)
     await di.provision_user_identity(submission)
 
-    assert len(calls) == 1
-    assert "keycloak/sync" not in calls[0]
+    assert not any("keycloak/sync" in url for url in calls)
 
 
 # ── KC sync rollback ─────────────────────────────────────────────
@@ -444,6 +452,8 @@ async def test_rollback_on_kc_sync_failure(monkeypatch, submission, _enable_vc):
         calls.append((req.method, url))
         if "credentials/data-subject" in url and req.method == "POST":
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/memberships" in url and req.method == "POST":
+            return httpx.Response(201, json={"user_did": "x"})
         if "keycloak/sync" in url:
             return httpx.Response(500, text="KC unavailable")
         if req.method == "DELETE" and "credentials/" in url:
@@ -459,9 +469,12 @@ async def test_rollback_on_kc_sync_failure(monkeypatch, submission, _enable_vc):
             keycloak_realm="dataspaces",
         )
 
-    delete_calls = [(m, u) for m, u in calls if m == "DELETE"]
-    assert len(delete_calls) == 1
-    assert "urn:uuid:cred-001" in delete_calls[0][1]
+    # The rollback unwinds both: membership first, then the credential. Leaving
+    # either behind would be trust state with no Keycloak mapping behind it.
+    delete_calls = [u for m, u in calls if m == "DELETE"]
+    assert len(delete_calls) == 2
+    assert "admin/memberships" in delete_calls[0]
+    assert "urn:uuid:cred-001" in delete_calls[1]
 
 
 async def test_kc_sync_retries_before_rollback(monkeypatch, submission, _enable_vc):
@@ -472,6 +485,8 @@ async def test_kc_sync_retries_before_rollback(monkeypatch, submission, _enable_
         url = str(req.url)
         if "credentials/data-subject" in url and req.method == "POST":
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/memberships" in url and req.method == "POST":
+            return httpx.Response(201, json={"user_did": "x"})
         if "keycloak/sync" in url:
             sync_attempts.append(1)
             return httpx.Response(500, text="fail")

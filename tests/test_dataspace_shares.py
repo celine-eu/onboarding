@@ -28,19 +28,22 @@ def _reset_token_provider():
 
 
 @pytest.fixture()
-def _enable_shares(monkeypatch):
-    monkeypatch.setattr(di.settings, "dataspace_vc_enabled", True)
+def _enable_shares(monkeypatch, bind_rec):
+    bind_rec(
+        "default",
+        organization="rec-example",
+        linked_participant_did="did:web:rec.example",
+    )
+    monkeypatch.setattr(di.settings, "dataspace_enabled", True)
     monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
     monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30001")
-    monkeypatch.setattr(di.settings, "dataspace_organization_alias", "")  # skip membership
     monkeypatch.setattr(di.settings, "dataspace_subject_source", "email_hash")
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
     monkeypatch.setattr(di.settings, "dataspace_allowed_actions", "consent.manage")
-    monkeypatch.setattr(di.settings, "dataspace_linked_participant_did", "did:web:rec.example")
 
 
 def _consented(submission):

@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
 
-When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried via `POST /api/admin/submissions/{id}/retry-share`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
+When dataspace provisioning is enabled (`DATASPACE_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried via `POST /api/admin/submissions/{id}/retry-share`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
 ### For the community
 
@@ -38,7 +38,7 @@ Each REC gets a template folder that customizes the platform without code change
 - **Content** — markdown files for the welcome page, consent intro, and success message
 - **Notifications** — sender address, operator email list, optional storage backend (S3/Google Drive), optional webhook
 
-The template is selected at deploy time via the `TEMPLATE_DIR` environment variable.
+Templates are imported into the database with `task import-templates`, and served per community at `/{rec}` — one deployment hosts several.
 
 ## Architecture
 
@@ -124,8 +124,7 @@ This creates the database, runs migrations, and starts backend + frontend. Requi
 ### Choosing a template
 
 ```bash
-# In .env
-TEMPLATE_DIR=./templates/my-community
+task import-templates -- --filter my-community
 ```
 
 See `templates/example/` for the manifest format.
@@ -155,7 +154,7 @@ See `templates/example/` for the manifest format.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TEMPLATE_DIR` | `./templates/example` | Active community template |
+| `TEMPLATES_DIR` | `./templates` | Root directory templates are imported from |
 | `DATA_DIR` | `./data` | Upload and export storage path |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Maximum file upload size |
 | `EXTRACTION_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
@@ -194,7 +193,7 @@ Optional. When a REC manifest's `steps` includes `phone_verify`, participants ve
 
 ### Dataspace Identity Provisioning
 
-Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + REC organization membership + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication.
+Optional. Set `DATASPACE_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + REC organization membership + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication.
 
 Which organization a community's members join is set **per community**, in that template's `manifest.yaml` under `dataspace:` — not as a deployment-wide variable. Omit the block and the community simply is not in the dataspace. The organization must already exist and be promoted in the registry; onboarding never creates one. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
 
@@ -202,21 +201,17 @@ After approval a participant manages and withdraws their sharing decisions in th
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_VC_ENABLED` | `false` | Master toggle for identity provisioning on approval |
+| `DATASPACE_ENABLED` | `false` | Deployment-wide gate for dataspace identity provisioning. A community also needs a `dataspace:` block in its manifest |
 | `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service |
 | `OIDC_BASE_URL` | *(none)* | OIDC issuer URL for M2M token acquisition |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M auth |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M auth |
-| `DATASPACE_LINKED_PARTICIPANT_DID` | *(none)* | Participant DID the user is linked to |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
 | `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` hashes login email for DID paths) |
-| `DATASPACE_ORGANIZATION_ALIAS` | *(none)* | REC organization alias in identity-registry; unset skips membership registration |
-| `DATASPACE_ORGANIZATION_NAME` | *(alias)* | Display name used when creating the organization |
-| `DATASPACE_ORGANIZATION_DID` | *(none)* | Optional DID for the organization record |
-| `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | Ensure the organization exists via `POST /admin/owners` before membership |
-| `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership |
+
+Which organization a community's members join, its DID and the linked participant are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from; empty falls back to the connector's `/ns` path |
 | `DS_PROVENANCE_URL` | *(none)* | Provenance base URL for recording a named-recipient CSV export as a `DataDisclosed` event (`POST /prov/events`, scope `provenance.write`); empty disables the emission |

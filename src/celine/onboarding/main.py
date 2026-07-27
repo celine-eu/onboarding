@@ -51,7 +51,7 @@ async def _validate_dataspace_config() -> None:
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 
-        if not (binding.enabled and settings.dataspace_vc_enabled):
+        if not (binding.enabled and settings.dataspace_enabled):
             continue
 
         from celine.onboarding.services.dataspace_identity import organization_exists

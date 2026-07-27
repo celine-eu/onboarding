@@ -73,6 +73,16 @@ def test_consent_without_offers_is_refused():
         SubmissionUpdate(**payload)
 
 
+def test_several_offer_versions_fit():
+    """Consent is purpose-scoped, so several offers over one dataset is the
+    intended shape — the wizard comma-joins their deduplicated versions. The
+    column was sized for the single-offer case and overflowed at four, failing
+    the submission at the last step for a reason nothing in the UI could explain.
+    """
+    versions = ",".join(f"{n}.0" for n in range(1, 21))  # 80 chars
+    SubmissionUpdate(**{**COMPLETE, "data_sharing_consent_text_version": versions})
+
+
 def test_declining_needs_no_evidence():
     """Withdrawal and refusal must never be harder than agreeing."""
     SubmissionUpdate(data_sharing_consent=False)

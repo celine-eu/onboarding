@@ -40,7 +40,11 @@ def upgrade() -> None:
     )
     op.add_column(
         'submissions',
-        sa.Column('data_sharing_consent_text_version', sa.String(20), nullable=True),
+        # Comma-joined, deduplicated versions of every accepted offer. Consent
+        # is purpose-scoped, so several offers over one dataset is the intended
+        # shape — sizing this for a single offer overflows at four and fails the
+        # submission at its last step.
+        sa.Column('data_sharing_consent_text_version', sa.String(200), nullable=True),
     )
     op.add_column(
         'submissions',

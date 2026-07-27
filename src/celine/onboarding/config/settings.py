@@ -13,7 +13,6 @@ class Settings(BaseSettings):
 
     data_dir: str = str(REPO_ROOT / "data")
     templates_dir: str = str(REPO_ROOT / "templates")
-    template_dir: str = ""
     max_upload_size_mb: int = 10
 
     encryption_key: str = ""
@@ -34,13 +33,11 @@ class Settings(BaseSettings):
     smtp_tls: bool = True
     smtp_notify: str = ""
 
-    dataspace_vc_enabled: bool = False
+    dataspace_enabled: bool = False
     identity_registry_url: str = ""
     oidc_base_url: str = ""
     ds_onboarding_client_id: str = "svc-ds-onboarding"
     ds_onboarding_client_secret: str = ""
-    # DEPRECATED — see the note on dataspace_organization_alias below.
-    dataspace_linked_participant_did: str = ""
     dataspace_user_role: str = "DataSubject"
     dataspace_allowed_actions: str = "consent.manage,data.share"
     dataspace_vc_ttl_days: int = 365
@@ -69,15 +66,10 @@ class Settings(BaseSettings):
     otp_max_sends_per_hour: int = 3
     otp_lockout_seconds: int = 3600
 
-    # DEPRECATED — the dataspace binding is per-REC and lives in the template
-    # manifest's `dataspace:` block (organization, organization_did,
-    # linked_participant_did, membership_role). These globals are read only as a
-    # fallback for a manifest that has none, and warn when used: this platform is
-    # multi-tenant, so a single global alias files every community's members into
-    # one dataspace organisation. Remove after one release.
-    dataspace_organization_alias: str = ""
-    dataspace_organization_did: str = ""
-    dataspace_membership_role: str = "member"
+    # The dataspace binding is per-REC and lives in the template manifest's
+    # `dataspace:` block. There is deliberately no deployment-wide equivalent:
+    # this platform is multi-tenant, and a single global alias would file every
+    # community's members into one dataspace organisation.
 
     dataspace_keycloak_enabled: bool = False
     dataspace_keycloak_base_url: str = ""

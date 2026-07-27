@@ -20,8 +20,6 @@ CACHE_TTL: float = 5.0
 # rejected here.
 SAFE_ORG_ALIAS = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
 
-_env_fallback_warned: set[str] = set()
-
 
 async def load_recs_from_db() -> None:
     global _cache_loaded_at
@@ -125,9 +123,9 @@ class DataspaceBinding:
     def enabled(self) -> bool:
         """Whether this REC participates in the dataspace at all.
 
-        A REC without an organisation runs the full wizard and provisions no
-        dataspace identity. That is a supported configuration, not a degraded
-        one — onboarding must keep working with no dataspace infrastructure.
+        A REC without a block runs the full wizard and provisions no dataspace
+        identity — supported, not degraded, since onboarding must keep working
+        with no dataspace infrastructure at all.
         """
         return bool(self.organization)
 
@@ -145,17 +143,14 @@ def validate_dataspace_block(block: Any, *, where: str) -> None:
 
     alias = str(block.get("organization", "")).strip()
     if not alias:
-        # Legal but almost always a mistake: a member gets a credential and no
-        # membership, and the consent endpoints gate on membership — so they hold
-        # an identity that cannot do anything. Warn rather than refuse, because
-        # this was the behaviour before the binding moved into the manifest.
-        logger.warning(
-            "%s: 'dataspace' block declares no 'organization', so approved "
-            "members will be issued a credential but no membership — and the "
-            "consent endpoints gate on membership.",
-            where,
+        # A credential without a membership is an identity that cannot do
+        # anything: the consent endpoints gate on membership. There is no reason
+        # to express it, so it is not expressible.
+        raise ValueError(
+            f"{where}: 'dataspace.organization' is required. Omit the whole "
+            "'dataspace' block to keep this community out of the dataspace."
         )
-    elif not SAFE_ORG_ALIAS.fullmatch(alias):
+    if not SAFE_ORG_ALIAS.fullmatch(alias):
         raise ValueError(
             f"{where}: 'dataspace.organization' must be lowercase alphanumeric "
             f"with inner hyphens (got {alias!r}). It must match the owner id in "
@@ -168,41 +163,15 @@ def validate_dataspace_block(block: Any, *, where: str) -> None:
             raise ValueError(f"{where}: 'dataspace.{key}' must be a DID (got {did!r})")
 
 
-def _env_fallback(rec_slug: str) -> dict[str, str]:
-    """Deprecated global settings, honoured for one release.
-
-    Returns the legacy environment binding and warns once per REC. Delete this
-    together with the settings fields.
-    """
-    alias = settings.dataspace_organization_alias.strip()
-    if not alias:
-        return {}
-    if rec_slug not in _env_fallback_warned:
-        _env_fallback_warned.add(rec_slug)
-        logger.warning(
-            "REC %r has no 'dataspace' block in its manifest; falling back to the "
-            "deprecated global DATASPACE_ORGANIZATION_* settings. Move the binding "
-            "into the manifest — the globals file every community into one "
-            "organisation and will be removed.",
-            rec_slug,
-        )
-    return {
-        "organization": alias,
-        "organization_did": settings.dataspace_organization_did,
-        "linked_participant_did": settings.dataspace_linked_participant_did,
-        "membership_role": settings.dataspace_membership_role,
-    }
-
-
 def dataspace_binding(rec_slug: str) -> DataspaceBinding:
     """Resolve a REC's dataspace binding from its manifest."""
-    block = load_manifest(rec_slug).get("dataspace") or _env_fallback(rec_slug)
+    block = load_manifest(rec_slug).get("dataspace")
     if not block:
         return DataspaceBinding()
 
     validate_dataspace_block(block, where=f"REC {rec_slug!r}")
     return DataspaceBinding(
-        organization=str(block.get("organization", "") or "").strip(),
+        organization=str(block["organization"]).strip(),
         organization_did=str(block.get("organization_did", "") or "").strip(),
         linked_participant_did=str(
             block.get("linked_participant_did", "") or ""

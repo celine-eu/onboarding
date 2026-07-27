@@ -2,7 +2,11 @@
 
 ## Overview
 
-When a user completes onboarding and `DATASPACE_VC_ENABLED` is `true`, the system provisions a dataspace identity for the approved user. This includes:
+Dataspace identity provisioning needs **two gates open**: `DATASPACE_ENABLED` for the deployment, and a `dataspace:` block in that community's manifest. A REC without a block gets no credential even when the deployment is enabled — issuing one would hand somebody an identity belonging to no organization, which the consent endpoints refuse to act on anyway.
+
+Keycloak user creation is a **separate** gate (`DATASPACE_KEYCLOAK_ENABLED`), so it can be used on its own: participants get a login, and no dataspace is involved.
+
+When both gates are open and a submission is approved, the system provisions a dataspace identity for that user. This includes:
 
 - A **DID** (Decentralized Identifier) for the user as a data subject
 - A **Verifiable Credential** (VC) binding the user to a participant organization
@@ -18,7 +22,7 @@ Onboarding stores only the subject ID, DID, credential ID, and issuance timestam
 
 ## Flow
 
-When a submission is approved and `DATASPACE_VC_ENABLED` is true:
+When a submission is approved, `DATASPACE_ENABLED` is true and the REC declares a `dataspace:` block:
 
 1. `provision_keycloak_user()` creates or locates the Keycloak user and returns the `user_id`.
 2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak, then provisions any data-sharing shares to the connector as its last step.
@@ -107,11 +111,11 @@ The `httpx.AsyncClient` is configured with the auth provider, so all outgoing re
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_VC_ENABLED` | `false` | Master toggle. When `false`, all dataspace identity provisioning is skipped. |
-| `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service (e.g. `http://identity-registry:8000`). Required when `DATASPACE_VC_ENABLED=true`. |
-| `OIDC_BASE_URL` | *(none)* | OIDC issuer URL for M2M token acquisition (e.g. `http://keycloak:8080/realms/dataspace`). Required when `DATASPACE_VC_ENABLED=true`. |
+| `DATASPACE_ENABLED` | `false` | Deployment-wide gate. When `false`, no dataspace identity provisioning happens anywhere. Keycloak user creation is gated separately by `DATASPACE_KEYCLOAK_ENABLED`, so it can be used on its own to give participants a login without any dataspace. |
+| `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service (e.g. `http://identity-registry:8000`). Required when `DATASPACE_ENABLED=true`. |
+| `OIDC_BASE_URL` | *(none)* | OIDC issuer URL for M2M token acquisition (e.g. `http://keycloak:8080/realms/dataspace`). Required when `DATASPACE_ENABLED=true`. |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M authentication. |
-| `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M authentication. Required when `DATASPACE_VC_ENABLED=true`. |
+| `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M authentication. Required when `DATASPACE_ENABLED=true`. |
 
 ### Dataspace policy settings
 
@@ -144,6 +148,10 @@ dataspace:
 | `linked_participant_did` | Optional participant the issued credential is linked to. |
 | `membership_role` | Role recorded on the membership. |
 
+`organization` is **required** when the block is present. There is no "in the
+dataspace but a member of nothing" state: a credential without a membership is an
+identity that cannot do anything, since the consent endpoints gate on membership.
+
 **Omit the whole block and the community is not in the dataspace**: the full
 wizard runs, no sharing consent is collected and no identity is provisioned. That
 is a supported configuration — onboarding works with no dataspace infrastructure
@@ -155,9 +163,9 @@ carries a `rec_slug`. As deployment-wide settings, these filed **every** approve
 member into one organization, silently — the wrong membership is still a
 successful `201`.
 
-`DATASPACE_ORGANIZATION_ALIAS`, `DATASPACE_ORGANIZATION_DID`,
-`DATASPACE_LINKED_PARTICIPANT_DID` and `DATASPACE_MEMBERSHIP_ROLE` are still read
-when a manifest has no block, and warn on use. They will be removed.
+There is deliberately **no deployment-wide equivalent**. A global alias is what
+produced the defect above, and leaving one as a fallback would let it come back
+the first time a manifest was written without a block.
 
 ### Why onboarding never creates an organization
 
@@ -197,7 +205,7 @@ These control provisioning of data-sharing consent to the dataspace connector (s
 
 The integration follows a **fail-closed** strategy:
 
-- If `DATASPACE_VC_ENABLED` is `true` and identity provisioning fails, the submission status change to `approved` is rejected. The admin sees an error and can retry.
+- If `DATASPACE_ENABLED` is `true` and identity provisioning fails, the submission status change to `approved` is rejected. The admin sees an error and can retry.
 - **Credential revocation on sync failure**: If the credential is issued successfully but the Keycloak sync fails after 3 retries, the membership is deleted and the credential is revoked via `DELETE /admin/credentials/{credentialId}`. This ensures there are no orphaned credentials or memberships without a corresponding Keycloak DID mapping.
 - **Idempotent membership calls**: `409 Conflict` from `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. A `404` names the missing organization. Any other 4xx/5xx aborts the approval.
 - **Incomplete consent evidence is refused locally**: a data-sharing consent with no `consent_text_version` or no `rendered_text_sha256` is rejected at capture, and `provision_user_shares` pre-flights the same rule rather than sending a record the connector will `422`. That rejection is permanent — you cannot retrospectively prove what somebody was shown — so it is surfaced on the admin view rather than left in a log.
