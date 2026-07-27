@@ -43,9 +43,6 @@ sequenceDiagram
     Onboarding->>IdRegistry: POST /admin/credentials/data-subject<br/>{participantDid, role, allowedActions, ttlDays}
     IdRegistry-->>Onboarding: {subjectDid, credentialId, generatedAt}
 
-    Onboarding->>IdRegistry: POST /admin/owners<br/>{id, name, did}
-    IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
-
     Onboarding->>IdRegistry: POST /admin/memberships<br/>{user_did, organization_alias, role}
     IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
 
@@ -78,9 +75,9 @@ sequenceDiagram
 
 2. **Credential issuance** -- `POST /admin/credentials/data-subject` sends the participant DID, role, allowed actions, and TTL to the identity-registry. The registry generates a DID for the user, issues a Verifiable Credential, and returns `{subjectDid, credentialId, generatedAt}`.
 
-3. **Organization ensure** -- `POST /admin/owners` creates the REC organization if it does not exist yet. A `409 Conflict` means it is already registered and is treated as success, so the call is safe to repeat on every approval. Set `DATASPACE_ORGANIZATION_AUTO_CREATE=false` if the organization is provisioned out-of-band and onboarding should not attempt to create it.
+3. **Organization** -- onboarding **does not create one**, by design. See "Why onboarding never creates an organization" below. The organization named by the REC's manifest must already exist and be promoted in the identity registry; a `404` from the membership call means it was never seeded, and says so.
 
-4. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization with `DATASPACE_MEMBERSHIP_ROLE`. A `409 Conflict` is treated as success. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
+4. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization with the manifest's `dataspace.membership_role`. A `409 Conflict` is treated as success; a `404` means the organization does not exist. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
 
 5. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
 
@@ -88,7 +85,7 @@ sequenceDiagram
 
 7. **Data-sharing share provisioning** -- `provision_user_shares()` runs as the last step, after the Keycloak DID sync. When `DS_CONNECTOR_URL` is set and the submission's `data_sharing_consent` is true, it POSTs once per recorded offer id to `{DS_CONNECTOR_URL}/consent/admin/shares` with body `{subject_id: <dataspace DID>, offer_id, enabled: true, legal_basis: {source: "onboarding", rec_slug, consent_text_version, locale, rendered_text_sha256, accepted_at, submission_ref}}`. It names an offer, never a dataset. The call is idempotent and sets `share_provisioned=true` on success. Unlike step 6, it is **deliberately non-fatal**: a failed share never rolls back the identity or rejects the approval -- it leaves `share_provisioned=false` for retry. Onboarding authenticates with its `svc-ds-onboarding` service token (scope `connector.consent.provision`, audience `svc-ds-connector`).
 
-Steps 3 and 4 are skipped entirely when `DATASPACE_ORGANIZATION_ALIAS` is unset, which keeps existing deployments working unchanged. Step 7 is skipped when `DS_CONNECTOR_URL` is unset.
+Step 4 is skipped entirely when the REC's manifest declares no `dataspace.organization`. Step 7 is skipped when `DS_CONNECTOR_URL` is unset.
 
 ### Retrying a failed share
 
@@ -122,21 +119,70 @@ These settings control what goes into the issued credential:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_LINKED_PARTICIPANT_DID` | *(none)* | DID of the participant organization the user is linked to (e.g. `did:web:participant.example.com`). |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential (e.g. `member`). |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated actions the user is authorized for. |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. |
 | `DATASPACE_SUBJECT_SOURCE` | `email_hash` | How the subject identifier is derived. `email_hash` hashes the login email to produce a stable ID without placing raw email in DID paths. |
 
-### Organization membership settings
+### The per-community binding lives in the manifest
 
-| Variable | Default | Description |
-|---|---|---|
-| `DATASPACE_ORGANIZATION_ALIAS` | *(none)* | Alias (owner `id`) of the REC organization in the identity-registry. Must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$`. When unset, organization and membership registration are skipped. |
-| `DATASPACE_ORGANIZATION_NAME` | *(alias)* | Display name used when creating the organization. Defaults to the alias. |
-| `DATASPACE_ORGANIZATION_DID` | *(none)* | Optional DID for the organization record (e.g. `did:web:rec.example.com`). |
-| `DATASPACE_ORGANIZATION_AUTO_CREATE` | `true` | When `true`, onboarding ensures the organization exists via `POST /admin/owners` before registering the membership. Set `false` if the organization is managed out-of-band. |
-| `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership. |
+Which dataspace organization a community's members belong to is **not** a
+deployment setting. It is per community, in `templates/<slug>/manifest.yaml`:
+
+```yaml
+dataspace:
+  organization: example-community          # = KC org alias = IR owner id
+  organization_did: did:web:example-community.dataspaces.localhost
+  linked_participant_did: did:web:consumer.dataspaces.localhost
+  membership_role: member                  # optional, defaults to "member"
+```
+
+| Key | Notes |
+|---|---|
+| `organization` | Owner `id` in the identity registry. Must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$` and an owner that already exists there. Validated by `task import-templates`. |
+| `organization_did` | Optional DID for the organization; used as the disclosing agent on provenance events. |
+| `linked_participant_did` | Optional participant the issued credential is linked to. |
+| `membership_role` | Role recorded on the membership. |
+
+**Omit the whole block and the community is not in the dataspace**: the full
+wizard runs, no sharing consent is collected and no identity is provisioned. That
+is a supported configuration — onboarding works with no dataspace infrastructure
+at all — not a degraded one.
+
+The binding is per community because this platform is multi-tenant: manifests
+live in the `Rec` table, every wizard route is `/api/{rec}/…` and every submission
+carries a `rec_slug`. As deployment-wide settings, these filed **every** approved
+member into one organization, silently — the wrong membership is still a
+successful `201`.
+
+`DATASPACE_ORGANIZATION_ALIAS`, `DATASPACE_ORGANIZATION_DID`,
+`DATASPACE_LINKED_PARTICIPANT_DID` and `DATASPACE_MEMBERSHIP_ROLE` are still read
+when a manifest has no block, and warn on use. They will be removed.
+
+### Why onboarding never creates an organization
+
+`POST /admin/owners` is not called, and the capability was removed rather than
+defaulted off.
+
+An organization created from an approval carries **no verification, no agreement
+and therefore no declared capacity** — and the registry's `status` column
+defaults to `verified`, so such a row *reads* as verified while nothing verified
+it. Capacity is what the connector's circle check reads to decide whether a party
+requesting data is a processor of the controller (disclosed under a DPA) or an
+independent controller (a new consent question for the member). With none
+declared, the check resolves "outside the circle": the safe direction, for the
+wrong reason, invisibly.
+
+Organizations arrive through the registry's **verify → agreement → credential →
+promote** chain, seeded by an operator from the deployment's `owners.yaml`. A
+missing organization is a deployment error:
+
+- at startup, the service **refuses to boot** when a bound community's
+  organization is unknown to the registry;
+- a registry that cannot be reached does *not* block boot — "no such owner" is a
+  configuration error worth refusing on, "I could not ask" is not;
+- at approval, a `404` from the membership call says the organization was never
+  seeded.
 
 ### Data-sharing share settings
 
@@ -153,7 +199,8 @@ The integration follows a **fail-closed** strategy:
 
 - If `DATASPACE_VC_ENABLED` is `true` and identity provisioning fails, the submission status change to `approved` is rejected. The admin sees an error and can retry.
 - **Credential revocation on sync failure**: If the credential is issued successfully but the Keycloak sync fails after 3 retries, the membership is deleted and the credential is revoked via `DELETE /admin/credentials/{credentialId}`. This ensures there are no orphaned credentials or memberships without a corresponding Keycloak DID mapping.
-- **Idempotent organization and membership calls**: `409 Conflict` from `POST /admin/owners` and `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. Any other 4xx/5xx aborts the approval.
+- **Idempotent membership calls**: `409 Conflict` from `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. A `404` names the missing organization. Any other 4xx/5xx aborts the approval.
+- **Incomplete consent evidence is refused locally**: a data-sharing consent with no `consent_text_version` or no `rendered_text_sha256` is rejected at capture, and `provision_user_shares` pre-flights the same rule rather than sending a record the connector will `422`. That rejection is permanent — you cannot retrospectively prove what somebody was shown — so it is surfaced on the admin view rather than left in a log.
 - **No partial state**: Either the full provisioning succeeds (credential + organization + membership + KC sync) or nothing is committed. The submission remains in its previous status.
 - **Share provisioning is non-fatal**: Data-sharing share provisioning (step 7) runs after the identity is committed and is exempt from fail-closed. A connector rejection or error leaves `share_provisioned=false` and logs, but never rolls back the identity or the approval. Operators retry via `POST /api/admin/submissions/{id}/retry-share` (which surfaces connector rejections as `422`).
 

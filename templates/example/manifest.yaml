@@ -89,6 +89,29 @@ consent:
     offers:
       - household-energy-flexibility
 
+# Dataspace binding — OPTIONAL, and per community rather than per deployment.
+# Omit the whole block and this community runs the full wizard, collects no
+# sharing consent and provisions no dataspace identity: a supported setup, not a
+# degraded one. Onboarding must keep working with no dataspace infrastructure.
+#
+# `organization` is ONE identifier across the platform: the owner `id` in the
+# deployment's owners.yaml, the Keycloak organization alias, and the owner id in
+# the identity registry. No mapping table — a typo fails against a name that
+# already exists somewhere checkable, and `task import-templates` validates it.
+#
+# The organization must already exist and be promoted in the identity registry.
+# Onboarding never creates it: trust state arrives through the registry's
+# verify -> agreement -> credential -> promote chain, seeded by an operator from
+# owners.yaml. An organization created from an approval would carry no
+# verification, no agreement and so no declared capacity — and capacity is what
+# decides whether a recipient is disclosed or has to be consented to separately.
+#
+# dataspace:
+#   organization: example-community
+#   organization_did: did:web:example-community.dataspaces.localhost
+#   linked_participant_did: did:web:consumer.dataspaces.localhost
+#   membership_role: member
+
 notifications:
   from: "noreply@example.com"
   notify:

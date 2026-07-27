@@ -92,3 +92,9 @@ tasks:
     dir: "{{.SRC_DIR}}"
     cmds:
       - uv run cer export-csv {{.CLI_ARGS}}
+
+  export-pod-list:
+    desc: "Export consented supply points for a distributor (snapshot — re-export on cadence)"
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run cer export-pod-list {{.CLI_ARGS}}

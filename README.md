@@ -23,7 +23,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 ### For the operator
 
-Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. All admin operations are audit-logged.
+Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
 
 When dataspace provisioning is enabled (`DATASPACE_VC_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried via `POST /api/admin/submissions/{id}/retry-share`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
@@ -194,7 +194,11 @@ Optional. When a REC manifest's `steps` includes `phone_verify`, participants ve
 
 ### Dataspace Identity Provisioning
 
-Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + REC organization membership + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
+Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID + Verifiable Credential + REC organization membership + Keycloak DID attribute) when an admin approves a submission. Requires the **identity-registry** service and `celine-sdk>=1.13.0` for M2M authentication.
+
+Which organization a community's members join is set **per community**, in that template's `manifest.yaml` under `dataspace:` — not as a deployment-wide variable. Omit the block and the community simply is not in the dataspace. The organization must already exist and be promoted in the registry; onboarding never creates one. See [docs/dataspace-integration.md](docs/dataspace-integration.md) for the full integration guide.
+
+After approval a participant manages and withdraws their sharing decisions in the dataspace portal (`/my-data`), authenticated by their own credential — not here.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -215,6 +219,7 @@ Optional. Set `DATASPACE_VC_ENABLED=true` to provision a dataspace identity (DID
 | `DATASPACE_MEMBERSHIP_ROLE` | `member` | Role recorded on the membership |
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from; empty falls back to the connector's `/ns` path |
+| `DS_PROVENANCE_URL` | *(none)* | Provenance base URL for recording a named-recipient CSV export as a `DataDisclosed` event (`POST /prov/events`, scope `provenance.write`); empty disables the emission |
 
 ## Creating a Template
 
@@ -243,6 +248,7 @@ task migration -- "msg"   # create new migration
 task test                 # backend + frontend tests
 task lint                 # ruff + svelte-check
 task export-csv           # export submissions to data/exports/
+task export-pod-list      # export consented supply points for a distributor
 ```
 
 ### Adding a field

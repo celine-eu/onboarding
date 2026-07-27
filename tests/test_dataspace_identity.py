@@ -20,7 +20,11 @@ def _reset_token_provider():
 
 
 @pytest.fixture()
-def _enable_vc(monkeypatch):
+def _enable_vc(monkeypatch, bind_rec):
+    # The dataspace binding is per-REC and lives in the manifest, so every test
+    # that provisions an identity needs its community bound. Binding without an
+    # `organization` is the "in the dataspace, no membership" case.
+    bind_rec("default", linked_participant_did="did:web:rec.example")
     monkeypatch.setattr(di.settings, "dataspace_vc_enabled", True)
     monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
@@ -30,7 +34,6 @@ def _enable_vc(monkeypatch):
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
     monkeypatch.setattr(di.settings, "dataspace_allowed_actions", "consent.manage,data.share")
-    monkeypatch.setattr(di.settings, "dataspace_linked_participant_did", "did:web:rec.example")
 
 
 CREDENTIAL_RESPONSE = {
@@ -172,22 +175,21 @@ async def test_uses_oidc_token(monkeypatch, submission, _enable_vc):
 
 
 @pytest.fixture()
-def _enable_membership(monkeypatch):
-    monkeypatch.setattr(di.settings, "dataspace_organization_alias", "rec-example")
-    monkeypatch.setattr(di.settings, "dataspace_organization_name", "REC Example")
-    monkeypatch.setattr(di.settings, "dataspace_organization_did", "")
-    monkeypatch.setattr(di.settings, "dataspace_organization_auto_create", True)
-    monkeypatch.setattr(di.settings, "dataspace_membership_role", "member")
+def _enable_membership(bind_rec):
+    bind_rec(
+        "default",
+        organization="rec-example",
+        linked_participant_did="did:web:rec.example",
+        membership_role="member",
+    )
 
 
-def _membership_handler(calls, *, owners_status=201, membership_status=201):
+def _membership_handler(calls, *, membership_status=201):
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         calls.append((req.method, url, req.content.decode() if req.content else ""))
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
-        if "admin/owners" in url:
-            return httpx.Response(owners_status, json={"id": "rec-example"})
         if "admin/memberships" in url:
             return httpx.Response(membership_status, json={"user_did": "x"})
         if "keycloak/sync" in url:
@@ -218,10 +220,9 @@ async def test_membership_registered_after_credential(
 
     paths = [url for _, url, _ in calls]
     assert "credentials/data-subject" in paths[0]
-    assert "admin/owners" in paths[1]
-    assert "admin/memberships" in paths[2]
+    assert "admin/memberships" in paths[1]
 
-    body = json.loads(calls[2][2])
+    body = json.loads(calls[1][2])
     assert body == {
         "user_did": CREDENTIAL_RESPONSE["subjectDid"],
         "organization_alias": "rec-example",
@@ -229,34 +230,35 @@ async def test_membership_registered_after_credential(
     }
 
 
-async def test_organization_created_with_name_and_did(
+async def test_organization_is_never_created(
     monkeypatch, submission, _enable_vc, _enable_membership
 ):
-    monkeypatch.setattr(di.settings, "dataspace_organization_did", "did:web:rec.example")
+    """Onboarding must not mint dataspace trust state.
+
+    An owner created from an approval carries no verification, no agreement and
+    therefore no declared capacity — and capacity is what the connector's circle
+    check reads. The organisation is seeded by an operator from the deployment's
+    owners.yaml through the registry's gated chain, never from here.
+    """
     di._token_provider = _mock_token_provider()
     calls = []
     _patch_httpx(monkeypatch, _membership_handler(calls))
 
     await di.provision_user_identity(submission)
 
-    owner_body = json.loads(next(c[2] for c in calls if "admin/owners" in c[1]))
-    assert owner_body == {
-        "id": "rec-example",
-        "name": "REC Example",
-        "did": "did:web:rec.example",
-    }
+    assert not any("admin/owners" in url for _, url, _ in calls)
 
 
-async def test_organization_conflict_is_success(
+async def test_missing_organization_is_an_actionable_error(
     monkeypatch, submission, _enable_vc, _enable_membership
 ):
+    """A 404 on membership means the org was never seeded — say so."""
     di._token_provider = _mock_token_provider()
     calls = []
-    _patch_httpx(monkeypatch, _membership_handler(calls, owners_status=409))
+    _patch_httpx(monkeypatch, _membership_handler(calls, membership_status=404))
 
-    await di.provision_user_identity(submission)
-
-    assert any("admin/memberships" in url for _, url, _ in calls)
+    with pytest.raises(ValueError, match="does not exist in the identity registry"):
+        await di.provision_user_identity(submission)
 
 
 async def test_membership_conflict_is_success(
@@ -282,29 +284,36 @@ async def test_membership_failure_raises(
         await di.provision_user_identity(submission)
 
 
-async def test_organization_creation_skipped_when_disabled(
-    monkeypatch, submission, _enable_vc, _enable_membership
-):
-    monkeypatch.setattr(di.settings, "dataspace_organization_auto_create", False)
+async def test_binding_is_per_rec(monkeypatch, submission, _enable_vc, bind_rec):
+    """Two communities in one deployment must not share an organisation.
+
+    This is the defect the manifest binding exists to fix: the binding used to be
+    a global environment variable, so every approved member landed in the same
+    dataspace organisation — silently, since the wrong membership is still a 201.
+    """
+    bind_rec("rec-a", organization="org-a")
+    bind_rec("rec-b", organization="org-b")
     di._token_provider = _mock_token_provider()
-    calls = []
-    _patch_httpx(monkeypatch, _membership_handler(calls))
 
-    await di.provision_user_identity(submission)
+    seen = []
 
-    assert not any("admin/owners" in url for _, url, _ in calls)
-    assert any("admin/memberships" in url for _, url, _ in calls)
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "admin/memberships" in url:
+            seen.append(json.loads(req.content.decode())["organization_alias"])
+            return httpx.Response(201, json={"user_did": "x"})
+        return httpx.Response(404)
 
+    _patch_httpx(monkeypatch, handler)
 
-async def test_invalid_org_alias_rejected(
-    monkeypatch, submission, _enable_vc, _enable_membership
-):
-    monkeypatch.setattr(di.settings, "dataspace_organization_alias", "REC_Example!")
-    di._token_provider = _mock_token_provider()
-    _patch_httpx(monkeypatch, _membership_handler([]))
-
-    with pytest.raises(ValueError, match="DATASPACE_ORGANIZATION_ALIAS"):
+    for slug in ("rec-a", "rec-b"):
+        submission.rec_slug = slug
+        submission.dataspace_vc_id = None
         await di.provision_user_identity(submission)
+
+    assert seen == ["org-a", "org-b"]
 
 
 async def test_membership_deleted_on_kc_sync_failure(

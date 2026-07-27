@@ -36,11 +36,20 @@ async def test_no_data_sharing_block_returns_empty(monkeypatch):
     assert await ts.get_sharing_offers("rec") == []
 
 
-async def test_no_connector_configured_returns_empty(monkeypatch):
+async def test_no_connector_configured_raises(monkeypatch):
+    """Declaring data_sharing with no vocabulary is a misconfiguration, not "none".
+
+    An empty list would be indistinguishable from a community that shares
+    nothing, so the step would vanish and every consent in that window would be
+    one nobody was asked for. Startup validation normally refuses this
+    combination; reaching it means the configuration changed under a running
+    process.
+    """
     monkeypatch.setattr(ts.settings, "ds_ns_url", "")
     monkeypatch.setattr(ts.settings, "ds_connector_url", "")
     monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
-    assert await ts.get_sharing_offers("rec") == []
+    with pytest.raises(ts.SharingOffersUnavailable):
+        await ts.get_sharing_offers("rec")
 
 
 async def test_allow_list_filters(monkeypatch):
@@ -65,7 +74,14 @@ async def test_default_is_consent_based_only(monkeypatch):
     assert [o["id"] for o in offers] == ["consent-a", "consent-b"]
 
 
-async def test_connector_unreachable_returns_empty(monkeypatch):
+async def test_connector_unreachable_raises_rather_than_falling_back(monkeypatch):
+    """Fail closed, and say so.
+
+    Never render offers from a cached or local copy: the hash of what was shown
+    only means something if the facts came from the published vocabulary. But an
+    unreachable vocabulary must be reported, not swallowed — the API turns this
+    into a 503 so the wizard can say the options are temporarily unavailable.
+    """
     monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
     monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
 
@@ -73,4 +89,5 @@ async def test_connector_unreachable_returns_empty(monkeypatch):
         raise httpx.ConnectError("down")
 
     _patch_httpx(monkeypatch, boom)
-    assert await ts.get_sharing_offers("rec") == []
+    with pytest.raises(ts.SharingOffersUnavailable):
+        await ts.get_sharing_offers("rec")

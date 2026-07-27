@@ -11,6 +11,70 @@ from celine.onboarding.api.deps import limiter
 from celine.onboarding.config.settings import settings
 
 
+async def _validate_dataspace_config() -> None:
+    """Refuse to start on a dataspace misconfiguration a REC manager would hit.
+
+    Dataspace integration is optional per community — a REC with no ``dataspace``
+    block runs the full wizard, collects no sharing consent and provisions no
+    identity. That is supported, not degraded. But once a community *is* bound,
+    a missing organisation or a missing offers vocabulary must surface here
+    rather than mid-review: onboarding never creates dataspace state, so there is
+    nothing for it to fall back to.
+    """
+    from celine.onboarding.services.template_service import (
+        dataspace_binding,
+        get_slugs,
+        load_manifest,
+    )
+
+    for slug in get_slugs():
+        manifest = load_manifest(slug)
+        binding = dataspace_binding(slug)  # raises on a malformed block
+
+        # Asking for a sharing consent means rendering the offers from the
+        # published vocabulary. With none configured the step vanishes silently,
+        # which is indistinguishable from "this community shares nothing" — so
+        # the person is never asked and nobody finds out.
+        declares_sharing = (manifest.get("consent") or {}).get("data_sharing") is not None
+        if declares_sharing and not (settings.ds_ns_url or settings.ds_connector_url):
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  DS_NS_URL or DS_CONNECTOR_URL is required (REC: {slug})\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' declares consent.data_sharing, so the wizard has to\n"
+                f"render sharing offers from the published vocabulary\n"
+                f"(GET /ns/sharing-offers). With neither URL set there is nothing\n"
+                f"to render and the step would disappear without a trace.\n\n"
+                f"  1. Set DS_NS_URL (or DS_CONNECTOR_URL) in your .env file\n"
+                f"  2. Or remove consent.data_sharing from the manifest\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
+
+        if not (binding.enabled and settings.dataspace_vc_enabled):
+            continue
+
+        from celine.onboarding.services.dataspace_identity import organization_exists
+
+        if await organization_exists(binding.organization) is False:
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  Dataspace organization '{binding.organization}' does not exist\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' is bound to it, but the identity registry has no\n"
+                f"such owner. Onboarding deliberately does not create one: an\n"
+                f"organization minted from an approval carries no verification and\n"
+                f"no agreement, so it declares no capacity — and capacity is what\n"
+                f"decides whether a recipient is disclosed or must be consented to.\n\n"
+                f"  1. Seed the organization from the deployment's owners.yaml\n"
+                f"  2. Have an operator take it through the registry's\n"
+                f"     verify -> agreement -> credential -> promote chain\n"
+                f"  3. Or remove the 'dataspace' block from the REC's manifest\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
@@ -56,6 +120,8 @@ async def lifespan(app: FastAPI):
             f"For development, use SMS_PROVIDER=log instead.\n\n"
             f"═══════════════════════════════════════════════════════════════\n"
         )
+
+    await _validate_dataspace_config()
 
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(

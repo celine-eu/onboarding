@@ -2,9 +2,35 @@
 
 How energy-data sharing works for onboarded REC participants. There are two
 paths: an **offline export** available today, and a **governed dataspace** path.
-The governed path now collects the participant's data-sharing consent in the
-onboarding wizard and provisions it to the dataspace connector automatically on
-approval; a portal for ongoing self-management remains future work.
+The governed path collects the participant's data-sharing consent in the
+onboarding wizard and provisions it to the dataspace connector on approval.
+
+**Where a participant manages the decision afterwards.** Not here — onboarding
+holds no session after approval, and no credential. The dataspace portal's
+`/my-data` already serves it: current decisions, the evidence record behind each,
+and a plain-language history, authenticated by the person's own credential. A
+participant-facing surface in the community webapp is planned; until it ships,
+link members there.
+
+## Two legal acts, not one
+
+Worth separating before reading the rest, because they are easy to conflate:
+
+| Act | Basis | Enforced by |
+|---|---|---|
+| **The mandate** — the community may obtain a member's metering data from the distributor | necessary to the membership contract; **not optional** | the distributor's own process, out of band |
+| **The sharing consent** — who may use that data, for which purpose, once it is in the platform | consent; optional, revocable, never a condition of membership | the provider's policy enforcement point, at query time |
+
+Keeping them apart is not pedantry. If the mandate were bundled into the optional
+sharing toggle, either the toggle becomes effectively mandatory — which
+invalidates it as consent — or withdrawing the sharing consent would look like
+revoking the mandate and with it the membership. Wrong in opposite directions.
+
+**The dataspace carries the second and cannot supply the first.** It records,
+enforces and proves; it makes lawfulness demonstrable and withdrawal effective.
+It cannot make processing lawful that is not. The information notice, the
+mandate, the processing agreement with any technical provider, the records of
+processing and any impact assessment remain paperwork.
 
 ## Phase A — Offline export (available now)
 
@@ -48,12 +74,55 @@ a spreadsheet or a downstream pipeline.
 4. **Share under a signed DPA.** The recipient must be bound by a Data
    Processing Agreement (GDPR Art. 28) covering the purpose, retention, and
    sub-processing. Do not transmit the file over unencrypted channels.
-5. **Log** the disclosure (who, what subset, which purpose, when) for the
-   accountability trail.
+5. **Record the disclosure** by naming the recipient on the export — this emits
+   a `DataDisclosed` provenance event to ds-provenance (who, what columns, which
+   purpose, how many subjects, when), the accountability trail (GDPR Art. 30):
+
+   ```bash
+   task export-csv -- --rec my-rec \
+     --recipient dso-org \
+     --purpose GridMonitoring \
+     --agreement-ref dpa-participation-1.0
+   ```
+
+   The event carries **codes, DIDs and hashes only, never PII** — `columns` are
+   field *names*, not values, and a `consent_snapshot_hash` fingerprints the
+   consent state without storing it. Requires `DS_PROVENANCE_URL` and the
+   `svc-ds-onboarding` `provenance.write` scope; without a `--recipient` the
+   export runs but records nothing.
 
 > The export contains personal data (fiscal code, POD, contact details). Treat
 > the file as sensitive: store it encrypted, restrict access, and delete it when
 > the purpose is fulfilled.
+
+### The supply-point list for a distributor
+
+A distributor asking which supply points it may release does not need the
+register. It needs the PODs. `export-pod-list` produces exactly that and nothing
+else — minimisation is the shape of the command rather than step 3 of a procedure
+someone skips:
+
+```bash
+task export-pod-list -- --rec my-rec \
+  --offer household-energy-flexibility \
+  --recipient dso-org \
+  --purpose FlexibilityResearch \
+  --agreement-ref dpa-participation-1.0
+```
+
+- Rows are members with a **current consent covering that offer**, provisioned to
+  the dataspace. Consent is purpose-scoped: agreeing to a different offer is not
+  agreeing to this handover.
+- The file carries one column. No names, no hashes, no DIDs, no evidence bundle —
+  that material lives in the dataspace, where it is verifiable and revocable, and
+  a second copy is how two records of the same consent start to disagree.
+- A `DataDisclosed` event records the handover.
+
+**The file is a snapshot, so the re-export cadence is the revocation latency.**
+Somebody who withdraws stays on the recipient's copy until the next run. The
+header states when it was generated and that it goes stale; agree a cadence, tell
+members what it is, and hold to it. This is inherent to an offline handover — it
+disappears if the distributor ever reads consent directly.
 
 ## Phase B — Governed sharing via the dataspace
 

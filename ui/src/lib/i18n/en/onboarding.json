@@ -82,6 +82,7 @@
 	"no": "No",
 	"data_sharing_title": "Share your data with the community",
 	"data_sharing_intro": "Optionally, you can let the energy community use your data for the purposes below. You can change your mind at any time.",
+	"data_sharing_unavailable": "The data-sharing options are temporarily unavailable, so we cannot ask you about them right now. This does not affect your application \u2014 you can complete it as normal, and you will be able to decide later.",
 	"data_sharing_accept": "Yes, I agree to share my data for this purpose",
 	"data_sharing_disclosed": "Disclosed",
 	"data_sharing_disclosed_note": "This use rests on a contractual basis, so it is disclosed for your information — no separate consent is required.",

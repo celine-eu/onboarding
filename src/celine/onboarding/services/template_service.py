@@ -1,12 +1,26 @@
+import logging
+import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from celine.onboarding.config.settings import REPO_ROOT, settings
 
+logger = logging.getLogger(__name__)
+
 _cache: dict[str, dict[str, Any]] = {}
 _cache_loaded_at: float = 0.0
 CACHE_TTL: float = 5.0
+
+# The organisation alias is one identifier across the whole platform: the owner
+# `id` in the deployment's owners.yaml, the Keycloak organization alias, and the
+# identity-registry owner id. This pattern mirrors the owners schema exactly —
+# including the single-character form — so a value that is valid there cannot be
+# rejected here.
+SAFE_ORG_ALIAS = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
+
+_env_fallback_warned: set[str] = set()
 
 
 async def load_recs_from_db() -> None:
@@ -78,6 +92,125 @@ def get_config(rec_slug: str) -> dict[str, Any]:
     }
 
 
+class SharingOffersUnavailable(RuntimeError):
+    """The published offers vocabulary could not be read.
+
+    Distinct from "this community offers nothing to share", which is an empty
+    list. Conflating the two is how a misconfigured vocabulary costs every
+    consent in the window without anyone noticing.
+    """
+
+
+@dataclass(frozen=True)
+class DataspaceBinding:
+    """Which dataspace organisation a REC's approved members belong to.
+
+    Per-REC, because this platform is multi-tenant: manifests live in the ``Rec``
+    table and every submission carries a ``rec_slug``, so a deployment serving two
+    communities must not file both into one organisation. It previously read from
+    global environment variables, which did exactly that — silently, since the
+    wrong membership is still a successful ``201``.
+
+    ``organization`` is the owner alias in the identity registry, which is also
+    the Keycloak organization alias and the owner ``id`` in the deployment's
+    owners.yaml. One identifier, no mapping table.
+    """
+
+    organization: str = ""
+    organization_did: str = ""
+    linked_participant_did: str = ""
+    membership_role: str = "member"
+
+    @property
+    def enabled(self) -> bool:
+        """Whether this REC participates in the dataspace at all.
+
+        A REC without an organisation runs the full wizard and provisions no
+        dataspace identity. That is a supported configuration, not a degraded
+        one — onboarding must keep working with no dataspace infrastructure.
+        """
+        return bool(self.organization)
+
+
+def validate_dataspace_block(block: Any, *, where: str) -> None:
+    """Reject a malformed ``dataspace:`` block, loudly and early.
+
+    Called from template import so a bad alias fails where an operator is already
+    looking, rather than the first time a REC manager approves somebody.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: 'dataspace' must be a mapping")
+
+    alias = str(block.get("organization", "")).strip()
+    if not alias:
+        # Legal but almost always a mistake: a member gets a credential and no
+        # membership, and the consent endpoints gate on membership — so they hold
+        # an identity that cannot do anything. Warn rather than refuse, because
+        # this was the behaviour before the binding moved into the manifest.
+        logger.warning(
+            "%s: 'dataspace' block declares no 'organization', so approved "
+            "members will be issued a credential but no membership — and the "
+            "consent endpoints gate on membership.",
+            where,
+        )
+    elif not SAFE_ORG_ALIAS.fullmatch(alias):
+        raise ValueError(
+            f"{where}: 'dataspace.organization' must be lowercase alphanumeric "
+            f"with inner hyphens (got {alias!r}). It must match the owner id in "
+            "the deployment's owners.yaml exactly."
+        )
+
+    for key in ("organization_did", "linked_participant_did"):
+        did = str(block.get(key, "")).strip()
+        if did and not did.startswith("did:"):
+            raise ValueError(f"{where}: 'dataspace.{key}' must be a DID (got {did!r})")
+
+
+def _env_fallback(rec_slug: str) -> dict[str, str]:
+    """Deprecated global settings, honoured for one release.
+
+    Returns the legacy environment binding and warns once per REC. Delete this
+    together with the settings fields.
+    """
+    alias = settings.dataspace_organization_alias.strip()
+    if not alias:
+        return {}
+    if rec_slug not in _env_fallback_warned:
+        _env_fallback_warned.add(rec_slug)
+        logger.warning(
+            "REC %r has no 'dataspace' block in its manifest; falling back to the "
+            "deprecated global DATASPACE_ORGANIZATION_* settings. Move the binding "
+            "into the manifest — the globals file every community into one "
+            "organisation and will be removed.",
+            rec_slug,
+        )
+    return {
+        "organization": alias,
+        "organization_did": settings.dataspace_organization_did,
+        "linked_participant_did": settings.dataspace_linked_participant_did,
+        "membership_role": settings.dataspace_membership_role,
+    }
+
+
+def dataspace_binding(rec_slug: str) -> DataspaceBinding:
+    """Resolve a REC's dataspace binding from its manifest."""
+    block = load_manifest(rec_slug).get("dataspace") or _env_fallback(rec_slug)
+    if not block:
+        return DataspaceBinding()
+
+    validate_dataspace_block(block, where=f"REC {rec_slug!r}")
+    return DataspaceBinding(
+        organization=str(block.get("organization", "") or "").strip(),
+        organization_did=str(block.get("organization_did", "") or "").strip(),
+        linked_participant_did=str(
+            block.get("linked_participant_did", "") or ""
+        ).strip(),
+        membership_role=str(block.get("membership_role") or "member").strip(),
+    )
+
+
 async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
     """Resolve the data-sharing offers a REC's wizard should render.
 
@@ -98,7 +231,15 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
 
     base = (settings.ds_ns_url or settings.ds_connector_url).rstrip("/")
     if not base:
-        return []
+        # Startup validation refuses this combination, so reaching it means the
+        # configuration changed under a running process.
+        logger.error(
+            "REC %r declares consent.data_sharing but no offers vocabulary is "
+            "configured (DS_NS_URL / DS_CONNECTOR_URL); the sharing step will "
+            "not be shown",
+            rec_slug,
+        )
+        raise SharingOffersUnavailable("No sharing-offers vocabulary is configured")
 
     allow = data_sharing.get("offers")  # None → all consent-based
     try:
@@ -106,8 +247,22 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
             resp = await client.get(f"{base}/ns/sharing-offers")
             resp.raise_for_status()
             offers = resp.json()
-    except (httpx.HTTPError, ValueError):
-        return []
+    except (httpx.HTTPError, ValueError) as exc:
+        # Fail closed — never render offers from a cached or local copy. The hash
+        # of what was shown only means something if the facts came from the
+        # published vocabulary. But say so: a silent empty list is
+        # indistinguishable from "this community shares nothing", and every
+        # consent in that window is one nobody was asked for.
+        logger.warning(
+            "Sharing offers unavailable for REC %r from %s (%s); the sharing "
+            "step will not be shown",
+            rec_slug,
+            base,
+            exc,
+        )
+        raise SharingOffersUnavailable(
+            "The sharing-offers vocabulary could not be reached"
+        ) from exc
 
     result = []
     for offer in offers:

@@ -107,6 +107,11 @@
 	// the wizard composes its own sentence per locale.
 	let sharingOffers = $state<SharingOffer[]>([]);
 	let sharingOffersLoaded = $state(false);
+	// The backend answers 503 when the published vocabulary cannot be read, which
+	// is not the same as this community sharing nothing. Say so rather than
+	// omitting the step in silence: a person who would have agreed is entitled to
+	// know they were not asked.
+	let sharingOffersUnavailable = $state(false);
 	// offerId → accepted. Only consent-based offers get an entry; contract-based
 	// offers are disclosed, not toggled.
 	let dataSharingSelections = $state<Record<string, boolean>>({});
@@ -116,8 +121,8 @@
 		sharingOffersLoaded = true;
 		recApi
 			.getSharingOffers()
-			.then((offers) => { sharingOffers = offers; })
-			.catch(() => { sharingOffers = []; });
+			.then((offers) => { sharingOffers = offers; sharingOffersUnavailable = false; })
+			.catch(() => { sharingOffers = []; sharingOffersUnavailable = true; });
 	});
 
 	/** ISO-8601 duration → a short localized phrase; falls back to the raw code
@@ -608,7 +613,13 @@
 			if (sharingOffers.length > 0) {
 				const acceptedIds = acceptedOffers.map((o) => o.id);
 				const consented = acceptedIds.length > 0;
-				const versions = [...new Set(acceptedOffers.map((o) => o.consent_text_version))].join(',');
+				// Drop empty versions rather than joining them: "undefined" or a
+				// stray comma would be recorded as the version the person agreed
+				// to, and evidence that looks valid and is not is worse than none.
+				// The backend refuses a consent with no version for the same reason.
+				const versions = [
+					...new Set(acceptedOffers.map((o) => o.consent_text_version).filter(Boolean)),
+				].join(',');
 				const sha = consented
 					? await sha256Hex(acceptedOffers.map(offerRenderedText).join('\n'))
 					: null;
@@ -1014,7 +1025,12 @@
 						documentLabel={$t('onboarding.view_document')}
 					/>
 
-					{#if sharingOffers.length > 0}
+					{#if sharingOffersUnavailable}
+						<div class="data-sharing">
+							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
+							<p class="consent-intro">{$t('onboarding.data_sharing_unavailable')}</p>
+						</div>
+					{:else if sharingOffers.length > 0}
 						<div class="data-sharing">
 							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
 							<p class="consent-intro">{$t('onboarding.data_sharing_intro')}</p>

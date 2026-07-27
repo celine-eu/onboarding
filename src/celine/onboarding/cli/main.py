@@ -46,6 +46,19 @@ def import_templates(
         name = manifest.get("name", slug)
         if filter and slug != filter:
             continue
+
+        # Validate the dataspace binding here rather than at approval time. The
+        # alias must match an owner id in the deployment's owners.yaml exactly,
+        # and a typo should fail where an operator is already looking — not the
+        # first time a REC manager approves somebody.
+        from celine.onboarding.services.template_service import validate_dataspace_block
+
+        try:
+            validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
+        except ValueError as exc:
+            typer.echo(f"  {exc}", err=True)
+            raise typer.Exit(1) from exc
+
         manifests.append((slug, name, manifest))
 
     if not manifests:
@@ -79,8 +92,24 @@ def import_templates(
 def export_csv(
     output: str = "",
     rec: Optional[str] = typer.Option(None, "--rec", "-r", help="Filter by REC slug"),
+    recipient: Optional[str] = typer.Option(
+        None,
+        "--recipient",
+        help="Recipient of this disclosure (org alias/DID/DPA ref). "
+        "Naming one records a DataDisclosed provenance event.",
+    ),
+    purpose: Optional[str] = typer.Option(
+        None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
+    ),
+    agreement_ref: Optional[str] = typer.Option(
+        None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
+    ),
 ):
-    """Export onboarding submissions to CSV."""
+    """Export onboarding submissions to CSV.
+
+    Pass --recipient to record the export as a DataDisclosed provenance event
+    (codes and hashes only, never PII).
+    """
     from celine.onboarding.models.database import async_session
     from celine.onboarding.outputs.csv_export import export_submissions_csv
 
@@ -89,11 +118,91 @@ def export_csv(
         output = str(Path(settings.data_dir) / "exports" / suffix / "submissions.csv")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
+    purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
 
     async def _run():
         async with async_session() as db:
-            count = await export_submissions_csv(db, output, rec_slug=rec)
+            count = await export_submissions_csv(
+                db,
+                output,
+                rec_slug=rec,
+                recipient_ref=recipient,
+                purpose=purposes,
+                agreement_ref=agreement_ref,
+            )
             typer.echo(f"Exported {count} submissions to {output}")
+            if recipient:
+                typer.echo(f"Recorded DataDisclosed to '{recipient}'")
+
+    asyncio.run(_run())
+
+
+@app.command()
+def export_pod_list(
+    rec: str = typer.Option(..., "--rec", "-r", help="REC slug"),
+    offer: str = typer.Option(
+        ...,
+        "--offer",
+        help="Offer id the consent must cover. Consent is purpose-scoped: "
+        "agreeing to a different offer is not agreeing to this handover.",
+    ),
+    recipient: str = typer.Option(
+        ...,
+        "--recipient",
+        help="Who receives the list (org alias/DID/DPA ref). Recorded as a "
+        "DataDisclosed provenance event.",
+    ),
+    output: str = "",
+    purpose: Optional[str] = typer.Option(
+        None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
+    ),
+    agreement_ref: Optional[str] = typer.Option(
+        None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
+    ),
+):
+    """Export the supply points whose owners agreed — and nothing else.
+
+    For handing a distributor the PODs it may release. Names, hashes, DIDs and
+    evidence stay out: that material lives in the dataspace, where it is
+    verifiable and revocable, and a second copy is how two records of the same
+    consent start to disagree.
+
+    The file is a snapshot, so the re-export cadence is the revocation latency.
+    Re-run it on a schedule; the header states when it was generated.
+    """
+    from datetime import datetime, timezone
+
+    from celine.onboarding.models.database import async_session
+    from celine.onboarding.outputs.csv_export import export_pod_list as _export
+
+    generated_at = datetime.now(timezone.utc)
+    if not output:
+        stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+        output = str(
+            Path(settings.data_dir) / "exports" / rec / f"pod-list-{stamp}.csv"
+        )
+
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
+
+    async def _run():
+        async with async_session() as db:
+            count = await _export(
+                db,
+                output,
+                rec_slug=rec,
+                offer_id=offer,
+                recipient_ref=recipient,
+                generated_at=generated_at,
+                purpose=purposes,
+                agreement_ref=agreement_ref,
+            )
+            typer.echo(f"Exported {count} supply points to {output}")
+            typer.echo(f"Recorded DataDisclosed to '{recipient}'")
+            typer.echo(
+                "This list is a snapshot — consent can be withdrawn, so re-export "
+                "on your agreed cadence."
+            )
 
     asyncio.run(_run())
 

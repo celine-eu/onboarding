@@ -14,8 +14,17 @@ async def get_config(rec_slug: str = Depends(valid_rec_slug)):
 
 @router.get("/sharing-offers")
 async def get_sharing_offers(rec_slug: str = Depends(valid_rec_slug)):
-    """Public: the data-sharing offers the wizard renders (codes + English fallback)."""
-    return await template_service.get_sharing_offers(rec_slug)
+    """Public: the data-sharing offers the wizard renders (codes + English fallback).
+
+    Answers 503 when the published vocabulary cannot be read, so the wizard can
+    say the options are temporarily unavailable. An empty 200 means this
+    community genuinely offers nothing — the two must not look alike, or a
+    misconfiguration silently costs every consent in the window.
+    """
+    try:
+        return await template_service.get_sharing_offers(rec_slug)
+    except template_service.SharingOffersUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router.get("/template/{path:path}")

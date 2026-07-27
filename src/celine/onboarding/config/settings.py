@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     oidc_base_url: str = ""
     ds_onboarding_client_id: str = "svc-ds-onboarding"
     ds_onboarding_client_secret: str = ""
+    # DEPRECATED — see the note on dataspace_organization_alias below.
     dataspace_linked_participant_did: str = ""
     dataspace_user_role: str = "DataSubject"
     dataspace_allowed_actions: str = "consent.manage,data.share"
@@ -51,6 +52,10 @@ class Settings(BaseSettings):
     # renders offers from; empty falls back to the connector's /ns path.
     ds_connector_url: str = ""
     ds_ns_url: str = ""
+    # Provenance base URL for recording an offline data disclosure (a CSV export)
+    # as a DataDisclosed event (Block C). Empty disables the emission — the export
+    # itself still runs. Uses the svc-ds-onboarding M2M token (provenance.write).
+    ds_provenance_url: str = ""
 
     sms_provider: str = "log"
     brevo_api_key: str = ""
@@ -64,10 +69,14 @@ class Settings(BaseSettings):
     otp_max_sends_per_hour: int = 3
     otp_lockout_seconds: int = 3600
 
+    # DEPRECATED — the dataspace binding is per-REC and lives in the template
+    # manifest's `dataspace:` block (organization, organization_did,
+    # linked_participant_did, membership_role). These globals are read only as a
+    # fallback for a manifest that has none, and warn when used: this platform is
+    # multi-tenant, so a single global alias files every community's members into
+    # one dataspace organisation. Remove after one release.
     dataspace_organization_alias: str = ""
-    dataspace_organization_name: str = ""
     dataspace_organization_did: str = ""
-    dataspace_organization_auto_create: bool = True
     dataspace_membership_role: str = "member"
 
     dataspace_keycloak_enabled: bool = False

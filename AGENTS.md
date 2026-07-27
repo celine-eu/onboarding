@@ -36,7 +36,7 @@
 - **`./Dockerfile`** — backend (Python 3.12, uv)
 - **`./ui/Dockerfile`** — frontend (Node 22, pnpm)
 - **`./docker-compose.yml`** — init-db + migrate + backend + frontend (external Postgres)
-- **`./Taskfile.yaml`** — run:api, run:ui, migrate, test, lint, export-csv
+- **`./Taskfile.yaml`** — run:api, run:ui, migrate, test, lint, export-csv, export-pod-list
 
 ## Project Layout
 
@@ -134,6 +134,25 @@ Optional. Enable data-sharing consent collection in the wizard and its provision
 |---|---|---|
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL used to provision standing consent (`POST /consent/admin/shares`) after approval. Empty disables share provisioning. |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. Empty falls back to the connector's `/ns` path. |
+| `DS_PROVENANCE_URL` | *(none)* | Provenance base URL for recording an offline CSV export as a `DataDisclosed` event (`POST /prov/events`, scope `provenance.write`). Empty disables the emission; the export still runs. |
+
+**The per-community binding is not an env var.** Which dataspace organization a
+REC's members belong to lives in that REC's `manifest.yaml`, under `dataspace:`
+(see Template System below). It is per community because this platform is
+multi-tenant; as deployment settings it filed every community's members into one
+organization, silently. `DATASPACE_ORGANIZATION_ALIAS`,
+`DATASPACE_ORGANIZATION_DID`, `DATASPACE_LINKED_PARTICIPANT_DID` and
+`DATASPACE_MEMBERSHIP_ROLE` are read only as a deprecated fallback and warn on use.
+
+**Startup refuses a dataspace misconfiguration.** A REC declaring
+`consent.data_sharing` with neither `DS_NS_URL` nor `DS_CONNECTOR_URL` set, or a
+REC bound to an organization the identity registry does not know, fails at boot
+rather than mid-review. A registry that cannot be *reached* does not block boot —
+"no such owner" is a configuration error, "I could not ask" is not.
+
+**Supply-point list (Block C).** `task export-pod-list -- --rec <slug> --offer <id> --recipient <ref>` writes the PODs of members holding a current consent for that offer, one column and nothing else, plus a `DataDisclosed` event. It is a snapshot, so the re-export cadence is the revocation latency; the header says so.
+
+**Offline disclosure provenance (Block C).** `task export-csv -- --recipient <ref> [--purpose …] [--agreement-ref …]` records the export as a `DataDisclosed` provenance event via `services/dataspace_identity.emit_data_disclosed`. It carries **codes, DIDs and hashes only, never PII** — `columns` are field *names* and a `consent_snapshot_hash` (offer-level, since dataset resolution lives in the connector) fingerprints the consent state. The emit is non-fatal: a provenance failure never fails the export. Without `--recipient`, nothing is emitted. See [docs/data-sharing.md](docs/data-sharing.md).
 
 ## Template System
 
@@ -221,6 +240,30 @@ content:
 ```
 
 Selected via `TEMPLATE_DIR` env var.
+
+### Dataspace binding (optional, per community)
+
+```yaml
+dataspace:
+  organization: example-community          # = KC org alias = IR owner id
+  organization_did: did:web:example-community.dataspaces.localhost
+  linked_participant_did: did:web:consumer.dataspaces.localhost
+  membership_role: member                  # optional
+```
+
+`organization` is **one identifier** across the platform: the owner `id` in the
+deployment's `owners.yaml`, the Keycloak organization alias, and the owner id in
+the identity registry. No mapping table. `task import-templates` validates it.
+
+Omit the block and the community is not in the dataspace: the full wizard runs,
+no sharing consent is collected, no identity is provisioned. Supported, not
+degraded — onboarding works with no dataspace infrastructure at all.
+
+The organization must already exist and be promoted in the registry. **Onboarding
+never creates one**: an organization minted from an approval carries no
+verification and no agreement, so it declares no capacity — and capacity is what
+decides whether a recipient is disclosed or must be consented to separately. See
+[docs/dataspace-integration.md](docs/dataspace-integration.md).
 
 ## Wizard Flow
 
@@ -318,4 +361,5 @@ task migration -- "description"
 task test             # backend + frontend
 task lint             # ruff + svelte-check
 task export-csv       # CSV to ./data/exports/
+task export-pod-list  # consented supply points for a distributor
 ```

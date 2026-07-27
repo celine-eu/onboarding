@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.models.document import DocumentType
@@ -41,6 +41,48 @@ class SubmissionUpdate(BaseModel):
     keep_me_updated: bool | None = None
     status: SubmissionStatus | None = None
     notes: str | None = Field(None, max_length=2000)
+
+    @model_validator(mode="after")
+    def check_data_sharing_evidence(self) -> "SubmissionUpdate":
+        """A data-sharing consent must arrive with proof of what was shown.
+
+        The connector requires ``consent_text_version`` and
+        ``rendered_text_sha256`` on every grant and refuses one without them, so
+        accepting an incomplete consent here only defers the refusal to the
+        approval path — where it is non-fatal by design and surfaces as a log
+        line. The person would have consented, the connector would have refused
+        the record, and nothing would say so.
+
+        It cannot be repaired later either: you cannot retrospectively prove what
+        somebody was shown. So the check belongs at capture.
+
+        ``locale`` is required alongside them because the hash is over the text
+        *in the language displayed* — without it the digest cannot be tied back
+        to a rendering.
+        """
+        if self.data_sharing_consent is not True:
+            return self
+
+        missing = [
+            name
+            for name, value in (
+                ("data_sharing_consent_text_version", self.data_sharing_consent_text_version),
+                ("data_sharing_consent_text_sha256", self.data_sharing_consent_text_sha256),
+                ("data_sharing_consent_locale", self.data_sharing_consent_locale),
+            )
+            if not (value or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                "A data-sharing consent needs evidence of what was shown; "
+                f"missing: {', '.join(missing)}"
+            )
+        if not self.data_sharing_consent_offer_ids:
+            raise ValueError(
+                "A data-sharing consent must name the offers it covers "
+                "(data_sharing_consent_offer_ids)"
+            )
+        return self
 
     @field_validator("fiscal_code")
     @classmethod
@@ -107,6 +149,38 @@ class SubmissionAdminRead(SubmissionRead):
     dataspace_did: str | None
     dataspace_vc_id: str | None
     dataspace_vc_issued_at: datetime | None
+    # Why a data-sharing consent was not provisioned, if it was not. Share
+    # provisioning is deliberately non-fatal, so without this the failure lives
+    # only in a log and the person's decision is quietly not in force. Review is
+    # the one moment a human looks at this submission.
+    data_sharing_issues: list[str] = []
+
+    @model_validator(mode="after")
+    def explain_unprovisioned_share(self) -> "SubmissionAdminRead":
+        if not (self.data_sharing_consent and not self.share_provisioned):
+            return self
+
+        # Name the specific evidence gap where there is one, because that class
+        # of failure is permanent: the connector will refuse every retry, and no
+        # amount of retrying can reconstruct what the person was shown.
+        problems: list[str] = []
+        for label, value in (
+            ("consent text version", self.data_sharing_consent_text_version),
+            ("rendered text hash", self.data_sharing_consent_text_sha256),
+        ):
+            if not (value or "").strip():
+                problems.append(
+                    f"No {label} was recorded, so the dataspace will refuse this "
+                    "consent. It cannot be repaired — ask again."
+                )
+        if not self.data_sharing_consent_offer_ids:
+            problems.append("Consent recorded but no offers were named.")
+
+        self.data_sharing_issues = problems or [
+            "Consent recorded but not yet provisioned to the dataspace. "
+            "Retry from the admin action once the cause is resolved."
+        ]
+        return self
 
 
 class DocumentRead(BaseModel):
