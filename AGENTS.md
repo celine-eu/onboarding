@@ -422,6 +422,7 @@ When `SECURITY_HEADERS=true` (default), all responses include:
 ## Local Development
 
 ```bash
+task sdk:local        # dev-only: celine-sdk from the sibling checkout (see below)
 task run:api          # FastAPI on :8000
 task run:ui           # SvelteKit on :5173 (proxies /api)
 task migrate          # alembic upgrade head
@@ -431,3 +432,20 @@ task lint             # ruff + svelte-check
 task export-csv       # CSV to ./data/exports/
 task export-pod-list  # consented supply points for a distributor
 ```
+
+### celine-sdk, temporarily
+
+REC registry registration calls wrapper methods (`RecRegistryAdminClient.create_member`
+and the member sub-resources) that were added alongside this integration and are
+**not released yet**. `pyproject.toml` deliberately does not point at the local
+checkout — a published release is what makes the dependency reproducible outside
+this workspace — so until one ships:
+
+```bash
+task sdk:local        # uv pip install -e ../celine-sdk
+```
+
+`uv sync` reverts it, so re-run after syncing. If it is missing, startup refuses
+with an explanation rather than letting the first approval fail on an
+`AttributeError`. Bump the version constraint and delete both the task and that
+startup check once celine-sdk releases.

@@ -34,11 +34,15 @@ _client: Any | None = None
 def _get_client():
     """The registry client, built once.
 
-    Authenticated with the same ``svc-ds-onboarding`` service token the rest of
-    the integration uses. It needs ``rec-registry.members.write`` and nothing
-    else — not ``assets.write``, since onboarding registers no assets, and
-    certainly not ``rec-registry.admin``, which would also grant importing,
-    exporting and purging.
+    Authenticated with the same service token the rest of the integration uses.
+    That works because every outbound call this app makes is issued by one realm
+    (``celine``) — the registry validates against it just as the dataspace
+    services do.
+
+    The client needs ``rec-registry.members.write`` and nothing else: not
+    ``assets.write``, since onboarding registers no assets, and certainly not
+    ``rec-registry.admin``, which would also grant importing, exporting and
+    purging. It also needs the registry in its audience.
     """
     global _client
     if _client is None:

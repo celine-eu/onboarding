@@ -33,6 +33,28 @@ async def _validate_dataspace_config() -> None:
         binding = dataspace_binding(slug)  # raises on a malformed block
         registry = rec_registry_binding(slug)  # raises on a malformed block
 
+        if registry.enabled:
+            # The wrapper methods this integration calls are unreleased, so an
+            # environment that installed celine-sdk from the index has the
+            # generated client but not the wrapper. Catch it at boot rather than
+            # as an AttributeError the first time a REC manager approves
+            # somebody. Delete this once the version constraint can express it.
+            from celine.sdk.rec_registry.client import RecRegistryAdminClient
+
+            if not hasattr(RecRegistryAdminClient, "create_member"):
+                raise RuntimeError(
+                    f"\n\n"
+                    f"═══════════════════════════════════════════════════════════════\n"
+                    f"  celine-sdk is too old for REC registry registration\n"
+                    f"═══════════════════════════════════════════════════════════════\n\n"
+                    f"REC '{slug}' declares a rec_registry block, but the installed\n"
+                    f"celine-sdk has no RecRegistryAdminClient.create_member. The\n"
+                    f"write wrappers are not released yet.\n\n"
+                    f"  1. task sdk:local     (uv pip install -e ../celine-sdk)\n"
+                    f"  2. Or remove the rec_registry block from the manifest\n\n"
+                    f"═══════════════════════════════════════════════════════════════\n"
+                )
+
         if registry.enabled and not settings.rec_registry_url:
             raise RuntimeError(
                 f"\n\n"

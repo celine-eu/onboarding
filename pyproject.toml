@@ -25,18 +25,9 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "boto3>=1.35",
-    # The rec-registry admin write methods (create_member and the member
-    # sub-resources) were added to the SDK wrapper alongside this integration and
-    # are not released yet, so the local checkout is used — see [tool.uv.sources].
     "celine-sdk>=1.14.1",
     "phonenumbers>=8.13",
 ]
-
-[tool.uv.sources]
-# Until celine-sdk releases the rec-registry write wrapper this integration
-# calls. Drop this once the version constraint above can express it: a published
-# release is what makes the dependency reproducible outside this workspace.
-celine-sdk = { path = "../celine-sdk", editable = true }
 
 [build-system]
 requires = ["hatchling"]

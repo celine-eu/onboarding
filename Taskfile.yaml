@@ -5,6 +5,15 @@ vars:
   UI_DIR: ./ui
 
 tasks:
+  sdk:local:
+    desc: >-
+      Install celine-sdk from the sibling checkout (dev only).
+      Needed while the rec-registry write wrappers this repo calls are
+      unreleased. Not declared in pyproject: a published release is what makes
+      the dependency reproducible outside this workspace.
+    cmds:
+      - uv pip install -e ../celine-sdk
+
   dev:
     desc: Start all services with docker compose
     cmds:

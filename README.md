@@ -244,6 +244,7 @@ task migrate              # apply migrations
 task migration -- "msg"   # create new migration
 task test                 # backend + frontend tests
 task lint                 # ruff + svelte-check
+task sdk:local            # dev-only: celine-sdk from ../celine-sdk (unreleased wrappers)
 task export-csv           # export submissions to data/exports/
 task export-pod-list      # export consented supply points for a distributor
 ```
