@@ -108,8 +108,26 @@ async def update_submission(
             from celine.onboarding.config.settings import settings
             from celine.onboarding.services.dataspace_identity import provision_user_identity
             from celine.onboarding.services.keycloak_identity import provision_keycloak_user
+            from celine.onboarding.services.rec_registry import register_member
 
+            # Approval enables somebody, which means three things in this order:
+            # a login, a community member, then a dataspace identity.
+            #
+            # The order is load-bearing rather than stylistic. The registry keys
+            # a member on (community, user_id), so the Keycloak user exists
+            # first; the dataspace identity is last because it is the step that
+            # can be retried afterwards.
             kc_result = await provision_keycloak_user(submission)
+
+            # Fails closed, unlike share provisioning. A participant missing
+            # from the registry is enabled in name only — invisible to every
+            # pipeline and dashboard, which all join on it — and that is not a
+            # state anything downstream can work around.
+            await register_member(
+                submission,
+                keycloak_user_id=kc_result.user_id if kc_result else None,
+            )
+
             await provision_user_identity(
                 submission,
                 keycloak_user_id=kc_result.user_id if kc_result else None,

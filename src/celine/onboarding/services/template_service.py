@@ -180,6 +180,70 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
     )
 
 
+@dataclass(frozen=True)
+class RecRegistryBinding:
+    """Where a REC's approved participants are registered as community members.
+
+    Per-REC for the same reason the dataspace binding is: one deployment serves
+    several communities, and each is its own community in the registry.
+
+    ``area`` is a fixed, configured value — every member of this community is
+    registered into it.
+
+    That is a deliberate placeholder, not the intended design. Assigning a member
+    to the right area means the community's areas being 1-1 with the registry's
+    **and** geocoding the supply address into them, which needs the geofences.
+    That data exists but is not carried here yet, and a half-way heuristic —
+    matching a municipality name to an area key — would be wrong the moment a
+    second community exists and quietly wrong before then. A wrong area is also
+    sticky: the registry refuses to delete an area while members reference it.
+
+    So: one configured area, and a REC manager moves people until geofencing
+    lands. That is visible and correctable; a guess is neither.
+    """
+
+    community: str = ""
+    area: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.community)
+
+
+def validate_rec_registry_block(block: Any, *, where: str) -> None:
+    """Reject a malformed ``rec_registry:`` block at template import."""
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: 'rec_registry' must be a mapping")
+
+    if not str(block.get("community", "")).strip():
+        raise ValueError(
+            f"{where}: 'rec_registry.community' is required. Omit the whole "
+            "'rec_registry' block to skip registry registration."
+        )
+    if not str(block.get("area", "")).strip():
+        raise ValueError(
+            f"{where}: 'rec_registry.area' is required — every member needs one, "
+            "and it must be one of the community's own area keys. Per-member "
+            "assignment needs geocoding against the community's geofences, which "
+            "is not wired yet."
+        )
+
+
+def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
+    """Resolve a REC's registry binding from its manifest."""
+    block = load_manifest(rec_slug).get("rec_registry")
+    if not block:
+        return RecRegistryBinding()
+
+    validate_rec_registry_block(block, where=f"REC {rec_slug!r}")
+    return RecRegistryBinding(
+        community=str(block["community"]).strip(),
+        area=str(block["area"]).strip(),
+    )
+
+
 async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
     """Resolve the data-sharing offers a REC's wizard should render.
 

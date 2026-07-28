@@ -51,10 +51,16 @@ def import_templates(
         # alias must match an owner id in the deployment's owners.yaml exactly,
         # and a typo should fail where an operator is already looking — not the
         # first time a REC manager approves somebody.
-        from celine.onboarding.services.template_service import validate_dataspace_block
+        from celine.onboarding.services.template_service import (
+            validate_dataspace_block,
+            validate_rec_registry_block,
+        )
 
         try:
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
+            validate_rec_registry_block(
+                manifest.get("rec_registry"), where=str(manifest_path)
+            )
         except ValueError as exc:
             typer.echo(f"  {exc}", err=True)
             raise typer.Exit(1) from exc

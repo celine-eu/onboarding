@@ -134,6 +134,7 @@ Optional. Enable data-sharing consent collection in the wizard and its provision
 |---|---|---|
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL used to provision standing consent (`POST /consent/admin/shares`) after approval. Empty disables share provisioning. |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. Empty falls back to the connector's `/ns` path. |
+| `REC_REGISTRY_URL` | *(none)* | REC registry base URL. Empty disables member registration. Which community and area is per-REC, in the manifest's `rec_registry:` block |
 | `DS_PROVENANCE_URL` | *(none)* | Provenance base URL for recording an offline CSV export as a `DataDisclosed` event (`POST /prov/events`, scope `provenance.write`). Empty disables the emission; the export still runs. |
 
 **The per-community binding is not an env var.** Which dataspace organization a
@@ -241,6 +242,29 @@ content:
 
 Imported into the `Rec` table with `task import-templates`, then served per community at `/{rec}` — one deployment hosts several.
 
+### REC registry binding (optional, per community)
+
+```yaml
+rec_registry:
+  community: example-community       # community key in the REC registry
+  area: north                        # one of that community's own area keys
+```
+
+`area` is a **fixed configured value** — every member of this community is
+registered into it, and a REC manager moves people from there.
+
+That is a deliberate placeholder. Assigning a member to the right area means the
+community's areas being 1-1 with the registry's *and* geocoding the supply
+address against their geofences. That data exists but is not carried here yet,
+and a half-way heuristic — matching a municipality name to an area key — would be
+quietly wrong now and plainly wrong the moment a second community exists. A wrong
+area is also sticky: the registry refuses to delete an area while members
+reference it.
+
+Omit the block and approved participants are not registered; the wizard still
+works. Requires `REC_REGISTRY_URL`, and startup refuses a REC that declares the
+block without one.
+
 ### Dataspace binding (optional, per community)
 
 ```yaml
@@ -266,6 +290,48 @@ never creates one**: an organization minted from an approval carries no
 verification and no agreement, so it declares no capacity — and capacity is what
 decides whether a recipient is disclosed or must be consented to separately. See
 [docs/dataspace-integration.md](docs/dataspace-integration.md).
+
+## What approval does
+
+Approving a submission enables somebody, which means three things land **in this
+order**:
+
+| # | Effect | Where | On failure |
+|---|---|---|---|
+| 1 | Login identity | Keycloak user | fails closed |
+| 2 | Community member | `rec-registry` | **fails closed** |
+| 3 | Dataspace identity + standing consent | identity registry + connector | identity fails closed; the consent share does not |
+
+The order is load-bearing. The registry keys a member on `(community, user_id)`,
+so the Keycloak user has to exist first; the dataspace identity is last because
+it is the step that can be retried afterwards.
+
+**Registry registration fails closed, unlike share provisioning.** A missing
+consent row is recoverable — it has a retry endpoint. A participant missing from
+the registry is enabled in name only: invisible to every pipeline, dashboard and
+digital-twin query, all of which join on the registry's `user_id`, POD and sensor
+ids. That is not a state anything downstream can work around.
+
+An already-registered participant (`409`) is **not** a failure: approval is
+retriable, and refusing the second attempt would leave a submission that can
+never be approved.
+
+What is derived, and what is not:
+
+- `role` — `prosumer` when the energy step reports PV, else `consumer`. A
+  community that asks different questions gets `consumer`, the safe reading.
+- `area` — the configured one. Not derived from the address; see above.
+- `delivery_points` — the **POD**, which is the one thing that must be tracked
+  from onboarding: the distributor keys on it, metering data arrives against it,
+  and unlike a meter it is known before any device is installed.
+- **No assets are registered at all.** What the wizard collects is self-stated —
+  ticking "I have a photovoltaic system" is a declaration, not a commissioned
+  installation, and registering it as an asset would make an unverified claim
+  indistinguishable from a surveyed one. A meter cannot be registered here in any
+  case: its `sensor_id` is assigned when the device is physically installed,
+  after onboarding. Asset registration is the REC manager's offline work.
+  The answers are kept under the member's `extra.declared_at_onboarding`, so a
+  manager deciding what to survey does not have to ask again.
 
 ## Wizard Flow
 

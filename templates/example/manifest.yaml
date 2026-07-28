@@ -89,6 +89,25 @@ consent:
     offers:
       - household-energy-flexibility
 
+# REC registry binding — OPTIONAL, per community. Omit it and approved
+# participants are not registered as community members; the wizard still works.
+#
+# `area` is a fixed configured value: every member lands in it and a REC manager
+# moves them from there. Assigning the right one needs this community's areas to
+# be 1-1 with the registry's AND geocoding the supply address against their
+# geofences — the data exists but is not carried here yet, and a municipality-name
+# heuristic would be quietly wrong. A wrong area is sticky, too: the registry
+# refuses to delete an area while members reference it.
+#
+# No assets are registered. Self-stated answers are declarations, not
+# commissioned installations, and a meter's sensor_id only exists after the
+# device is installed. The POD *is* tracked — it is known up front and is what
+# the distributor keys on.
+#
+# rec_registry:
+#   community: example-community       # community key in the REC registry
+#   area: north                        # one of that community's own area keys
+
 # Dataspace binding — OPTIONAL, and per community rather than per deployment.
 # Omit the whole block and this community runs the full wizard, collects no
 # sharing consent and provisions no dataspace identity: a supported setup, not a

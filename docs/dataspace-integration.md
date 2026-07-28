@@ -201,6 +201,17 @@ These control provisioning of data-sharing consent to the dataspace connector (s
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning standing consent (`POST /consent/admin/shares`). When unset, share provisioning is skipped. |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. When unset, falls back to the connector's `/ns` path. |
 
+## Relation to REC registry registration
+
+Approval provisions three things in order — Keycloak user, REC registry member,
+dataspace identity — and the order is not cosmetic. The registry keys a member on
+`(community, user_id)`, so the Keycloak user exists first; the dataspace identity
+is last because it is the step that can be retried afterwards.
+
+Registry registration **fails closed**, so a dataspace identity is never issued
+to somebody who is not a community member. See `AGENTS.md` for what is derived
+from the wizard's answers and what is deliberately not.
+
 ## Error Handling
 
 The integration follows a **fail-closed** strategy:

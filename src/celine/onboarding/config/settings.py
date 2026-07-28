@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     otp_max_sends_per_hour: int = 3
     otp_lockout_seconds: int = 3600
 
+    # REC registry — where an approved participant is registered as a community
+    # member. Empty disables registration entirely, which is the configuration a
+    # deployment without a registry runs.
+    rec_registry_url: str = ""
+
     # The dataspace binding is per-REC and lives in the template manifest's
     # `dataspace:` block. There is deliberately no deployment-wide equivalent:
     # this platform is multi-tenant, and a single global alias would file every

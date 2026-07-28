@@ -25,11 +25,28 @@ async def _validate_dataspace_config() -> None:
         dataspace_binding,
         get_slugs,
         load_manifest,
+        rec_registry_binding,
     )
 
     for slug in get_slugs():
         manifest = load_manifest(slug)
         binding = dataspace_binding(slug)  # raises on a malformed block
+        registry = rec_registry_binding(slug)  # raises on a malformed block
+
+        if registry.enabled and not settings.rec_registry_url:
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  REC_REGISTRY_URL is required (REC: {slug})\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' declares a rec_registry block, so approving a\n"
+                f"participant has to register them as a community member. With no\n"
+                f"URL configured that step cannot run, and approval would enable\n"
+                f"somebody who is invisible to every pipeline downstream.\n\n"
+                f"  1. Set REC_REGISTRY_URL in your .env file\n"
+                f"  2. Or remove the rec_registry block from the manifest\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
 
         # Asking for a sharing consent means rendering the offers from the
         # published vocabulary. With none configured the step vanishes silently,
