@@ -176,6 +176,7 @@ def _admin_read(**overrides):
         phone=None,
         fiscal_code=None,
         pod_code=None,
+        supply_municipality=None,
         extracted_data=None,
         id_extracted_data=None,
         extra_data=None,

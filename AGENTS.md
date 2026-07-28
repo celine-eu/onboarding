@@ -247,19 +247,34 @@ Imported into the `Rec` table with `task import-templates`, then served per comm
 ```yaml
 rec_registry:
   community: example-community       # community key in the REC registry
-  area: north                        # one of that community's own area keys
+  default_area: north                # where a member goes when nothing matches
+  areas:                             # optional, coarse stand-in for geofences
+    valley-north: [Springfield, Shelbyville]
+    valley-south: [Ogdenville]
 ```
 
-`area` is a **fixed configured value** — every member of this community is
-registered into it, and a REC manager moves people from there.
+`areas` maps each registry area key to the municipalities it covers, authored the
+same way `coverage.rules` already is. **This is the design, not a stand-in for
+geoshapes** — the platform does not use them, so municipality is the unit an area
+is defined in.
 
-That is a deliberate placeholder. Assigning a member to the right area means the
-community's areas being 1-1 with the registry's *and* geocoding the supply
-address against their geofences. That data exists but is not carried here yet,
-and a half-way heuristic — matching a municipality name to an area key — would be
-quietly wrong now and plainly wrong the moment a second community exists. A wrong
-area is also sticky: the registry refuses to delete an area while members
-reference it.
+The member's municipality comes from the **eligibility geocoder**, persisted as
+`supply_municipality` when the address is checked, falling back to the bill
+extraction's discrete `comune`. A geocoder returns the municipality as its own
+field; a bill states a full address as free text and OCR of it is a guess.
+Matching is case- and whitespace-insensitive.
+
+`default_area` is **required**: a member with no area cannot be registered at
+all, and one whose municipality is not listed still has to go somewhere a REC
+manager can find them.
+
+Two authoring rules, both enforced at `task import-templates`: a municipality
+claimed by two areas is refused, since a member's area would otherwise depend on
+declaration order; and `areas` values must be lists.
+
+The address is deliberately **not** substring-matched — Italian street names
+routinely contain other municipalities' names, so "Via Roma 1, Lavarone" would
+file the member under Roma.
 
 Omit the block and approved participants are not registered; the wizard still
 works. Requires `REC_REGISTRY_URL`, and startup refuses a REC that declares the
@@ -320,7 +335,9 @@ What is derived, and what is not:
 
 - `role` — `prosumer` when the energy step reports PV, else `consumer`. A
   community that asks different questions gets `consumer`, the safe reading.
-- `area` — the configured one. Not derived from the address; see above.
+- `area` — from the `areas` map when the member's municipality is covered,
+  otherwise `default_area`. The municipality is the geocoded one where the
+  eligibility step ran, else the extracted `comune`.
 - `delivery_points` — the **POD**, which is the one thing that must be tracked
   from onboarding: the distributor keys on it, metering data arrives against it,
   and unlike a meter it is known before any device is installed.

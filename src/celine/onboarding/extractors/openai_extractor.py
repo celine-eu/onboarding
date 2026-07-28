@@ -25,6 +25,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     '  "codice_fiscale": "Italian fiscal code (16 alphanumeric characters, e.g. RSSMRA80A01H501U)",\n'
     '  "pod": "POD code (starts with IT, 3 digits, letter E, then 8 digits, e.g. IT221E00450738)",\n'
     '  "indirizzo": "full supply address",\n'
+    '  "comune": "municipality of the supply address, name only (e.g. Lavarone)",\n'
     '  "fornitore": "energy provider name",\n'
     '  "numero_contratto": "contract number",\n'
     '  "consumo_annuo": "annual consumption in kWh as integer (e.g. 2700)"\n'

@@ -57,6 +57,28 @@ def _get_client():
     return _client
 
 
+def supply_municipality(submission: Submission) -> str | None:
+    """The municipality of the supply address.
+
+    Prefers the value the **eligibility geocoder** resolved: a geocoder returns
+    the municipality as its own field, while a bill states a full address as
+    free text and OCR of it is a guess. Falls back to the extraction's discrete
+    ``comune`` when the wizard skipped the eligibility step.
+
+    Neither source substring-matches the address, deliberately. Italian street
+    names routinely contain other municipalities' names, so "Via Roma 1,
+    Lavarone" would match Roma. A discrete field is either right or absent, and
+    absent resolves to the community's default area.
+    """
+    geocoded = getattr(submission, "supply_municipality", None)
+    if isinstance(geocoded, str) and geocoded.strip():
+        return geocoded.strip()
+
+    extracted = submission.extracted_data or {}
+    value = extracted.get("comune")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def member_role(submission: Submission) -> str:
     """`prosumer` when the participant declares generation, `consumer` otherwise.
 
@@ -83,7 +105,7 @@ def build_member_payload(
         "name": name or submission.ref,
         "type": "schema:Person",
         "role": member_role(submission),
-        "area": binding.area,
+        "area": binding.area_for(supply_municipality(submission)),
         "status": "active",
         "delivery_points": [],
         # No assets. What the wizard collects is **self-stated**: somebody

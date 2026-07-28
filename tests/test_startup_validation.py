@@ -126,7 +126,7 @@ async def test_malformed_block_refuses_to_start(bind_rec):
 async def test_rec_registry_block_without_a_url_refuses_to_start(bind_rec, monkeypatch):
     """Approving would enable somebody invisible to every pipeline downstream."""
     manifest = bind_rec("rec-a")
-    manifest["rec_registry"] = {"community": "rec-a", "area": "north"}
+    manifest["rec_registry"] = {"community": "rec-a", "default_area": "north"}
     monkeypatch.setattr(ts.settings, "rec_registry_url", "")
 
     with pytest.raises(RuntimeError, match="REC_REGISTRY_URL is required"):
@@ -135,7 +135,7 @@ async def test_rec_registry_block_without_a_url_refuses_to_start(bind_rec, monke
 
 async def test_rec_registry_block_with_a_url_starts(bind_rec, monkeypatch):
     manifest = bind_rec("rec-a")
-    manifest["rec_registry"] = {"community": "rec-a", "area": "north"}
+    manifest["rec_registry"] = {"community": "rec-a", "default_area": "north"}
     monkeypatch.setattr(ts.settings, "rec_registry_url", "http://registry:8004")
     monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
 
@@ -149,7 +149,7 @@ async def test_an_sdk_without_the_write_wrapper_refuses_to_start(
     the generated endpoints and not the wrapper. Better to say so at boot than to
     raise AttributeError the first time somebody is approved."""
     manifest = bind_rec("rec-a")
-    manifest["rec_registry"] = {"community": "rec-a", "area": "north"}
+    manifest["rec_registry"] = {"community": "rec-a", "default_area": "north"}
     monkeypatch.setattr(ts.settings, "rec_registry_url", "http://registry:8004")
 
     from celine.sdk.rec_registry.client import RecRegistryAdminClient

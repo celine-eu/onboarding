@@ -25,6 +25,10 @@ class SubmissionUpdate(BaseModel):
     phone: str | None = Field(None, max_length=30)
     fiscal_code: str | None = Field(None, max_length=16)
     pod_code: str | None = Field(None, max_length=20)
+    # Set by the wizard from the eligibility check, which geocodes the supply
+    # address. Preferred over the extracted value when deciding a member's
+    # registry area.
+    supply_municipality: str | None = Field(None, max_length=200)
     extracted_data: dict | None = None
     id_extracted_data: dict | None = None
     extra_data: dict | None = None
@@ -110,6 +114,7 @@ class SubmissionRead(BaseModel):
     phone: str | None
     fiscal_code: str | None
     pod_code: str | None
+    supply_municipality: str | None
     extracted_data: dict | None
     id_extracted_data: dict | None
     extra_data: dict | None

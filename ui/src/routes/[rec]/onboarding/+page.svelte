@@ -473,6 +473,20 @@
 		errorMsg = '';
 		try {
 			eligibilityResult = await recApi.checkEligibility({ address: eligibilityAddress });
+
+			// Persist the geocoded municipality. It decides which registry area
+			// the member is registered into after approval, and a geocoder
+			// resolves it far more reliably than OCR of a bill does.
+			if (submissionId && eligibilityResult?.municipality) {
+				try {
+					await recApi.updateSubmission(submissionId, {
+						supply_municipality: eligibilityResult.municipality,
+					});
+				} catch {
+					// Not worth blocking the wizard: the extraction carries a
+					// fallback and the community has a default area.
+				}
+			}
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Eligibility check failed';
 		} finally {

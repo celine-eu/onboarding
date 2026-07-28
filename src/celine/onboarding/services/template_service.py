@@ -1,7 +1,7 @@
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -187,27 +187,47 @@ class RecRegistryBinding:
     Per-REC for the same reason the dataspace binding is: one deployment serves
     several communities, and each is its own community in the registry.
 
-    ``area`` is a fixed, configured value — every member of this community is
-    registered into it.
+    ``areas`` maps each registry area key to the municipalities it covers —
+    a coarse stand-in for the community's real geofences, authored the same way
+    the manifest's ``coverage.rules`` already are:
 
-    That is a deliberate placeholder, not the intended design. Assigning a member
-    to the right area means the community's areas being 1-1 with the registry's
-    **and** geocoding the supply address into them, which needs the geofences.
-    That data exists but is not carried here yet, and a half-way heuristic —
-    matching a municipality name to an area key — would be wrong the moment a
-    second community exists and quietly wrong before then. A wrong area is also
-    sticky: the registry refuses to delete an area while members reference it.
+    .. code-block:: yaml
 
-    So: one configured area, and a REC manager moves people until geofencing
-    lands. That is visible and correctable; a guess is neither.
+        areas:
+          valley-north: [Springfield, Shelbyville]
+          valley-south: [Ogdenville]
+
+    Broad is the point. Matching a municipality is not the same as resolving a
+    point against a polygon, and it will be wrong for a member whose supply
+    address sits in a municipality split across two areas. It is right often
+    enough to be worth doing, and a REC manager moves the rest — which is why
+    ``default_area`` is required rather than optional. A member with no area at
+    all could not be registered; a member in the wrong one is visible and
+    movable.
     """
 
     community: str = ""
-    area: str = ""
+    default_area: str = ""
+    areas: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def enabled(self) -> bool:
         return bool(self.community)
+
+    def area_for(self, municipality: str | None) -> str:
+        """The area covering *municipality*, or the default.
+
+        Case- and whitespace-insensitive, because the name arrives from OCR of a
+        utility bill rather than from a picker.
+        """
+        if not municipality:
+            return self.default_area
+
+        needle = municipality.strip().casefold()
+        for area_key, municipalities in self.areas.items():
+            if any(m.strip().casefold() == needle for m in municipalities):
+                return area_key
+        return self.default_area
 
 
 def validate_rec_registry_block(block: Any, *, where: str) -> None:
@@ -222,13 +242,41 @@ def validate_rec_registry_block(block: Any, *, where: str) -> None:
             f"{where}: 'rec_registry.community' is required. Omit the whole "
             "'rec_registry' block to skip registry registration."
         )
-    if not str(block.get("area", "")).strip():
+    if not str(block.get("default_area", "")).strip():
         raise ValueError(
-            f"{where}: 'rec_registry.area' is required — every member needs one, "
-            "and it must be one of the community's own area keys. Per-member "
-            "assignment needs geocoding against the community's geofences, which "
-            "is not wired yet."
+            f"{where}: 'rec_registry.default_area' is required — it is where a "
+            "member goes when no area covers their municipality, and a member "
+            "with no area cannot be registered at all."
         )
+
+    areas = block.get("areas") or {}
+    if not isinstance(areas, dict):
+        raise ValueError(
+            f"{where}: 'rec_registry.areas' must map an area key to a list of "
+            "municipalities, e.g. {valley-north: [Springfield, Shelbyville]}"
+        )
+    for area_key, municipalities in areas.items():
+        if not isinstance(municipalities, list) or not all(
+            isinstance(m, str) for m in municipalities
+        ):
+            raise ValueError(
+                f"{where}: 'rec_registry.areas.{area_key}' must be a list of "
+                "municipality names"
+            )
+
+    # A municipality in two areas resolves to whichever is declared first, which
+    # is an authoring mistake rather than a policy — say so at import.
+    seen: dict[str, str] = {}
+    for area_key, municipalities in areas.items():
+        for municipality in municipalities:
+            key = municipality.strip().casefold()
+            if key in seen and seen[key] != area_key:
+                raise ValueError(
+                    f"{where}: municipality {municipality!r} is claimed by both "
+                    f"{seen[key]!r} and {area_key!r}; a member's area would "
+                    "depend on declaration order"
+                )
+            seen[key] = area_key
 
 
 def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
@@ -240,7 +288,10 @@ def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
     validate_rec_registry_block(block, where=f"REC {rec_slug!r}")
     return RecRegistryBinding(
         community=str(block["community"]).strip(),
-        area=str(block["area"]).strip(),
+        default_area=str(block["default_area"]).strip(),
+        areas={
+            str(k): [str(m) for m in v] for k, v in (block.get("areas") or {}).items()
+        },
     )
 
 

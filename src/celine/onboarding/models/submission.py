@@ -49,6 +49,13 @@ class Submission(Base):
     phone: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     fiscal_code: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     pod_code: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    # Municipality of the supply address, as resolved by the eligibility
+    # geocoder. Kept because it decides which registry area the member is
+    # registered into, and the geocoder resolves it far more reliably than OCR
+    # of a bill does. Encrypted like the rest of the address data it comes from.
+    supply_municipality: Mapped[str | None] = mapped_column(
+        EncryptedString, nullable=True
+    )
 
     # Session binding — token ties the session to the browser tab
     session_token: Mapped[str] = mapped_column(

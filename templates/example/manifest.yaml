@@ -92,12 +92,13 @@ consent:
 # REC registry binding — OPTIONAL, per community. Omit it and approved
 # participants are not registered as community members; the wizard still works.
 #
-# `area` is a fixed configured value: every member lands in it and a REC manager
-# moves them from there. Assigning the right one needs this community's areas to
-# be 1-1 with the registry's AND geocoding the supply address against their
-# geofences — the data exists but is not carried here yet, and a municipality-name
-# heuristic would be quietly wrong. A wrong area is sticky, too: the registry
-# refuses to delete an area while members reference it.
+# `areas` maps each registry area key to the municipalities it covers. This is
+# how an area is defined — the platform does not use geoshapes — so the match is
+# against the member's municipality: the one the eligibility geocoder resolved,
+# or the bill extraction's `comune` when that step did not run. `default_area`
+# catches anyone whose municipality is not listed. A municipality claimed by two
+# areas is refused at import, since the outcome would otherwise depend on
+# declaration order.
 #
 # No assets are registered. Self-stated answers are declarations, not
 # commissioned installations, and a meter's sensor_id only exists after the
@@ -106,7 +107,10 @@ consent:
 #
 # rec_registry:
 #   community: example-community       # community key in the REC registry
-#   area: north                        # one of that community's own area keys
+#   default_area: north                # when no area covers the municipality
+#   areas:
+#     valley-north: [Springfield, Shelbyville]
+#     valley-south: [Ogdenville]
 
 # Dataspace binding — OPTIONAL, and per community rather than per deployment.
 # Omit the whole block and this community runs the full wizard, collects no

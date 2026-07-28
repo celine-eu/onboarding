@@ -15,6 +15,7 @@ export interface AdminSubmission extends SubmissionResponse {
 	phone?: string | null;
 	fiscal_code?: string | null;
 	pod_code?: string | null;
+	supply_municipality?: string | null;
 	extra_data?: Record<string, unknown> | null;
 	notes?: string | null;
 	created_at: string;

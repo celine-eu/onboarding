@@ -27,6 +27,7 @@ def _sub(**overrides):
         first_name="Alice",
         last_name="Rossi",
         pod_code="IT001E00000001",
+        supply_municipality=None,
         extra_data={},
         extracted_data={},
     )
@@ -34,7 +35,11 @@ def _sub(**overrides):
     return SimpleNamespace(**base)
 
 
-BINDING = ts.RecRegistryBinding(community="test-community", area="north")
+BINDING = ts.RecRegistryBinding(
+    community="test-community",
+    default_area="north",
+    areas={"valley-north": ["Springfield", "Shelbyville"]},
+)
 
 
 # ── the binding ───────────────────────────────────────────────────────────────
@@ -47,25 +52,70 @@ class TestBinding:
 
     def test_block_resolves(self, bind_rec):
         manifest = bind_rec("rec-a")
-        manifest["rec_registry"] = {"community": "rec-a", "area": "north"}
+        manifest["rec_registry"] = {
+            "community": "rec-a",
+            "default_area": "north",
+            "areas": {"valley-north": ["Springfield"]},
+        }
         binding = ts.rec_registry_binding("rec-a")
 
         assert binding.enabled is True
         assert binding.community == "rec-a"
-        assert binding.area == "north"
+        assert binding.default_area == "north"
+        assert binding.areas == {"valley-north": ["Springfield"]}
 
     def test_community_is_required(self):
         with pytest.raises(ValueError, match="community' is required"):
-            ts.validate_rec_registry_block({"area": "north"}, where="test")
+            ts.validate_rec_registry_block({"default_area": "north"}, where="test")
 
-    def test_area_is_required(self):
-        """Assigning a member to the right area needs the community's areas to be
-        1-1 with the registry's *and* geocoding against their geofences. Until
-        that lands there is one configured area, asked for rather than guessed —
-        a wrong area is sticky, since the registry refuses to delete one while
-        members reference it."""
-        with pytest.raises(ValueError, match="area' is required"):
+    def test_default_area_is_required(self):
+        """A member with no area cannot be registered at all, so there has to be
+        somewhere to put one whose municipality matches nothing."""
+        with pytest.raises(ValueError, match="default_area' is required"):
             ts.validate_rec_registry_block({"community": "rec-a"}, where="test")
+
+    def test_areas_must_map_to_lists(self):
+        with pytest.raises(ValueError, match="must be a list of"):
+            ts.validate_rec_registry_block(
+                {"community": "c", "default_area": "n", "areas": {"a": "Springfield"}},
+                where="test",
+            )
+
+    def test_a_municipality_claimed_twice_is_refused(self):
+        """Otherwise a member's area depends on declaration order — an authoring
+        mistake, not a policy, so it fails at import."""
+        with pytest.raises(ValueError, match="claimed by both"):
+            ts.validate_rec_registry_block(
+                {
+                    "community": "c",
+                    "default_area": "n",
+                    "areas": {"a": ["Springfield"], "b": ["springfield"]},
+                },
+                where="test",
+            )
+
+
+class TestAreaResolution:
+    """A coarse stand-in for geofences: municipality lists per area.
+
+    Broad on purpose. Matching a municipality is not resolving a point against a
+    polygon, and it is wrong for a member whose address sits in a municipality
+    split across two areas — right often enough to be worth doing, with a REC
+    manager moving the rest.
+    """
+
+    def test_a_covered_municipality_picks_its_area(self):
+        assert BINDING.area_for("Springfield") == "valley-north"
+
+    def test_matching_ignores_case_and_padding(self):
+        """The name arrives from OCR of a bill, not from a picker."""
+        assert BINDING.area_for("  shelbyville ") == "valley-north"
+
+    def test_an_uncovered_municipality_falls_back(self):
+        assert BINDING.area_for("Ogdenville") == "north"
+
+    def test_no_municipality_falls_back(self):
+        assert BINDING.area_for(None) == "north"
 
     def test_absent_block_validates(self):
         ts.validate_rec_registry_block(None, where="test")
@@ -102,12 +152,40 @@ class TestPayload:
         )
         assert payload["name"] == "20260727-abcd"
 
-    def test_area_is_the_configured_one(self):
-        """Not derived from the supply address: per-member assignment needs
-        geocoding against the community's geofences, which is not wired yet.
-        A REC manager moves people until it is."""
+    def test_the_geocoded_municipality_wins(self):
+        """A geocoder returns the municipality as its own field; a bill states a
+        full address as free text and OCR of it is a guess."""
+        payload = rr.build_member_payload(
+            _sub(
+                supply_municipality="Springfield",
+                extracted_data={"comune": "Ogdenville"},
+            ),
+            BINDING,
+        )
+        assert payload["area"] == "valley-north"
+
+    def test_area_comes_from_the_extracted_municipality(self):
+        payload = rr.build_member_payload(
+            _sub(extracted_data={"comune": "Springfield"}), BINDING
+        )
+        assert payload["area"] == "valley-north"
+
+    def test_an_uncovered_municipality_uses_the_default(self):
         payload = rr.build_member_payload(
             _sub(extracted_data={"comune": "Somewhere"}), BINDING
+        )
+        assert payload["area"] == "north"
+
+    def test_no_extraction_uses_the_default(self):
+        assert rr.build_member_payload(_sub(), BINDING)["area"] == "north"
+
+    def test_the_address_is_not_substring_matched(self):
+        """Italian street names routinely contain other municipalities' names:
+        substring-matching "Via Roma 1, Lavarone" against a municipality list
+        would file the member under Roma."""
+        payload = rr.build_member_payload(
+            _sub(extracted_data={"indirizzo": "Via Springfield 1, Ogdenville"}),
+            BINDING,
         )
         assert payload["area"] == "north"
 
@@ -180,7 +258,10 @@ class TestNoAssetsAreRegistered:
 @pytest.fixture()
 def _configured(monkeypatch, bind_rec):
     manifest = bind_rec("example")
-    manifest["rec_registry"] = {"community": "test-community", "area": "north"}
+    manifest["rec_registry"] = {
+        "community": "test-community",
+        "default_area": "north",
+    }
     monkeypatch.setattr(rr.settings, "rec_registry_url", "http://registry:8004")
     rr._client = None
     yield
