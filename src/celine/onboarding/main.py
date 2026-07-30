@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
 from celine.onboarding.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 async def _validate_dataspace_config() -> None:
@@ -25,13 +28,32 @@ async def _validate_dataspace_config() -> None:
         dataspace_binding,
         get_slugs,
         load_manifest,
+        organization_for,
         rec_registry_binding,
+        validate_organization,
     )
 
     for slug in get_slugs():
         manifest = load_manifest(slug)
+        # Manifests are read from the database, so they may have been imported by
+        # an older build than the one now booting. Re-validate rather than trust
+        # that `import-templates` was the gate.
+        validate_organization(manifest, where=f"REC {slug!r}")
         binding = dataspace_binding(slug)  # raises on a malformed block
         registry = rec_registry_binding(slug)  # raises on a malformed block
+
+        if not organization_for(slug):
+            # Not fatal: a single-community deployment can be run entirely by
+            # platform operators holding realm-level groups. But per-community
+            # delegation is impossible without an organisation, and finding that
+            # out by being denied is worse than being told at boot.
+            logger.warning(
+                "REC %r declares no 'organization', so no per-community operator "
+                "can be granted access to it — only platform operators holding a "
+                "realm-level group. Add 'organization: <keycloak-org-alias>' to "
+                "its manifest to delegate its review queue.",
+                slug,
+            )
 
         if registry.enabled:
             # The wrapper methods this integration calls are unreleased, so an

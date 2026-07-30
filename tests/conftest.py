@@ -54,6 +54,28 @@ def bind_rec(monkeypatch):
 
 
 @pytest.fixture()
+def seed_rec(monkeypatch):
+    """Seed an arbitrary REC manifest into the cache, no database involved.
+
+    `bind_rec` only reaches the `dataspace:` block; this one takes any top-level
+    manifest key, which the admin console needs (`organization:`).
+    """
+    from celine.onboarding.services import template_service
+
+    async def _noop_fresh():
+        return None
+
+    monkeypatch.setattr(template_service, "ensure_fresh", _noop_fresh)
+
+    def _seed(rec_slug: str = "default", **manifest):
+        full: dict = {"slug": rec_slug, "name": rec_slug, **manifest}
+        template_service._cache[rec_slug] = full
+        return full
+
+    return _seed
+
+
+@pytest.fixture()
 def submission():
     sub = MagicMock()
     sub.ref = "20260713-abcd1234"

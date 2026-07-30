@@ -53,10 +53,12 @@ def import_templates(
         # first time a REC manager approves somebody.
         from celine.onboarding.services.template_service import (
             validate_dataspace_block,
+            validate_organization,
             validate_rec_registry_block,
         )
 
         try:
+            validate_organization(manifest, where=str(manifest_path))
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
             validate_rec_registry_block(
                 manifest.get("rec_registry"), where=str(manifest_path)

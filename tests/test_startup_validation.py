@@ -171,3 +171,62 @@ async def test_no_rec_registry_block_ignores_the_sdk_version(bind_rec, monkeypat
     monkeypatch.delattr(RecRegistryAdminClient, "create_member", raising=False)
 
     await app_main._validate_dataspace_config()
+
+
+# ---------------------------------------------------------------------------
+# Organisation — the admin console's tenancy key
+# ---------------------------------------------------------------------------
+
+
+async def test_contradictory_organization_refuses_to_start(seed_rec, monkeypatch):
+    """Manifests come from the database, so `import-templates` is not the only gate.
+
+    A REC imported by an older build can carry a manifest this one considers
+    invalid, and an operator authenticating against one alias while their members
+    are filed under another is exactly the drift the single-identifier rule
+    exists to prevent.
+    """
+    seed_rec(
+        "rec-a",
+        organization="community-a",
+        dataspace={"organization": "community-b"},
+    )
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with pytest.raises(ValueError, match="disagree"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_malformed_organization_refuses_to_start(seed_rec, monkeypatch):
+    seed_rec("rec-a", organization="Community_A")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with pytest.raises(ValueError, match="lowercase alphanumeric"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_rec_without_an_organization_warns_but_starts(
+    seed_rec, monkeypatch, caplog
+):
+    """Not fatal: platform operators with a realm group can still run it.
+
+    But per-community delegation is impossible, and being told at boot beats
+    finding out by being denied.
+    """
+    seed_rec("rec-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+
+    assert "declares no 'organization'" in caplog.text
+
+
+async def test_rec_with_an_organization_does_not_warn(seed_rec, monkeypatch, caplog):
+    seed_rec("rec-a", organization="community-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+
+    assert "declares no 'organization'" not in caplog.text

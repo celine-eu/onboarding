@@ -2,6 +2,25 @@ slug: example
 name: "CER Valle del Sole"
 locale: it
 
+# Keycloak organization alias that owns this community — OPTIONAL, and the
+# tenancy key for the admin console. Operators are authorised by membership of
+# this organization plus one of its admins/managers/editors/viewers groups, so
+# this is what decides who may review *this* community's submissions and nobody
+# else's.
+#
+# The same identifier as `dataspace.organization` below when that block is
+# present; `task import-templates` refuses a manifest where the two disagree, and
+# resolves this from the dataspace block when only that one is set.
+#
+# Omit it and the community is administrable only by *platform* operators holding
+# a realm-level group — a coherent setup for a single-community deployment. It
+# fails closed either way: no organization means no per-community grant matches.
+# The organization must already exist in Keycloak, with its role-hierarchy groups
+# created (`celine-policies keycloak sync-users` does both). Onboarding never
+# creates one.
+#
+# organization: example-community
+
 branding:
   primary_color: "#0d9488"
   logo: assets/logo.svg

@@ -65,6 +65,81 @@ def load_manifest(rec_slug: str) -> dict[str, Any]:
     return _cache[rec_slug]
 
 
+# ---------------------------------------------------------------------------
+# Organisation — the tenancy key for the admin console
+# ---------------------------------------------------------------------------
+
+
+def validate_organization(manifest: dict[str, Any], *, where: str) -> None:
+    """Reject a malformed or contradictory top-level ``organization:``.
+
+    Optional. A REC without one is administrable only by **platform** operators
+    (realm-level groups); nobody can be granted access to it per community. That
+    is a coherent setup for a single-community deployment, and it fails closed —
+    no organisation means no organisation-scoped grant matches.
+    """
+    if "organization" not in manifest:
+        return
+
+    alias = str(manifest.get("organization") or "").strip()
+    if not alias:
+        raise ValueError(
+            f"{where}: 'organization' is present but empty. Omit the key entirely "
+            "if this community has no Keycloak organization; leaving it blank "
+            "reads as a value that failed to interpolate."
+        )
+    if not SAFE_ORG_ALIAS.fullmatch(alias):
+        raise ValueError(
+            f"{where}: 'organization' must be lowercase alphanumeric with inner "
+            f"hyphens (got {alias!r}). It is the Keycloak organization alias."
+        )
+
+    # AGENTS.md commits to these being one identifier. Enforce it where the
+    # author is already looking, rather than letting an operator authenticate
+    # against one name while their members are filed under another.
+    dataspace = manifest.get("dataspace")
+    if isinstance(dataspace, dict):
+        ds_alias = str(dataspace.get("organization") or "").strip()
+        if ds_alias and ds_alias != alias:
+            raise ValueError(
+                f"{where}: 'organization' ({alias!r}) and "
+                f"'dataspace.organization' ({ds_alias!r}) disagree. These are one "
+                "identifier — the Keycloak organization alias, the identity "
+                "registry owner id and the owners.yaml id are the same string."
+            )
+
+
+def organization_for(rec_slug: str) -> str:
+    """The Keycloak organization alias that owns *rec_slug*, or ``""``.
+
+    Falls back to ``dataspace.organization`` so that a community already bound to
+    the dataspace does not have to restate the same alias: they are the same
+    identifier by definition, and `validate_organization` refuses a manifest where
+    they disagree.
+    """
+    manifest = load_manifest(rec_slug)
+    alias = str(manifest.get("organization") or "").strip()
+    if alias:
+        return alias
+
+    dataspace = manifest.get("dataspace")
+    if isinstance(dataspace, dict):
+        return str(dataspace.get("organization") or "").strip()
+    return ""
+
+
+def recs_for_organization(alias: str) -> list[str]:
+    """Slugs of every active REC owned by *alias*.
+
+    Resolved from the manifest cache rather than SQL: the manifest is the source
+    of truth and is already in memory. Should a query ever need this in the
+    database, it is ``recs.manifest->>'organization'``.
+    """
+    if not alias:
+        return []
+    return [slug for slug in get_slugs() if organization_for(slug) == alias]
+
+
 def _templates_dir() -> Path:
     p = Path(settings.templates_dir)
     if not p.is_absolute():
