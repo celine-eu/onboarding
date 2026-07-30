@@ -220,9 +220,65 @@ export interface AdminMe {
 	recs: AdminRecAccess[];
 }
 
-export interface RecAdminApi {
-	listSubmissions: () => Promise<AdminSubmission[]>;
-	updateSubmissionStatus: (id: string, status: string) => Promise<AdminSubmission>;
+export interface EnablementStep {
+	step: string;
+	label: string;
+	fail_closed: boolean;
+	status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+	external_ref: string | null;
+	attempts: number;
+	last_error: string | null;
+	detail: string | null;
+	started_at: string | null;
+	completed_at: string | null;
+}
+
+export interface Enablement {
+	submission_id: string;
+	state: 'not_started' | 'partial' | 'complete' | 'failed';
+	steps: EnablementStep[];
+}
+
+export interface AuditEntry {
+	id: string;
+	action: string;
+	entity_type: string;
+	entity_id: string | null;
+	rec_slug: string | null;
+	ip_address: string | null;
+	detail: string | null;
+	actor_type: string;
+	actor_sub: string | null;
+	actor_email: string | null;
+	actor_client_id: string | null;
+	created_at: string;
+}
+
+export interface RecStats {
+	rec_slug: string;
+	by_status: Record<string, number>;
+	submissions_with_failed_steps: number;
+}
+
+export interface AdminDocument {
+	id: string;
+	doc_type: string;
+	original_filename: string;
+	mime_type: string;
+	size_bytes: number;
+	created_at: string;
+}
+
+export interface SubmissionPage {
+	submissions: AdminSubmission[];
+	total: number;
+}
+
+export interface QueueFilters {
+	status?: string;
+	ref?: string;
+	skip?: number;
+	limit?: number;
 }
 
 /** Signals that the caller is authenticated but administers nothing. */
@@ -239,6 +295,15 @@ function signIn(): never {
 	throw new Error('Redirecting to sign in');
 }
 
+async function detailOf(res: Response): Promise<string> {
+	try {
+		const body = await res.json();
+		return typeof body?.detail === 'string' ? body.detail : JSON.stringify(body);
+	} catch {
+		return res.statusText;
+	}
+}
+
 /**
  * Admin requests carry no token of their own.
  *
@@ -248,7 +313,7 @@ function signIn(): never {
  * `apps/grid` does. A 403 means signed in but not permitted, which is a
  * different screen, so it must not trigger a login loop.
  */
-async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
+async function adminFetch(path: string, options?: RequestInit): Promise<Response> {
 	const res = await fetch(path, {
 		credentials: 'include',
 		...options,
@@ -259,40 +324,107 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
 	});
 
 	if (res.status === 401) signIn();
-	if (res.status === 403) {
-		throw new AdminDeniedError(await detailOf(res));
-	}
-	if (!res.ok) {
-		throw new Error(`API error ${res.status}: ${await detailOf(res)}`);
-	}
+	if (res.status === 403) throw new AdminDeniedError(await detailOf(res));
+	if (!res.ok) throw new Error(await detailOf(res));
+	return res;
+}
+
+async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
+	const res = await adminFetch(path, options);
 	if (res.status === 204) return undefined as T;
 	return res.json() as Promise<T>;
 }
 
-async function detailOf(res: Response): Promise<string> {
-	try {
-		const body = await res.json();
-		return typeof body?.detail === 'string' ? body.detail : JSON.stringify(body);
-	} catch {
-		return res.statusText;
-	}
-}
-
 export const getAdminMe = () => adminRequest<AdminMe>('/api/admin/me');
 export const getAdminRecs = () => adminRequest<AdminRecAccess[]>('/api/admin/recs');
+export const adminPing = () => adminRequest<{ ok: boolean }>('/api/admin/ping');
 
-export function createRecAdminApi(recSlug: string): RecAdminApi {
+export function createRecAdminApi(recSlug: string) {
 	const base = `/api/admin/${recSlug}`;
 
 	return {
-		listSubmissions: () => adminRequest<AdminSubmission[]>(`${base}/submissions`),
-		updateSubmissionStatus: (id, status) =>
+		stats: () => adminRequest<RecStats>(`${base}/stats`),
+
+		async listSubmissions(filters: QueueFilters = {}): Promise<SubmissionPage> {
+			const params = new URLSearchParams();
+			if (filters.status) params.set('status', filters.status);
+			if (filters.ref) params.set('ref', filters.ref);
+			params.set('skip', String(filters.skip ?? 0));
+			params.set('limit', String(filters.limit ?? 25));
+			const res = await adminFetch(`${base}/submissions?${params}`);
+			return {
+				submissions: (await res.json()) as AdminSubmission[],
+				// The header is what lets the console paginate at all — without it
+				// there is no telling a full last page from a page that is merely full.
+				total: Number(res.headers.get('X-Total-Count') ?? 0)
+			};
+		},
+
+		getSubmission: (id: string, reveal = false) =>
+			adminRequest<AdminSubmission>(`${base}/submissions/${id}?reveal=${reveal}`),
+
+		transition: (id: string, target: string, reason?: string) =>
+			adminRequest<AdminSubmission>(`${base}/submissions/${id}/transition`, {
+				method: 'POST',
+				body: JSON.stringify({ target, reason })
+			}),
+
+		updateSubmission: (id: string, patch: Record<string, unknown>) =>
 			adminRequest<AdminSubmission>(`${base}/submissions/${id}`, {
 				method: 'PATCH',
-				body: JSON.stringify({ status })
-			})
+				body: JSON.stringify(patch)
+			}),
+
+		purge: (id: string) =>
+			adminRequest<void>(`${base}/submissions/${id}`, { method: 'DELETE' }),
+
+		enablement: (id: string) => adminRequest<Enablement>(`${base}/submissions/${id}/enablement`),
+
+		retryEnablement: (id: string, step?: string) =>
+			adminRequest<Enablement>(`${base}/submissions/${id}/enablement/retry`, {
+				method: 'POST',
+				body: JSON.stringify({ step: step ?? null })
+			}),
+
+		revokeEnablement: (id: string) =>
+			adminRequest<Enablement>(`${base}/submissions/${id}/enablement/revoke`, {
+				method: 'POST'
+			}),
+
+		documents: (id: string) =>
+			adminRequest<AdminDocument[]>(`${base}/submissions/${id}/documents`),
+
+		documentUrl: (id: string, documentId: string) =>
+			`${base}/submissions/${id}/documents/${documentId}`,
+
+		pdfUrl: (id: string) => `${base}/submissions/${id}/pdf`,
+
+		auditLogs: (limit = 100) => adminRequest<AuditEntry[]>(`${base}/audit-logs?limit=${limit}`),
+
+		submissionAudit: (id: string) =>
+			adminRequest<AuditEntry[]>(`${base}/audit-logs?limit=200`).then((rows) =>
+				rows.filter((r) => r.entity_id === id)
+			),
+
+		async exportCsv(recipientRef?: string): Promise<Blob> {
+			const res = await adminFetch(`${base}/exports/csv`, {
+				method: 'POST',
+				body: JSON.stringify({ recipient_ref: recipientRef || null })
+			});
+			return res.blob();
+		},
+
+		async exportPodList(offerId: string, recipientRef: string): Promise<Blob> {
+			const res = await adminFetch(`${base}/exports/pod-list`, {
+				method: 'POST',
+				body: JSON.stringify({ offer_id: offerId, recipient_ref: recipientRef })
+			});
+			return res.blob();
+		}
 	};
 }
+
+export type RecAdminApi = ReturnType<typeof createRecAdminApi>;
 
 export function createRecApi(recSlug: string): RecApi {
 	const base = `/api/${recSlug}`;

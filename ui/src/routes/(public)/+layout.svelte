@@ -1,5 +1,5 @@
 <script lang="ts">
-	import '../app.css';
+	import '../../app.css';
 	import { locale, locales, t } from '$lib/i18n';
 
 	let { children } = $props();
