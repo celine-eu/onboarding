@@ -96,6 +96,16 @@ tasks:
     cmds:
       - uv run onboarding-cli import-templates {{.CLI_ARGS}}
 
+  admin:
+    desc: >-
+      Review and enablement commands, e.g.
+      `task admin -- review list --rec my-rec` or
+      `task admin -- enablement retry REF --rec my-rec --step rec_registry_member`.
+      Talks to the API by default; add --local for the no-Keycloak break-glass.
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run onboarding-cli admin {{.CLI_ARGS}}
+
   export-csv:
     desc: Export submissions to CSV
     dir: "{{.SRC_DIR}}"

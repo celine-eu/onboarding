@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     # the repo's own policies/ directory rather than PoliciesSettings' relative
     # "./policies", because the API is started from ./src and a relative path
     # would resolve to src/policies.
+    # --- onboarding-cli ---------------------------------------------------
+    # The CLI drives the same HTTP endpoints the console does, with a service
+    # account, so it exercises the real authorization and writes real audit rows.
+    onboarding_api_url: str = "http://localhost:8040"
+    onboarding_cli_client_id: str = "svc-onboarding-cli"
+    onboarding_cli_client_secret: str = ""
+    # `--local` talks to the database directly, bypassing HTTP and therefore
+    # authorization. It is the break-glass for a deployment with no Keycloak, and
+    # has to be asked for.
+    allow_local_admin: bool = False
+
     policies_dir: str = str(REPO_ROOT / "policies")
     # When the policy bundle cannot be loaded, deny. A permissive fallback is
     # what celine-grid does, and it is genuinely convenient in development — but

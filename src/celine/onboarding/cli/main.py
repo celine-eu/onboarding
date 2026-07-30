@@ -1,19 +1,27 @@
 import asyncio
+from datetime import UTC
 from pathlib import Path
-from typing import Optional
 
 import typer
 
+from celine.onboarding.cli.admin import app as admin_app
 from celine.onboarding.config.settings import settings
 
 app = typer.Typer(name="onboarding-cli", help="REC Onboarding CLI")
 
+# Review and enablement. Registered as a sub-app rather than flat commands so
+# `onboarding-cli --help` separates the deployment tasks (importing templates,
+# exporting) from the per-submission ones.
+app.add_typer(admin_app, name="admin")
+
 
 @app.command()
 def import_templates(
-    filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Import only this slug"),
+    filter: str | None = typer.Option(None, "--filter", "-f", help="Import only this slug"),
     all: bool = typer.Option(False, "--all", "-a", help="Import all discovered templates"),
-    templates_dir: Optional[str] = typer.Option(None, "--templates-dir", help="Override templates directory"),
+    templates_dir: str | None = typer.Option(
+        None, "--templates-dir", help="Override templates directory"
+    ),
 ):
     """Import template manifests from disk into the database."""
     import yaml
@@ -40,7 +48,10 @@ def import_templates(
             manifest = yaml.safe_load(f)
         slug = manifest.get("slug", subdir.name)
         if slug != subdir.name:
-            typer.echo(f"  Warning: slug '{slug}' does not match directory '{subdir.name}', using directory name")
+            typer.echo(
+                f"  Warning: slug '{slug}' does not match directory "
+                f"'{subdir.name}', using directory name"
+            )
             slug = subdir.name
             manifest["slug"] = slug
         name = manifest.get("name", slug)
@@ -60,9 +71,7 @@ def import_templates(
         try:
             validate_organization(manifest, where=str(manifest_path))
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
-            validate_rec_registry_block(
-                manifest.get("rec_registry"), where=str(manifest_path)
-            )
+            validate_rec_registry_block(manifest.get("rec_registry"), where=str(manifest_path))
         except ValueError as exc:
             typer.echo(f"  {exc}", err=True)
             raise typer.Exit(1) from exc
@@ -75,6 +84,7 @@ def import_templates(
 
     async def _run():
         from sqlalchemy import select
+
         from celine.onboarding.models.rec import Rec
 
         async with async_session() as db:
@@ -99,17 +109,17 @@ def import_templates(
 @app.command()
 def export_csv(
     output: str = "",
-    rec: Optional[str] = typer.Option(None, "--rec", "-r", help="Filter by REC slug"),
-    recipient: Optional[str] = typer.Option(
+    rec: str | None = typer.Option(None, "--rec", "-r", help="Filter by REC slug"),
+    recipient: str | None = typer.Option(
         None,
         "--recipient",
         help="Recipient of this disclosure (org alias/DID/DPA ref). "
         "Naming one records a DataDisclosed provenance event.",
     ),
-    purpose: Optional[str] = typer.Option(
+    purpose: str | None = typer.Option(
         None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
     ),
-    agreement_ref: Optional[str] = typer.Option(
+    agreement_ref: str | None = typer.Option(
         None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
     ),
 ):
@@ -161,10 +171,10 @@ def export_pod_list(
         "DataDisclosed provenance event.",
     ),
     output: str = "",
-    purpose: Optional[str] = typer.Option(
+    purpose: str | None = typer.Option(
         None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
     ),
-    agreement_ref: Optional[str] = typer.Option(
+    agreement_ref: str | None = typer.Option(
         None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
     ),
 ):
@@ -178,17 +188,15 @@ def export_pod_list(
     The file is a snapshot, so the re-export cadence is the revocation latency.
     Re-run it on a schedule; the header states when it was generated.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from celine.onboarding.models.database import async_session
     from celine.onboarding.outputs.csv_export import export_pod_list as _export
 
-    generated_at = datetime.now(timezone.utc)
+    generated_at = datetime.now(UTC)
     if not output:
         stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
-        output = str(
-            Path(settings.data_dir) / "exports" / rec / f"pod-list-{stamp}.csv"
-        )
+        output = str(Path(settings.data_dir) / "exports" / rec / f"pod-list-{stamp}.csv")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
