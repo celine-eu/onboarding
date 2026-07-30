@@ -23,11 +23,11 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 ### For the operator
 
-Operators access submissions via token-protected admin endpoints. They can list all submissions, review details, download PDF summaries, change status (submitted, under review, approved, rejected), and export to CSV. Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
+Operators work in the console at `/admin`, signing in with their Keycloak identity; what they may do is decided by their organization and group (see [Authorization](docs/authorization.md)). They can work the queue, open a submission in full — consents, documents, extracted data, enablement — change status, repair a failed enablement step, and export to CSV. The same flow is available from the terminal with `onboarding-cli admin`; see [Operator console](docs/admin-console.md). Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
 
 Approval enables a participant in three steps, in order: a **Keycloak user**, a **member in the REC registry**, then a **dataspace identity**. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
 
-When dataspace provisioning is enabled (`DATASPACE_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried via `POST /api/admin/submissions/{id}/retry-share`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
+When dataspace provisioning is enabled (`DATASPACE_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried from the console or via `POST /api/admin/{rec}/submissions/{id}/enablement/retry`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
 ### For the community
 
@@ -77,8 +77,8 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 ### GDPR
 
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
-- Right to erasure: `DELETE /api/admin/submissions/{id}` removes files from disk and all DB records
-- Audit trail: all admin operations logged with action, entity, IP, and detail
+- Right to erasure: `DELETE /api/admin/{rec}/submissions/{id}` removes files from disk and all DB records
+- Audit trail: all admin operations logged with action, entity, IP, detail **and the operator who performed them**
 - DPA enforcement: app refuses to start with LLM extraction steps unless `DPA_SIGNED=yes` (and SMS providers unless `DPA_SMS_SIGNED=yes`)
 - CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins

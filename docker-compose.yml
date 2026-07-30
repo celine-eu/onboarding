@@ -52,6 +52,11 @@ services:
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
       DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
       DATASPACE_KEYCLOAK_BASE_URL: ${DATASPACE_KEYCLOAK_BASE_URL:-http://host.docker.internal:8080}
+      # Admin console. The issuer above is shared: operator tokens and the
+      # service's own outbound M2M tokens come from the same realm.
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-svc-onboarding}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-svc-onboarding}
+      POLICIES_DIR: /app/policies
     env_file:
       - .env
     extra_hosts:

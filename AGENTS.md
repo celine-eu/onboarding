@@ -425,16 +425,33 @@ When `SECURITY_HEADERS=true` (default), all responses include:
 | `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |
 | `GET` | `/api/downloads/{token}` | token | Time-limited document download |
 
-**Admin (token-protected, no TTL, audit-logged):**
+**Admin console (`/api/admin/**`, Keycloak identity, capability-gated, audit-logged):**
+
+Authorization is by organization + group for operators and by scope for service
+accounts — see [docs/authorization.md](docs/authorization.md). The capability each
+endpoint needs is in brackets.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/admin/submissions` | List all (includes consent_ip) |
-| `GET/PATCH` | `/api/admin/submissions/{id}` | View/update (includes consent_ip) |
-| `DELETE` | `/api/admin/submissions/{id}` | GDPR erasure (files + DB) |
-| `GET` | `/api/admin/submissions/{id}/pdf` | Download summary |
-| `POST` | `/api/admin/submissions/{id}/retry-share` | Re-run data-sharing provisioning to the connector (`raise_on_error=True`; 422 on connector rejection) |
-| `GET` | `/api/admin/audit-logs` | Paginated audit trail |
+| `GET` | `/api/admin/me` | Identity + per-community capabilities. 403 when the caller administers nothing, which is what drives the console's denied page |
+| `GET` | `/api/admin/recs` | Communities the caller may administer |
+| `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so realm-level operators only) [`recs.read`] |
+| `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
+| `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action |
+| `PATCH` | `/api/admin/{rec}/submissions/{id}` | Edit fields and notes [`submissions.write`] |
+| `POST` | `/api/admin/{rec}/submissions/{id}/transition` | Drive the state machine. A reason is required when rejecting [`submissions.review`] |
+| `DELETE` | `/api/admin/{rec}/submissions/{id}` | GDPR erasure (files + DB) [`submissions.purge`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}/enablement` | What approval did, step by step [`submissions.read`] |
+| `POST` | `/api/admin/{rec}/submissions/{id}/enablement/retry` | Re-run unfinished steps, or one named step [`enablement.retry`] |
+| `POST` | `/api/admin/{rec}/submissions/{id}/enablement/revoke` | Reverse enablement [`enablement.revoke`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}/documents` | Uploaded documents [`submissions.read`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}/documents/{doc}` | Stream one, decrypted. Audited [`submissions.read`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}/pdf` | Summary PDF [`submissions.read`] |
+| `POST` | `/api/admin/{rec}/submissions/{id}/retry-share` | **Deprecated** alias of `enablement/retry?step=dataspace_share` |
+| `POST` | `/api/admin/{rec}/exports/csv` | Streamed CSV; naming a recipient records a `DataDisclosed` event [`export`] |
+| `POST` | `/api/admin/{rec}/exports/pod-list` | Consented supply points for one offer [`export`] |
+| `GET` | `/api/admin/{rec}/audit-logs` | This community's trail only [`audit.read`] |
 
 ## Local Development
 
