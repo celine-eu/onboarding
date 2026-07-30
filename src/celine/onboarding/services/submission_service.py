@@ -8,22 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from celine.onboarding.models.submission import Submission, SubmissionStatus
+from celine.onboarding.models.submission import Submission
 from celine.onboarding.models.schemas import ConsentCreate, SubmissionUpdate
-from celine.onboarding.workflows.engine import validate_transition, can_submit, InvalidTransition
+from celine.onboarding.services.audit_service import Actor
+from celine.onboarding.workflows.engine import InvalidTransition
 
 
 def _assert_phone_verified(submission: Submission) -> None:
-    """Block approval when the REC requires phone verification and it is missing.
+    """Kept as an alias — the implementation lives in `services/review`."""
+    from celine.onboarding.services.review import _assert_phone_verified as impl
 
-    Only enforced for RECs whose manifest lists the `phone_verify` step, so RECs
-    that never opted into SMS verification are unaffected.
-    """
-    from celine.onboarding.services import template_service
-
-    manifest = template_service.load_manifest(submission.rec_slug)
-    if "phone_verify" in manifest.get("steps", []) and not submission.phone_verified:
-        raise ValueError("Cannot approve: phone number is not verified")
+    impl(submission)
 
 
 async def create_from_consent(
@@ -96,56 +91,20 @@ async def update_submission(
         setattr(submission, key, value)
 
     if target_status is not None:
-        validate_transition(submission.status, target_status)
-        if target_status == SubmissionStatus.SUBMITTED:
-            errors = can_submit(submission)
-            if errors:
-                raise ValueError(f"Cannot submit: {'; '.join(errors)}")
-        if target_status == SubmissionStatus.APPROVED:
-            _assert_phone_verified(submission)
-        submission.status = target_status
-        if target_status == SubmissionStatus.APPROVED:
-            from celine.onboarding.config.settings import settings
-            from celine.onboarding.services.dataspace_identity import provision_user_identity
-            from celine.onboarding.services.keycloak_identity import provision_keycloak_user
-            from celine.onboarding.services.rec_registry import register_member
+        # One implementation of the state machine, shared with the admin API and
+        # the CLI — including the enablement pipeline that runs on approval. This
+        # used to inline all of it, which is how the CLI and the console could
+        # have drifted into reaching states each other refused.
+        from celine.onboarding.services import review
 
-            # Approval enables somebody, which means three things in this order:
-            # a login, a community member, then a dataspace identity.
-            #
-            # The order is load-bearing rather than stylistic. The registry keys
-            # a member on (community, user_id), so the Keycloak user exists
-            # first; the dataspace identity is last because it is the step that
-            # can be retried afterwards.
-            kc_result = await provision_keycloak_user(submission)
+        await review.transition(
+            db,
+            submission,
+            target_status,
+            actor=Actor.system("wizard"),
+            background_tasks=background_tasks,
+        )
+    else:
+        await db.commit()
 
-            # Fails closed, unlike share provisioning. A participant missing
-            # from the registry is enabled in name only — invisible to every
-            # pipeline and dashboard, which all join on it — and that is not a
-            # state anything downstream can work around.
-            await register_member(
-                submission,
-                keycloak_user_id=kc_result.user_id if kc_result else None,
-            )
-
-            await provision_user_identity(
-                submission,
-                keycloak_user_id=kc_result.user_id if kc_result else None,
-                keycloak_realm=(
-                    settings.dataspace_keycloak_realm if kc_result else None
-                ),
-            )
-
-    await db.commit()
-
-    reloaded = await get_submission(db, submission.id)
-
-    if target_status == SubmissionStatus.SUBMITTED and reloaded:
-        if background_tasks is not None:
-            from celine.onboarding.services.notification_service import (
-                handle_submission_notification,
-            )
-
-            background_tasks.add_task(handle_submission_notification, reloaded)
-
-    return reloaded
+    return await get_submission(db, submission.id)

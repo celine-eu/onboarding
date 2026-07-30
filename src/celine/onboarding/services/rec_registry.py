@@ -208,3 +208,40 @@ async def register_member(
         payload["role"],
     )
     return payload["key"]
+
+
+async def deactivate_member(submission: Submission, *, member_key: str) -> str:
+    """Deactivate a community member — reversing registration, not erasing it.
+
+    `delete_member(purge=False)` is the registry's deactivation. Erasure is a
+    separate, irreversible act with its own scope (`rec-registry.members.purge`),
+    and reversing an approval is not the same decision as answering an erasure
+    request.
+
+    A `404` counts as done: the member is not there either way, and refusing
+    would leave the local record claiming something that is no longer true.
+    """
+    if not settings.rec_registry_url:
+        return "no registry configured"
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(submission.rec_slug)
+    if not binding.enabled:
+        return "this community declares no rec_registry binding"
+
+    response = await _get_client().delete_member(
+        binding.community, member_key, purge=False
+    )
+    status = getattr(response, "status_code", None)
+    status_value = int(status) if status is not None else 0
+
+    if status_value >= 400 and status_value != 404:
+        body = getattr(response, "content", b"")
+        detail = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+        raise ValueError(
+            f"REC registry refused to deactivate member {member_key!r} in "
+            f"community {binding.community!r} ({status_value}): {detail}"
+        )
+
+    logger.info("Deactivated member %s in community %s", member_key, binding.community)
+    return f"deactivated registry member {member_key}"

@@ -134,3 +134,11 @@ class Submission(Base):
     )
 
     documents: Mapped[list["Document"]] = relationship(back_populates="submission")
+
+    # What approval did, step by step. Cascade-deleted with the submission so a
+    # GDPR erasure leaves no trace of the person's provisioning either.
+    enablement_steps: Mapped[list["SubmissionEnablementStep"]] = relationship(  # noqa: F821
+        back_populates="submission",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

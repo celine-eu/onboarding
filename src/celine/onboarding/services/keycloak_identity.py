@@ -193,3 +193,27 @@ def _password_payload() -> dict[str, object]:
         "value": settings.dataspace_keycloak_default_password,
         "temporary": settings.dataspace_keycloak_temporary_password,
     }
+
+
+async def disable_keycloak_user(user_id: str) -> None:
+    """Disable a login rather than delete it.
+
+    Deleting would take the audit trail on the Keycloak side with it, and a
+    disabled account can be re-enabled if the revocation turns out to have been a
+    mistake. Erasure of the person's data is a separate act — see the purge path.
+    """
+    if not settings.dataspace_keycloak_enabled:
+        return
+
+    async with httpx.AsyncClient(base_url=_base_url(), timeout=15) as client:
+        token = await _admin_access_token(client)
+        response = await client.put(
+            f"/admin/realms/{settings.dataspace_keycloak_realm}/users/{user_id}",
+            json={"enabled": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if response.status_code >= 400 and response.status_code != 404:
+            raise ValueError(
+                f"Disabling Keycloak user {user_id} failed "
+                f"({response.status_code}): {response.text}"
+            )

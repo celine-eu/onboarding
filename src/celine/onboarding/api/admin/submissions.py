@@ -16,6 +16,7 @@ from typing import Annotated
 from celine.sdk.auth import JwtUser
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from celine.onboarding.api.admin.deps import (
     ActorDep,
@@ -27,8 +28,10 @@ from celine.onboarding.api.admin.deps import (
 )
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.schemas import SubmissionAdminRead, SubmissionUpdate
+from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.security.policy import Capability, get_policy
-from celine.onboarding.services import audit_service, submission_service
+from celine.onboarding.services import audit_service, review, submission_service
+from celine.onboarding.services.enablement import EnablementFailed
 from celine.onboarding.workflows.engine import InvalidTransition
 
 router = APIRouter(tags=["admin"])
@@ -37,6 +40,7 @@ ReadDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_READ))]
 WriteDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_WRITE))]
 PurgeDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_PURGE))]
 RetryDep = Annotated[JwtUser, Depends(require(Capability.ENABLEMENT_RETRY))]
+ReviewDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_REVIEW))]
 
 
 async def _owned_submission(db, submission_id: uuid.UUID, rec_slug: str):
@@ -149,6 +153,63 @@ async def update_submission(
         ip=ip,
         detail=f"fields: {fields}",
     )
+    return result
+
+
+class TransitionRequest(BaseModel):
+    target: SubmissionStatus
+    reason: str | None = Field(
+        None,
+        max_length=1000,
+        description="Why. Required when rejecting — the participant is told, and "
+        "an operator reopening the case months later needs to know.",
+    )
+
+
+@router.post(
+    "/{rec_slug}/submissions/{submission_id}/transition",
+    response_model=SubmissionAdminRead,
+)
+async def transition_submission(
+    submission_id: uuid.UUID,
+    body: TransitionRequest,
+    _: ReviewDep,
+    background_tasks: BackgroundTasks,
+    actor: ActorDep,
+    ip: IpDep,
+    db: DbDep,
+    rec_slug: RecDep,
+):
+    """Drive the review state machine.
+
+    Split out of `PATCH` because the state machine is not a field: it has its own
+    capability, its own preconditions, and a reason that a field update has
+    nowhere to put.
+
+    On approval the enablement pipeline runs first. A fail-closed step failing
+    returns 422 and leaves the submission in review — but everything the pipeline
+    *did* manage is committed, so the retry finishes the job instead of starting
+    it again.
+    """
+    if body.target == SubmissionStatus.REJECTED and not (body.reason or "").strip():
+        raise HTTPException(422, "A reason is required when rejecting a submission")
+
+    submission = await _owned_submission(db, submission_id, rec_slug)
+    try:
+        result = await review.transition(
+            db,
+            submission,
+            body.target,
+            actor=actor,
+            reason=body.reason,
+            ip=ip,
+            rec_slug=rec_slug,
+            background_tasks=background_tasks,
+        )
+    except EnablementFailed as exc:
+        raise HTTPException(422, str(exc))
+    except (ValueError, InvalidTransition) as exc:
+        raise HTTPException(422, str(exc))
     return result
 
 

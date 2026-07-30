@@ -193,6 +193,7 @@ async def provision_user_identity(
     *,
     keycloak_user_id: str | None = None,
     keycloak_realm: str | None = None,
+    provision_shares: bool = True,
 ) -> None:
     if not settings.dataspace_enabled:
         return
@@ -298,7 +299,7 @@ async def provision_user_identity(
     # LAST step and deliberately non-fatal: a failed share is recoverable, and
     # tearing down a valid identity because a consent row didn't write is the
     # wrong trade (§3.5). The rollback above does not extend here.
-    if settings.ds_connector_url and submission.data_sharing_consent:
+    if provision_shares and settings.ds_connector_url and submission.data_sharing_consent:
         try:
             await provision_user_shares(submission)
         except Exception:
@@ -567,3 +568,48 @@ async def _sync_keycloak(
         f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts; "
         f"credential {credential_id} has been revoked"
     ) from last_error
+
+
+async def revoke_user_identity(submission: Submission) -> str:
+    """Undo a dataspace identity: membership first, then the credential.
+
+    That order matters for the same reason issuance runs the other way — the
+    membership has a foreign key to the DID, so deleting the credential first
+    would leave a membership pointing at nothing.
+
+    The submission's identity columns are cleared on success, which is what makes
+    a subsequent re-approval issue a fresh credential rather than short-circuit on
+    a `dataspace_vc_id` that no longer resolves.
+    """
+    credential_id = submission.dataspace_vc_id
+    did = submission.dataspace_did
+    if not credential_id or not did:
+        return "no dataspace credential recorded"
+
+    if not settings.identity_registry_url:
+        raise ValueError("IDENTITY_REGISTRY_URL is required to revoke an identity")
+
+    base_url = settings.identity_registry_url.rstrip("/")
+    headers = await _auth_headers()
+
+    await template_service.ensure_fresh()
+    binding = template_service.dataspace_binding(submission.rec_slug)
+    if binding.organization:
+        await _delete_membership(base_url, headers, did, binding.organization)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.delete(
+            f"{base_url}/admin/credentials/{credential_id}", headers=headers
+        )
+        # 404 is success for this purpose: the credential is gone either way, and
+        # refusing to clear the local columns would make the state unrepairable.
+        if resp.status_code >= 400 and resp.status_code != 404:
+            raise ValueError(
+                f"Credential revocation failed ({resp.status_code}): {resp.text}"
+            )
+
+    submission.dataspace_vc_id = None
+    submission.dataspace_did = None
+    submission.dataspace_vc_issued_at = None
+    submission.share_provisioned = False
+    return f"revoked credential {credential_id}"
