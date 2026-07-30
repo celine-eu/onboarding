@@ -33,6 +33,7 @@ def _enable_vc(monkeypatch, bind_rec):
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
+    monkeypatch.setattr(di.settings, "encryption_key", "test-hmac-key-32bytes-long!!!!!")
     monkeypatch.setattr(di.settings, "dataspace_subject_source", "email_hash")
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
@@ -225,10 +226,11 @@ async def test_membership_registered_after_credential(
     await di.provision_user_identity(submission)
 
     paths = [url for _, url, _ in calls]
-    assert "credentials/data-subject" in paths[0]
-    assert "admin/memberships" in paths[1]
+    assert "users/resolve" in paths[0]
+    assert "credentials/data-subject" in paths[1]
+    assert "admin/memberships" in paths[2]
 
-    body = json.loads(calls[1][2])
+    body = json.loads(calls[2][2])
     assert body == {
         "user_did": CREDENTIAL_RESPONSE["subjectDid"],
         "organization_alias": "rec-example",
@@ -377,10 +379,11 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
         keycloak_realm="dataspaces",
     )
 
-    assert len(calls) == 3
-    assert "credentials/data-subject" in calls[0]
-    assert "admin/memberships" in calls[1]
-    assert "keycloak/sync" in calls[2]
+    assert len(calls) == 4
+    assert "users/resolve" in calls[0]
+    assert "credentials/data-subject" in calls[1]
+    assert "admin/memberships" in calls[2]
+    assert "keycloak/sync" in calls[3]
 
 
 async def test_kc_sync_partial_is_accepted_and_warned(
@@ -509,12 +512,100 @@ async def test_kc_sync_retries_before_rollback(monkeypatch, submission, _enable_
 # ── subject ID derivation ────────────────────────────────────────
 
 
-def test_email_subject_id():
+@pytest.fixture()
+def _with_key(monkeypatch):
+    monkeypatch.setattr(di.settings, "encryption_key", "test-hmac-key-32bytes-long!!!!!")
+
+
+def test_email_subject_id(_with_key):
     result = di._email_subject_id("User@Example.COM")
     assert result.startswith("email-")
     assert len(result) == len("email-") + 24
 
 
-def test_email_subject_id_empty():
+def test_email_subject_id_deterministic(_with_key):
+    a = di._email_subject_id("user@example.com")
+    b = di._email_subject_id("User@Example.COM")
+    assert a == b
+
+
+def test_email_subject_id_differs_by_key(monkeypatch):
+    monkeypatch.setattr(di.settings, "encryption_key", "key-a-padded-to-be-long-enough!!")
+    a = di._email_subject_id("user@example.com")
+    monkeypatch.setattr(di.settings, "encryption_key", "key-b-padded-to-be-long-enough!!")
+    b = di._email_subject_id("user@example.com")
+    assert a != b
+
+
+def test_email_subject_id_empty(_with_key):
     with pytest.raises(ValueError, match="empty"):
         di._email_subject_id("")
+
+
+def test_email_subject_id_requires_key(monkeypatch):
+    monkeypatch.setattr(di.settings, "encryption_key", "")
+    with pytest.raises(ValueError, match="ENCRYPTION_KEY"):
+        di._email_subject_id("user@example.com")
+
+
+# ── resolve before mint ──────────────────────────────────────────
+
+
+RESOLVE_RESPONSE = {
+    "did": "did:web:users.example:email-abc123",
+    "subject_id": "email-oldsha256hash12345678",
+    "roles": ["DataSubject"],
+    "credentials": [],
+}
+
+
+async def test_reuses_resolved_subject_id(monkeypatch, submission, _enable_vc):
+    """When the IR already knows this email, the existing subject_id is used."""
+    di._token_provider = _mock_token_provider()
+    captured_body = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=RESOLVE_RESPONSE)
+        if "credentials/data-subject" in str(req.url):
+            captured_body.update(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert captured_body["subject_id"] == "email-oldsha256hash12345678"
+
+
+async def test_falls_back_to_derivation_on_404(monkeypatch, submission, _enable_vc):
+    """When the IR has no mapping for this email, a new subject_id is derived."""
+    di._token_provider = _mock_token_provider()
+    captured_body = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(404, json={"detail": "No mapping found"})
+        if "credentials/data-subject" in str(req.url):
+            captured_body.update(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert captured_body["subject_id"].startswith("email-")
+    assert captured_body["subject_id"] != "email-oldsha256hash12345678"
+
+
+async def test_falls_back_to_derivation_on_resolve_error(monkeypatch, submission, _enable_vc):
+    """A resolve failure is not fatal — derivation proceeds."""
+    di._token_provider = _mock_token_provider()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(500, text="internal error")
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert submission.dataspace_did == "did:web:users.example:email-abc123"

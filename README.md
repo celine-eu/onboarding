@@ -211,7 +211,9 @@ After approval a participant manages and withdraws their sharing decisions in th
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
-| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` hashes login email for DID paths) |
+| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` uses HMAC-SHA256 of the login email, keyed by `ENCRYPTION_KEY`) |
+
+**`ENCRYPTION_KEY` is identity-bearing.** When `DATASPACE_SUBJECT_SOURCE=email_hash`, the subject identifier inside every DID is an HMAC-SHA256 digest keyed by `ENCRYPTION_KEY`. Rotating the key changes future subject IDs — a re-onboarded person would receive a second DID instead of reusing their existing one. A resolve-before-mint call to the identity-registry mitigates this for known emails, but new derivations depend on the key. Treat it as you would a signing key: back it up, rotate only with a migration plan.
 
 Which organization a community's members join, its DID and the linked participant are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |

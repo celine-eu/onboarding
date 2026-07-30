@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import re
 from datetime import datetime, timezone
@@ -35,11 +36,20 @@ def _get_token_provider() -> OidcClientCredentialsProvider:
     return _token_provider
 
 
+def _hmac_key() -> bytes:
+    key = settings.encryption_key
+    if not key:
+        raise ValueError(
+            "ENCRYPTION_KEY is required for dataspace subject id derivation"
+        )
+    return key.encode("utf-8") if isinstance(key, str) else key
+
+
 def _email_subject_id(email: str | None) -> str:
     normalized = (email or "").strip().lower()
     if not normalized:
         raise ValueError("Cannot build dataspace subject id from email: value is empty")
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    digest = hmac.new(_hmac_key(), normalized.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
     return f"email-{digest}"
 
 
@@ -182,6 +192,31 @@ async def organization_exists(org_alias: str) -> bool | None:
     return True
 
 
+async def _resolve_existing_subject(
+    base_url: str, headers: dict[str, str], email: str | None,
+) -> str | None:
+    """Ask the identity-registry whether a subject_id already exists for this email.
+
+    Best-effort: a 404, a 403 or a network error falls through to normal
+    derivation.  This prevents a re-onboarded person from receiving a second
+    DID when the derivation key or algorithm changed between onboardings.
+    """
+    if not email:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{base_url}/users/resolve",
+                params={"email": email},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("subject_id")
+    except httpx.HTTPError:
+        logger.debug("Could not resolve existing subject for email, will derive a new one")
+    return None
+
+
 async def provision_user_identity(
     submission: Submission,
     *,
@@ -216,8 +251,11 @@ async def provision_user_identity(
         return
 
     base_url = settings.identity_registry_url.rstrip("/")
-    subject_id = _subject_id(submission)
     headers = await _auth_headers()
+    subject_id = (
+        await _resolve_existing_subject(base_url, headers, submission.email)
+        or _subject_id(submission)
+    )
 
     allowed_actions = [
         a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
