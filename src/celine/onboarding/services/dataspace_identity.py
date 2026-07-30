@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import re
 from datetime import datetime, timezone
@@ -36,43 +34,16 @@ def _get_token_provider() -> OidcClientCredentialsProvider:
     return _token_provider
 
 
-def _hmac_key() -> bytes:
-    key = settings.encryption_key
-    if not key:
-        raise ValueError(
-            "ENCRYPTION_KEY is required for dataspace subject id derivation"
-        )
-    return key.encode("utf-8") if isinstance(key, str) else key
-
-
-def _email_subject_id(email: str | None) -> str:
-    normalized = (email or "").strip().lower()
-    if not normalized:
-        raise ValueError("Cannot build dataspace subject id from email: value is empty")
-    digest = hmac.new(_hmac_key(), normalized.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
-    return f"email-{digest}"
-
-
-def _subject_id(submission: Submission) -> str:
-    source = settings.dataspace_subject_source.strip().lower()
-    if source in {"submission_ref", "ref"}:
-        value = submission.ref
-    elif source in {"email_hash", "email"}:
-        value = _email_subject_id(submission.email)
-    else:
-        raise ValueError(
-            "Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref."
-        )
-
-    subject_id = value.strip().lower()
-    if not subject_id:
-        raise ValueError(f"Cannot build dataspace subject id from {source}: value is empty")
-    if not _SAFE_SUBJECT.fullmatch(subject_id):
+def _submission_ref_subject_id(submission: Submission) -> str:
+    value = (submission.ref or "").strip().lower()
+    if not value:
+        raise ValueError("Cannot build dataspace subject id from submission_ref: value is empty")
+    if not _SAFE_SUBJECT.fullmatch(value):
         raise ValueError(
             "Dataspace subject id may contain only letters, digits, dot, underscore, "
             "plus and hyphen"
         )
-    return subject_id
+    return value
 
 
 def _parse_generated_at(value: Any) -> datetime:
@@ -192,29 +163,29 @@ async def organization_exists(org_alias: str) -> bool | None:
     return True
 
 
-async def _resolve_existing_subject(
-    base_url: str, headers: dict[str, str], email: str | None,
-) -> str | None:
-    """Ask the identity-registry whether a subject_id already exists for this email.
+async def _resolve_or_derive_subject(
+    base_url: str, headers: dict[str, str], email: str,
+) -> str:
+    """Resolve or derive a subject_id via the identity-registry.
 
-    Best-effort: a 404, a 403 or a network error falls through to normal
-    derivation.  This prevents a re-onboarded person from receiving a second
-    DID when the derivation key or algorithm changed between onboardings.
+    The IR is the sole authority on email→subject_id mapping: it either
+    returns an existing one or derives a new one keyed by its own secret.
+    A failure here is fatal — the credential issuance that follows requires
+    the same service, so swallowing the error would only delay it.
     """
-    if not email:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{base_url}/users/resolve",
-                params={"email": email},
-                headers=headers,
-            )
-            if resp.status_code == 200:
-                return resp.json().get("subject_id")
-    except httpx.HTTPError:
-        logger.debug("Could not resolve existing subject for email, will derive a new one")
-    return None
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{base_url}/users/resolve",
+            params={"email": email, "derive": "true"},
+            headers=headers,
+        )
+    if resp.status_code == 200:
+        sid = resp.json().get("subject_id")
+        if sid:
+            return sid
+    raise ValueError(
+        f"Subject id derivation failed: identity registry returned {resp.status_code}"
+    )
 
 
 async def provision_user_identity(
@@ -252,10 +223,20 @@ async def provision_user_identity(
 
     base_url = settings.identity_registry_url.rstrip("/")
     headers = await _auth_headers()
-    subject_id = (
-        await _resolve_existing_subject(base_url, headers, submission.email)
-        or _subject_id(submission)
-    )
+
+    source = settings.dataspace_subject_source.strip().lower()
+    if source in {"email_hash", "email"}:
+        if not submission.email:
+            raise ValueError("Cannot derive subject id: submission has no email")
+        subject_id = await _resolve_or_derive_subject(
+            base_url, headers, submission.email,
+        )
+    elif source in {"submission_ref", "ref"}:
+        subject_id = _submission_ref_subject_id(submission)
+    else:
+        raise ValueError(
+            "Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref."
+        )
 
     allowed_actions = [
         a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
@@ -283,30 +264,33 @@ async def provision_user_identity(
         evidence = resp.json()
 
     submission.dataspace_subject_id = subject_id
-    submission.dataspace_did = evidence.get("subjectDid")
-    submission.dataspace_vc_id = evidence.get("credentialId")
-    submission.dataspace_vc_issued_at = _parse_generated_at(evidence.get("generatedAt"))
 
-    if not submission.dataspace_did or not submission.dataspace_vc_id:
+    did: str | None = evidence.get("subjectDid")
+    cred_id: str | None = evidence.get("credentialId")
+    if not did or not cred_id:
         raise ValueError(
             "Identity-registry response is missing subjectDid or credentialId"
         )
 
+    submission.dataspace_did = did
+    submission.dataspace_vc_id = cred_id
+    submission.dataspace_vc_issued_at = _parse_generated_at(evidence.get("generatedAt"))
+
     org_alias = binding.organization
     if org_alias:
         await _register_membership(
-            base_url, headers, submission.dataspace_did, org_alias, binding.membership_role
+            base_url, headers, did, org_alias, binding.membership_role
         )
 
     if keycloak_user_id and keycloak_realm:
         await _sync_keycloak(
             base_url,
             headers,
-            did=submission.dataspace_did,
+            did=did,
             keycloak_user_id=keycloak_user_id,
             keycloak_realm=keycloak_realm,
             email=submission.email,
-            credential_id=submission.dataspace_vc_id,
+            credential_id=cred_id,
             organization_alias=org_alias,
         )
 

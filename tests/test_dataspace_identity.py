@@ -33,7 +33,6 @@ def _enable_vc(monkeypatch, bind_rec):
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
-    monkeypatch.setattr(di.settings, "encryption_key", "test-hmac-key-32bytes-long!!!!!")
     monkeypatch.setattr(di.settings, "dataspace_subject_source", "email_hash")
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
@@ -45,6 +44,14 @@ CREDENTIAL_RESPONSE = {
     "credentialId": "urn:uuid:cred-001",
     "generatedAt": "2026-07-13T10:00:00Z",
 }
+
+DERIVE_RESPONSE = {"subject_id": "email-derived123456789012"}
+
+
+def _default_handler(req: httpx.Request) -> httpx.Response:
+    if "users/resolve" in str(req.url):
+        return httpx.Response(200, json=DERIVE_RESPONSE)
+    return httpx.Response(201, json=CREDENTIAL_RESPONSE)
 
 
 def _mock_token_provider():
@@ -106,7 +113,7 @@ async def test_skip_when_already_issued(monkeypatch, submission, _enable_vc):
 
 async def test_issues_credential_via_http(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
-    _patch_httpx(monkeypatch, lambda req: httpx.Response(201, json=CREDENTIAL_RESPONSE))
+    _patch_httpx(monkeypatch, _default_handler)
 
     await di.provision_user_identity(submission)
 
@@ -120,8 +127,8 @@ async def test_request_body_contents(monkeypatch, submission, _enable_vc):
     captured = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        # Capture the credential request specifically: membership follows it, and
-        # a last-write-wins capture would silently assert against the wrong body.
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in str(req.url):
             captured["url"] = str(req.url)
             captured["body"] = req.content
@@ -143,7 +150,7 @@ async def test_request_body_contents(monkeypatch, submission, _enable_vc):
 
 async def test_generated_at_parsed(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
-    _patch_httpx(monkeypatch, lambda req: httpx.Response(201, json=CREDENTIAL_RESPONSE))
+    _patch_httpx(monkeypatch, _default_handler)
 
     await di.provision_user_identity(submission)
 
@@ -155,7 +162,13 @@ async def test_generated_at_parsed(monkeypatch, submission, _enable_vc):
 
 async def test_error_on_http_failure(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
-    _patch_httpx(monkeypatch, lambda req: httpx.Response(500, text="internal error"))
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        return httpx.Response(500, text="internal error")
+
+    _patch_httpx(monkeypatch, handler)
 
     with pytest.raises(ValueError, match="Credential issuance failed"):
         await di.provision_user_identity(submission)
@@ -163,12 +176,15 @@ async def test_error_on_http_failure(monkeypatch, submission, _enable_vc):
 
 async def test_error_on_missing_did_in_response(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
-    _patch_httpx(
-        monkeypatch,
-        lambda req: httpx.Response(
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        return httpx.Response(
             201, json={"credentialId": "x", "generatedAt": "2026-01-01T00:00:00Z"}
-        ),
-    )
+        )
+
+    _patch_httpx(monkeypatch, handler)
 
     with pytest.raises(ValueError, match="missing subjectDid"):
         await di.provision_user_identity(submission)
@@ -189,6 +205,8 @@ async def test_uses_oidc_token(monkeypatch, submission, _enable_vc):
 
     def handler(req: httpx.Request) -> httpx.Response:
         auth_headers.append(req.headers.get("authorization"))
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
 
     _patch_httpx(monkeypatch, handler)
@@ -205,6 +223,8 @@ def _membership_handler(calls, *, membership_status=201):
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         calls.append((req.method, url, req.content.decode() if req.content else ""))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/memberships" in url:
@@ -307,6 +327,8 @@ async def test_binding_is_per_rec(monkeypatch, submission, _enable_vc, bind_rec)
 
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/memberships" in url:
@@ -333,6 +355,8 @@ async def test_membership_deleted_on_kc_sync_failure(
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         calls.append((req.method, url))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url and req.method == "POST":
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/owners" in url:
@@ -367,8 +391,11 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
     calls = []
 
     def handler(req: httpx.Request) -> httpx.Response:
-        calls.append(str(req.url))
-        if "credentials/data-subject" in str(req.url):
+        url = str(req.url)
+        calls.append(url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         return httpx.Response(200, json={"status": "synced"})
 
@@ -396,6 +423,8 @@ async def test_kc_sync_partial_is_accepted_and_warned(
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         calls.append((req.method, url))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/memberships" in url:
@@ -434,7 +463,10 @@ async def test_kc_sync_skipped_without_user_id(monkeypatch, submission, _enable_
     calls = []
 
     def handler(req: httpx.Request) -> httpx.Response:
-        calls.append(str(req.url))
+        url = str(req.url)
+        calls.append(url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
 
     _patch_httpx(monkeypatch, handler)
@@ -453,6 +485,8 @@ async def test_rollback_on_kc_sync_failure(monkeypatch, submission, _enable_vc):
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         calls.append((req.method, url))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url and req.method == "POST":
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/memberships" in url and req.method == "POST":
@@ -486,6 +520,8 @@ async def test_kc_sync_retries_before_rollback(monkeypatch, submission, _enable_
 
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url and req.method == "POST":
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "admin/memberships" in url and req.method == "POST":
@@ -509,49 +545,10 @@ async def test_kc_sync_retries_before_rollback(monkeypatch, submission, _enable_
     assert len(sync_attempts) == 3
 
 
-# ── subject ID derivation ────────────────────────────────────────
+# ── subject ID derivation (IR-delegated) ─────────────────────────
 
 
-@pytest.fixture()
-def _with_key(monkeypatch):
-    monkeypatch.setattr(di.settings, "encryption_key", "test-hmac-key-32bytes-long!!!!!")
-
-
-def test_email_subject_id(_with_key):
-    result = di._email_subject_id("User@Example.COM")
-    assert result.startswith("email-")
-    assert len(result) == len("email-") + 24
-
-
-def test_email_subject_id_deterministic(_with_key):
-    a = di._email_subject_id("user@example.com")
-    b = di._email_subject_id("User@Example.COM")
-    assert a == b
-
-
-def test_email_subject_id_differs_by_key(monkeypatch):
-    monkeypatch.setattr(di.settings, "encryption_key", "key-a-padded-to-be-long-enough!!")
-    a = di._email_subject_id("user@example.com")
-    monkeypatch.setattr(di.settings, "encryption_key", "key-b-padded-to-be-long-enough!!")
-    b = di._email_subject_id("user@example.com")
-    assert a != b
-
-
-def test_email_subject_id_empty(_with_key):
-    with pytest.raises(ValueError, match="empty"):
-        di._email_subject_id("")
-
-
-def test_email_subject_id_requires_key(monkeypatch):
-    monkeypatch.setattr(di.settings, "encryption_key", "")
-    with pytest.raises(ValueError, match="ENCRYPTION_KEY"):
-        di._email_subject_id("user@example.com")
-
-
-# ── resolve before mint ──────────────────────────────────────────
-
-
-RESOLVE_RESPONSE = {
+RESOLVE_EXISTING_RESPONSE = {
     "did": "did:web:users.example:email-abc123",
     "subject_id": "email-oldsha256hash12345678",
     "roles": ["DataSubject"],
@@ -559,14 +556,33 @@ RESOLVE_RESPONSE = {
 }
 
 
-async def test_reuses_resolved_subject_id(monkeypatch, submission, _enable_vc):
-    """When the IR already knows this email, the existing subject_id is used."""
+async def test_uses_ir_derived_subject_id(monkeypatch, submission, _enable_vc):
+    """The IR is the sole authority on email→subject_id derivation."""
     di._token_provider = _mock_token_provider()
     captured_body = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         if "users/resolve" in str(req.url):
-            return httpx.Response(200, json=RESOLVE_RESPONSE)
+            assert "derive=true" in str(req.url)
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in str(req.url):
+            captured_body.update(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert captured_body["subject_id"] == DERIVE_RESPONSE["subject_id"]
+
+
+async def test_reuses_existing_subject_id(monkeypatch, submission, _enable_vc):
+    """When the IR already has a mapping, the existing subject_id is returned."""
+    di._token_provider = _mock_token_provider()
+    captured_body = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=RESOLVE_EXISTING_RESPONSE)
         if "credentials/data-subject" in str(req.url):
             captured_body.update(json.loads(req.content))
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
@@ -577,27 +593,8 @@ async def test_reuses_resolved_subject_id(monkeypatch, submission, _enable_vc):
     assert captured_body["subject_id"] == "email-oldsha256hash12345678"
 
 
-async def test_falls_back_to_derivation_on_404(monkeypatch, submission, _enable_vc):
-    """When the IR has no mapping for this email, a new subject_id is derived."""
-    di._token_provider = _mock_token_provider()
-    captured_body = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        if "users/resolve" in str(req.url):
-            return httpx.Response(404, json={"detail": "No mapping found"})
-        if "credentials/data-subject" in str(req.url):
-            captured_body.update(json.loads(req.content))
-        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
-
-    _patch_httpx(monkeypatch, handler)
-    await di.provision_user_identity(submission)
-
-    assert captured_body["subject_id"].startswith("email-")
-    assert captured_body["subject_id"] != "email-oldsha256hash12345678"
-
-
-async def test_falls_back_to_derivation_on_resolve_error(monkeypatch, submission, _enable_vc):
-    """A resolve failure is not fatal — derivation proceeds."""
+async def test_resolve_failure_is_fatal(monkeypatch, submission, _enable_vc):
+    """The IR owns derivation — if it is unreachable, provisioning fails."""
     di._token_provider = _mock_token_provider()
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -606,6 +603,6 @@ async def test_falls_back_to_derivation_on_resolve_error(monkeypatch, submission
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
 
     _patch_httpx(monkeypatch, handler)
-    await di.provision_user_identity(submission)
 
-    assert submission.dataspace_did == "did:web:users.example:email-abc123"
+    with pytest.raises(ValueError, match="Subject id derivation failed"):
+        await di.provision_user_identity(submission)

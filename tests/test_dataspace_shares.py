@@ -15,6 +15,7 @@ import celine.onboarding.services.dataspace_identity as di
 
 from test_dataspace_identity import (  # reuse the established harness
     CREDENTIAL_RESPONSE,
+    DERIVE_RESPONSE,
     _mock_token_provider,
     _patch_httpx,
 )
@@ -149,6 +150,8 @@ async def test_approval_survives_share_failure(monkeypatch, submission, _enable_
 
     def handler(req):
         url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
         if "consent/admin/shares" in url:

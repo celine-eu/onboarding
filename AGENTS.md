@@ -88,7 +88,7 @@ All settings are driven by environment variables, loaded via Pydantic Settings f
 |---|---|
 | `DATABASE_URL` | Async PostgreSQL connection string. No default — app will not start without it. Example: `postgresql+asyncpg://user:pass@host:5432/db` |
 | `OPENAI_API_KEY` | Required for bill/ID extraction. No extraction without it. |
-| `ENCRYPTION_KEY` | Fernet key for PII encryption at rest (files + DB columns) **and** HMAC key for dataspace subject ID derivation. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. App refuses to start without it unless `REQUIRE_ENCRYPTION=false`. Identity-bearing: rotation changes future subject IDs (see Encryption at rest). |
+| `ENCRYPTION_KEY` | Fernet key for PII encryption at rest (files + DB columns). Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. App refuses to start without it unless `REQUIRE_ENCRYPTION=false`. |
 | `DPA_SIGNED` | Set to `yes` when the manifest includes LLM extraction steps (`utility`/`identity`). Requires a signed Data Processing Agreement with your LLM provider (GDPR Art. 28). App refuses to start without it. |
 | `DPA_SMS_SIGNED` | Set to `yes` when `SMS_PROVIDER` is a real gateway (not `log`). Requires a signed DPA with the SMS provider (GDPR Art. 28). App refuses to start otherwise. |
 | `ADMIN_TOKEN` | Bearer token for `/api/admin/*`. Admin endpoints return 503 if unset. |
@@ -373,7 +373,6 @@ All PII is encrypted at the application layer using Fernet symmetric encryption 
 - **JSON encryption (EncryptedJSON)**: `extracted_data`, `id_extracted_data` (on submissions), and `extracted_data`, `raw_response` (on extractions) are serialized to JSON, encrypted, and stored as text.
 - **Backwards-compatible reads**: decryption gracefully handles legacy unencrypted data (returns value as-is on `InvalidToken`).
 - **Mandatory in production**: the app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false` (dev-only escape hatch).
-- **Identity-bearing**: when `DATASPACE_SUBJECT_SOURCE=email_hash`, `ENCRYPTION_KEY` is the HMAC key used to derive the subject identifier inside every DID. Rotating the key changes future subject IDs — a re-onboarded person would receive a second DID. A resolve-before-mint call (`GET /users/resolve?email=`) mitigates this for already-known emails, but new derivations depend on the key. Treat it as you would a signing key.
 
 ### Session and authentication
 
