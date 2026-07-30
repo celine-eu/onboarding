@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     security_headers: bool = True
 
+    # --- Admin console authorization -------------------------------------
+    # OPA policies evaluated in-process for every /api/admin request. Default is
+    # the repo's own policies/ directory rather than PoliciesSettings' relative
+    # "./policies", because the API is started from ./src and a relative path
+    # would resolve to src/policies.
+    policies_dir: str = str(REPO_ROOT / "policies")
+    # When the policy bundle cannot be loaded, deny. A permissive fallback is
+    # what celine-grid does, and it is genuinely convenient in development — but
+    # the failure it papers over is "no authorization at all", so it has to be
+    # asked for explicitly.
+    allow_permissive_policy: bool = False
+
     download_token_ttl: int = 86400  # 24 hours
 
     smtp_host: str = ""

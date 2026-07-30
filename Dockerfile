@@ -9,6 +9,10 @@ RUN uv sync --no-dev --no-install-project
 
 COPY src/ src/
 COPY templates/ templates/
+# OPA policies for the admin console, evaluated in-process. Without them the
+# access policy cannot load and every /api/admin request is denied — so this is
+# a runtime dependency, not a development artefact.
+COPY policies/ policies/
 COPY alembic.ini .
 COPY alembic/ alembic/
 RUN uv sync --no-dev
