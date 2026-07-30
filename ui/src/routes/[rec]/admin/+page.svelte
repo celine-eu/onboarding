@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { createRecAdminApi, type AdminSubmission, type SiteConfig } from '$lib/api/client';
+	import {
+		AdminDeniedError,
+		createRecAdminApi,
+		type AdminSubmission,
+		type SiteConfig
+	} from '$lib/api/client';
 
 	type SubmissionStatus = 'draft' | 'submitted' | 'under_review' | 'approved' | 'rejected';
 
@@ -16,29 +21,24 @@
 	let rec: string = $derived(data.rec);
 	let config: SiteConfig = $derived(data.config);
 
-	let token = $state('');
 	let submissions = $state<AdminSubmission[]>([]);
 	let loading = $state(false);
 	let errorMsg = $state('');
 	let successMsg = $state('');
 	let statusFilter = $state('all');
 	let pendingAction = $state<string | null>(null);
+	let denied = $state('');
 
 	let filteredSubmissions = $derived(
 		submissions.filter((submission) => statusFilter === 'all' || submission.status === statusFilter)
 	);
 
 	onMount(() => {
-		token = localStorage.getItem(tokenKey()) ?? '';
-		if (token) void loadSubmissions();
+		void loadSubmissions();
 	});
 
-	function tokenKey(): string {
-		return `cer-admin-token:${rec}`;
-	}
-
 	function adminApi() {
-		return createRecAdminApi(rec, token.trim());
+		return createRecAdminApi(rec);
 	}
 
 	function fullName(submission: AdminSubmission): string {
@@ -89,17 +89,14 @@
 	async function loadSubmissions() {
 		errorMsg = '';
 		successMsg = '';
-		if (!token.trim()) {
-			errorMsg = 'Inserisci il token admin.';
-			return;
-		}
-
 		loading = true;
 		try {
-			localStorage.setItem(tokenKey(), token.trim());
 			submissions = await adminApi().listSubmissions();
 		} catch (error) {
-			errorMsg = cleanError(error);
+			// A 401 has already navigated to sign-in; 403 means signed in but not
+			// an operator of this community, which is a different message.
+			if (error instanceof AdminDeniedError) denied = error.message;
+			else errorMsg = cleanError(error);
 		} finally {
 			loading = false;
 		}
@@ -108,18 +105,14 @@
 	async function updateStatus(submission: AdminSubmission, status: SubmissionStatus) {
 		errorMsg = '';
 		successMsg = '';
-		if (!token.trim()) {
-			errorMsg = 'Inserisci il token admin.';
-			return;
-		}
-
 		pendingAction = `${submission.id}:${status}`;
 		try {
 			const updated = await adminApi().updateSubmissionStatus(submission.id, status);
 			submissions = submissions.map((item) => (item.id === updated.id ? updated : item));
 			successMsg = `Pratica ${updated.ref} aggiornata: ${statusLabel(updated.status)}.`;
 		} catch (error) {
-			errorMsg = cleanError(error);
+			if (error instanceof AdminDeniedError) denied = error.message;
+			else errorMsg = cleanError(error);
 		} finally {
 			pendingAction = null;
 		}
@@ -144,16 +137,6 @@
 	</div>
 
 	<form class="toolbar" onsubmit={(event) => { event.preventDefault(); void loadSubmissions(); }}>
-		<label class="token-field">
-			<span>Token admin</span>
-			<input
-				type="password"
-				bind:value={token}
-				placeholder="dev-admin-token"
-				autocomplete="off"
-			/>
-		</label>
-
 		<label class="filter-field">
 			<span>Stato</span>
 			<select bind:value={statusFilter}>
@@ -167,10 +150,15 @@
 		</label>
 
 		<button type="submit" class="primary-btn" disabled={loading}>
-			{loading ? 'Caricamento...' : 'Carica pratiche'}
+			{loading ? 'Caricamento...' : 'Aggiorna'}
 		</button>
 	</form>
 
+	{#if denied}
+		<p class="message error">
+			Non hai i permessi per amministrare questa comunita'. {denied}
+		</p>
+	{/if}
 	{#if errorMsg}
 		<p class="message error">{errorMsg}</p>
 	{/if}
@@ -341,7 +329,6 @@
 		font-weight: 600;
 	}
 
-	input,
 	select {
 		width: 100%;
 		border: 1px solid var(--celine-border);
@@ -354,7 +341,6 @@
 		padding: 0 var(--celine-space-sm);
 	}
 
-	input:focus,
 	select:focus {
 		border-color: var(--celine-primary);
 		outline: 2px solid var(--celine-primary-light);

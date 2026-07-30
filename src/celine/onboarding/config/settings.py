@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -19,9 +20,25 @@ class Settings(BaseSettings):
     require_encryption: bool = True
     dpa_signed: bool = False
 
-    admin_token: str = ""
+    # Declared only so that startup can refuse to run with it set — nothing reads
+    # it. The shared admin token was replaced by Keycloak identities and OPA
+    # policies; a leftover value in a `.env` would otherwise look like protection.
+    removed_admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
+
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     security_headers: bool = True
+
+    # --- Admin console authentication ------------------------------------
+    # Inbound operator and service tokens are verified against the same issuer
+    # this service already uses for its outbound M2M calls (`OIDC_BASE_URL`).
+    # See security/oidc.py.
+    oidc_jwks_uri: str = ""  # derived from oidc_base_url when empty
+    oidc_audience: str = "svc-onboarding"
+    oidc_client_id: str = "svc-onboarding"
+    oidc_client_secret: str = ""
+    # oauth2-proxy forwards the verified access token here; `Authorization:
+    # Bearer` is the fallback, which is what the CLI and service accounts use.
+    jwt_header_name: str = "x-auth-request-access-token"
 
     # --- Admin console authorization -------------------------------------
     # OPA policies evaluated in-process for every /api/admin request. Default is

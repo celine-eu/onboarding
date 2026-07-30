@@ -91,7 +91,7 @@ All settings are driven by environment variables, loaded via Pydantic Settings f
 | `ENCRYPTION_KEY` | Fernet key for PII encryption at rest (files + DB columns). Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. App refuses to start without it unless `REQUIRE_ENCRYPTION=false`. |
 | `DPA_SIGNED` | Set to `yes` when the manifest includes LLM extraction steps (`utility`/`identity`). Requires a signed Data Processing Agreement with your LLM provider (GDPR Art. 28). App refuses to start without it. |
 | `DPA_SMS_SIGNED` | Set to `yes` when `SMS_PROVIDER` is a real gateway (not `log`). Requires a signed DPA with the SMS provider (GDPR Art. 28). App refuses to start otherwise. |
-| `ADMIN_TOKEN` | Bearer token for `/api/admin/*`. Admin endpoints return 503 if unset. |
+| `OIDC_BASE_URL` | Keycloak realm issuer. Inbound operator/service tokens for `/api/admin/**` are verified against its JWKS, and outbound M2M tokens are minted from it. App refuses to start without it. |
 
 ### Security
 
@@ -378,7 +378,7 @@ All PII is encrypted at the application layer using Fernet symmetric encryption 
 
 - **Session tokens**: 32-byte random tokens (`secrets.token_urlsafe`) generated on submission creation. Sent via `X-Session-Token` header. Tied to a single submission. 10-minute inactivity TTL.
 - **Extraction endpoints** (`/api/extract`, `/api/extract-id`, `/api/documents/{id}/extract`, `/api/extractions/{id}/confirm`) require a valid session token. Document/extraction endpoints also verify ownership (document must belong to the caller's submission).
-- **Admin endpoints** (`/api/admin/*`) require `Authorization: Bearer <ADMIN_TOKEN>`. Token comparison is timing-safe (`secrets.compare_digest`).
+- **Admin endpoints** (`/api/admin/**`) require a Keycloak identity. The token arrives via `x-auth-request-access-token` (oauth2-proxy) or `Authorization: Bearer`, and is always verified against the issuer's JWKS — headers are never trusted, because the anonymous wizard shares the process. Operators are authorised by **organization + group**, service accounts by **scope**; decisions come from `policies/celine/onboarding/access.rego`. `ADMIN_TOKEN` is gone and startup refuses to run if it is still set.
 - **Download tokens**: Fernet-encrypted submission IDs with a configurable TTL (`DOWNLOAD_TOKEN_TTL`, default 24 hours).
 
 ### HTTP security headers

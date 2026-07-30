@@ -10,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
 from celine.onboarding.config.settings import settings
+from celine.onboarding.security.middleware import AdminAuthMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,93 @@ async def _validate_dataspace_config() -> None:
             )
 
 
+def _validate_admin_config() -> None:
+    """Refuse to start with an admin console that is not actually protected.
+
+    Each of these is a configuration in which the console *appears* guarded and is
+    not, which is worse than one that is obviously broken.
+    """
+    from celine.onboarding.api.admin.deps import RESERVED_SLUGS
+    from celine.onboarding.security.oidc import is_configured, oidc_settings
+    from celine.onboarding.security.policy import get_policy
+    from celine.onboarding.services.template_service import get_slugs
+
+    if settings.removed_admin_token:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  ADMIN_TOKEN is set, and no longer does anything\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "The shared admin token was replaced by Keycloak identities and OPA\n"
+            "policies: operators are authorised by their organization and group,\n"
+            "and every action is recorded against them by name.\n\n"
+            "Leaving the variable set would read as protection that is not there,\n"
+            "so startup refuses it rather than ignoring it.\n\n"
+            "  1. Remove ADMIN_TOKEN from your .env and environment\n"
+            "  2. Configure OIDC_BASE_URL and give operators a group in their\n"
+            "     community's Keycloak organization\n"
+            "  3. For a deployment with no Keycloak, use `onboarding-cli --local`\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if not is_configured():
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  OIDC_BASE_URL is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "Admin console tokens are verified against the issuer's JWKS. With no\n"
+            "issuer configured there is no key to check a signature against, and\n"
+            "every /api/admin request would fail closed at runtime.\n\n"
+            "  1. Set OIDC_BASE_URL, e.g.\n"
+            "     http://keycloak.celine.localhost/realms/celine\n"
+            "  2. Optionally override OIDC_JWKS_URI if it is not the realm's\n"
+            "     /protocol/openid-connect/certs\n\n"
+            f"(resolved issuer={oidc_settings().base_url!r} "
+            f"jwks={oidc_settings().jwks_uri!r})\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    policy = get_policy()
+    if not policy.available and not settings.allow_permissive_policy:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  Access policies could not be loaded\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            f"{policy.load_error}\n\n"
+            "Every /api/admin request would be denied, so the console would be\n"
+            "unusable rather than insecure — but the cause is worth fixing at boot\n"
+            "instead of discovering it one denial at a time.\n\n"
+            "  1. Check POLICIES_DIR points at the repo's policies/ directory\n"
+            "  2. For development without policies, set\n"
+            "     ALLOW_PERMISSIVE_POLICY=true — which allows EVERYTHING\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    # A REC slug that collides with a literal segment of the admin router would be
+    # unreachable: /api/admin/recs is the community list, not the REC named "recs".
+    colliding = sorted(set(get_slugs()) & RESERVED_SLUGS)
+    if colliding:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"  REC slug(s) reserved by the admin API: {', '.join(colliding)}\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            f"The admin router uses {', '.join(sorted(RESERVED_SLUGS))} as literal\n"
+            "path segments under /api/admin, so a community with one of those\n"
+            "slugs could never be addressed there.\n\n"
+            "  1. Rename the template directory and its manifest slug\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if settings.allow_permissive_policy:
+        logger.warning(
+            "ALLOW_PERMISSIVE_POLICY is on — every admin request is allowed when "
+            "the policy engine is unavailable. Never set this in production."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
@@ -183,6 +271,7 @@ async def lifespan(app: FastAPI):
         )
 
     await _validate_dataspace_config()
+    _validate_admin_config()
 
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(
@@ -231,6 +320,11 @@ def create_app() -> FastAPI:
     if settings.security_headers:
         app.add_middleware(SecurityHeadersMiddleware)
 
+    # Rejects an unauthenticated /api/admin request before routing, so the
+    # console's route shapes are not discoverable without credentials. Only that
+    # prefix — the wizard is anonymous by design.
+    app.add_middleware(AdminAuthMiddleware)
+
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -250,7 +344,7 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.eligibility import router as eligibility_router
     from celine.onboarding.api.phone_verify import router as phone_verify_router
-    from celine.onboarding.api.admin import router as admin_router
+    from celine.onboarding.api.admin import create_admin_router
 
     app.include_router(health_router, prefix="/api")
     app.include_router(recs_router, prefix="/api")
@@ -263,7 +357,9 @@ def create_app() -> FastAPI:
     app.include_router(extractions_router, prefix="/api/{rec_slug}")
     app.include_router(consent_docs_router, prefix="/api/{rec_slug}")
     app.include_router(eligibility_router, prefix="/api/{rec_slug}")
-    app.include_router(admin_router, prefix="/api/{rec_slug}/admin")
+    # One prefix for the whole authenticated surface; the REC is a segment
+    # inside it. Mounted last so its literal paths cannot be shadowed.
+    app.include_router(create_admin_router())
 
     return app
 

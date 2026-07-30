@@ -201,28 +201,93 @@ export class PhoneVerifyError extends Error {
 	}
 }
 
+export interface AdminRecAccess {
+	slug: string;
+	name: string;
+	organization: string | null;
+	capabilities: string[];
+}
+
+export interface AdminMe {
+	sub: string;
+	email: string | null;
+	name: string | null;
+	preferred_username: string | null;
+	locale: string | null;
+	subject_type: string;
+	organizations: string[];
+	realm_groups: string[];
+	recs: AdminRecAccess[];
+}
+
 export interface RecAdminApi {
 	listSubmissions: () => Promise<AdminSubmission[]>;
 	updateSubmissionStatus: (id: string, status: string) => Promise<AdminSubmission>;
 }
 
-function adminRequest<T>(path: string, token: string, options?: RequestInit): Promise<T> {
-	return request<T>(path, {
+/** Signals that the caller is authenticated but administers nothing. */
+export class AdminDeniedError extends Error {
+	constructor(detail: string) {
+		super(detail);
+		this.name = 'AdminDeniedError';
+	}
+}
+
+function signIn(): never {
+	window.location.href = '/oauth2/sign_in?rd=' + encodeURIComponent(window.location.href);
+	// The navigation is already underway; nothing downstream should run.
+	throw new Error('Redirecting to sign in');
+}
+
+/**
+ * Admin requests carry no token of their own.
+ *
+ * The browser is authenticated by the oauth2-proxy session cookie; the ingress
+ * turns it into a verified JWT header. A 401 therefore means the session lapsed,
+ * and the only useful response is to go and get a new one — the same thing
+ * `apps/grid` does. A 403 means signed in but not permitted, which is a
+ * different screen, so it must not trigger a login loop.
+ */
+async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
+	const res = await fetch(path, {
+		credentials: 'include',
 		...options,
 		headers: {
-			Authorization: `Bearer ${token}`,
+			'Content-Type': 'application/json',
 			...(options?.headers as Record<string, string> | undefined)
 		}
 	});
+
+	if (res.status === 401) signIn();
+	if (res.status === 403) {
+		throw new AdminDeniedError(await detailOf(res));
+	}
+	if (!res.ok) {
+		throw new Error(`API error ${res.status}: ${await detailOf(res)}`);
+	}
+	if (res.status === 204) return undefined as T;
+	return res.json() as Promise<T>;
 }
 
-export function createRecAdminApi(recSlug: string, token: string): RecAdminApi {
-	const base = `/api/${recSlug}/admin`;
+async function detailOf(res: Response): Promise<string> {
+	try {
+		const body = await res.json();
+		return typeof body?.detail === 'string' ? body.detail : JSON.stringify(body);
+	} catch {
+		return res.statusText;
+	}
+}
+
+export const getAdminMe = () => adminRequest<AdminMe>('/api/admin/me');
+export const getAdminRecs = () => adminRequest<AdminRecAccess[]>('/api/admin/recs');
+
+export function createRecAdminApi(recSlug: string): RecAdminApi {
+	const base = `/api/admin/${recSlug}`;
 
 	return {
-		listSubmissions: () => adminRequest<AdminSubmission[]>(`${base}/submissions`, token),
+		listSubmissions: () => adminRequest<AdminSubmission[]>(`${base}/submissions`),
 		updateSubmissionStatus: (id, status) =>
-			adminRequest<AdminSubmission>(`${base}/submissions/${id}`, token, {
+			adminRequest<AdminSubmission>(`${base}/submissions/${id}`, {
 				method: 'PATCH',
 				body: JSON.stringify({ status })
 			})

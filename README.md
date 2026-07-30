@@ -67,7 +67,7 @@ Encryption is mandatory by default. The app refuses to start without `ENCRYPTION
 ### Session and authentication
 
 - **Applicant sessions**: 32-byte random tokens with 10-minute inactivity TTL. All data-mutating endpoints (including extraction) require a valid session token via `X-Session-Token` header.
-- **Admin endpoints**: require `Authorization: Bearer <ADMIN_TOKEN>` with timing-safe comparison.
+- **Admin endpoints** (`/api/admin/**`): a Keycloak identity, verified against the issuer's JWKS (signature, issuer, audience, expiry). Authorised by the caller's **organization + group** for operators (`admins`/`managers`/`editors`/`viewers`, at realm or organization level) and by **scope** for service accounts, decided by OPA policies in `policies/`. Every action is audit-logged against the actor.
 - **Download links**: Fernet-encrypted tokens with configurable TTL (default 24 hours).
 
 ### HTTP hardening
@@ -141,7 +141,7 @@ See `templates/example/` for the manifest format.
 | `OPENAI_API_KEY` | OpenAI API key for bill/ID extraction |
 | `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `DPA_SIGNED` | Set to `yes` after signing a DPA with your LLM provider (required when using extraction steps) |
-| `ADMIN_TOKEN` | Bearer token for admin endpoints (admin returns 503 if unset) |
+| `OIDC_BASE_URL` | Keycloak realm issuer for the admin console and outbound M2M (e.g. `http://keycloak.celine.localhost/realms/celine`). Startup refuses without it. |
 
 ### Security
 

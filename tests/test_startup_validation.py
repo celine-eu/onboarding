@@ -230,3 +230,93 @@ async def test_rec_with_an_organization_does_not_warn(seed_rec, monkeypatch, cap
         await app_main._validate_dataspace_config()
 
     assert "declares no 'organization'" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The admin console must not appear protected when it is not
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _oidc_configured(monkeypatch):
+    monkeypatch.setattr(
+        app_main.settings, "oidc_base_url", "http://keycloak.test/realms/celine"
+    )
+    monkeypatch.setattr(app_main.settings, "oidc_jwks_uri", "")
+    monkeypatch.setattr(app_main.settings, "removed_admin_token", "")
+    monkeypatch.setattr(app_main.settings, "allow_permissive_policy", False)
+    from celine.onboarding.security import oidc
+
+    oidc.oidc_settings.cache_clear()
+    yield
+    oidc.oidc_settings.cache_clear()
+
+
+def test_leftover_admin_token_refuses_to_start(monkeypatch, _oidc_configured):
+    """A variable that no longer does anything reads as protection that is not there."""
+    monkeypatch.setattr(app_main.settings, "removed_admin_token", "leftover-secret")
+
+    with pytest.raises(RuntimeError, match="no longer does anything"):
+        app_main._validate_admin_config()
+
+
+def test_unconfigured_oidc_refuses_to_start(monkeypatch, _oidc_configured):
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "")
+    from celine.onboarding.security import oidc
+
+    oidc.oidc_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="OIDC_BASE_URL is required"):
+        app_main._validate_admin_config()
+
+
+def test_jwks_uri_is_derived_from_the_issuer(_oidc_configured):
+    """Set only OIDC_BASE_URL and the realm's certs endpoint is assumed."""
+    from celine.onboarding.security.oidc import oidc_settings
+
+    assert oidc_settings().jwks_uri == (
+        "http://keycloak.test/realms/celine/protocol/openid-connect/certs"
+    )
+
+
+def test_unloadable_policies_refuse_to_start(monkeypatch, _oidc_configured, tmp_path):
+    from celine.onboarding.security import policy as policy_module
+
+    monkeypatch.setattr(app_main.settings, "policies_dir", str(tmp_path / "absent"))
+    policy_module.get_policy.cache_clear()
+
+    try:
+        with pytest.raises(RuntimeError, match="Access policies could not be loaded"):
+            app_main._validate_admin_config()
+    finally:
+        policy_module.get_policy.cache_clear()
+
+
+def test_permissive_flag_allows_boot_without_policies(
+    monkeypatch, _oidc_configured, tmp_path, caplog
+):
+    from celine.onboarding.security import policy as policy_module
+
+    monkeypatch.setattr(app_main.settings, "policies_dir", str(tmp_path / "absent"))
+    monkeypatch.setattr(app_main.settings, "allow_permissive_policy", True)
+    policy_module.get_policy.cache_clear()
+
+    try:
+        with caplog.at_level("WARNING"):
+            app_main._validate_admin_config()
+        assert "ALLOW_PERMISSIVE_POLICY" in caplog.text
+    finally:
+        policy_module.get_policy.cache_clear()
+
+
+def test_reserved_rec_slug_refuses_to_start(seed_rec, _oidc_configured):
+    """A REC named `recs` could never be addressed under /api/admin."""
+    seed_rec("recs", organization="community-a")
+
+    with pytest.raises(RuntimeError, match="reserved by the admin API"):
+        app_main._validate_admin_config()
+
+
+def test_ordinary_slugs_start_fine(seed_rec, _oidc_configured):
+    seed_rec("rec-a", organization="community-a")
+    app_main._validate_admin_config()

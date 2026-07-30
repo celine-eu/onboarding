@@ -1,8 +1,6 @@
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException
-
-from celine.onboarding.api.deps import require_admin
 from celine.onboarding.services import template_service
 from celine.onboarding.services.eligibility import find_recs_for_location, geocode_address
 
@@ -37,10 +35,8 @@ async def find_recs_by_address(req: FindByAddressRequest):
     return find_recs_for_location(lat, lng)
 
 
-@router.post("/recs/reload", dependencies=[Depends(require_admin)])
-async def reload_templates():
-    await template_service.reload()
-    slugs = template_service.get_slugs()
-    return {"reloaded": len(slugs), "slugs": slugs}
+# `POST /recs/reload` moved to `POST /api/admin/recs/reload`. It was protected by
+# the shared admin token, which no longer exists; every authenticated operation
+# now lives under the one prefix the ingress guards.
 
 
