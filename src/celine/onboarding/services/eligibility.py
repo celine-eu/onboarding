@@ -130,7 +130,7 @@ async def geocode_address(address: str) -> AddressInfo:
         resp = await client.get(
             "https://nominatim.openstreetmap.org/search",
             params={"q": address, "format": "json", "limit": 1, "addressdetails": 1},
-            headers={"User-Agent": "cer-onboarding/0.1"},
+            headers={"User-Agent": "rec-onboarding/0.1"},
         )
         resp.raise_for_status()
         results = resp.json()
@@ -155,7 +155,7 @@ def reverse_geocode(lat: float, lng: float) -> AddressInfo:
         resp = client.get(
             "https://nominatim.openstreetmap.org/reverse",
             params={"lat": lat, "lon": lng, "format": "json", "addressdetails": 1},
-            headers={"User-Agent": "cer-onboarding/0.1"},
+            headers={"User-Agent": "rec-onboarding/0.1"},
         )
         resp.raise_for_status()
         data = resp.json()

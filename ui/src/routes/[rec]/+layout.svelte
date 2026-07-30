@@ -41,7 +41,7 @@
 </script>
 
 <svelte:head>
-	<title>{config?.name ?? 'CER'}: {$t('common.onboarding_title')}</title>
+	<title>{config?.name ?? 'REC'}: {$t('common.onboarding_title')}</title>
 </svelte:head>
 
 {@render children()}

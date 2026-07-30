@@ -9,7 +9,7 @@ from celine.onboarding.services import template_service
 
 def generate_submission_pdf(submission: Submission) -> bytes:
     manifest = template_service.load_manifest(submission.rec_slug)
-    rec_name = manifest.get("name", "CER Onboarding")
+    rec_name = manifest.get("name", "REC Onboarding")
 
     pdf = FPDF()
     pdf.add_page()

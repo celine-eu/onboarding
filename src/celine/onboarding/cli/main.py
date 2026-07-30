@@ -6,7 +6,7 @@ import typer
 
 from celine.onboarding.config.settings import settings
 
-app = typer.Typer(name="cer", help="CER Onboarding CLI")
+app = typer.Typer(name="onboarding-cli", help="REC Onboarding CLI")
 
 
 @app.command()

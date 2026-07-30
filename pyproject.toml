@@ -1,7 +1,7 @@
 [project]
 name = "celine-onboarding"
 version = "0.1.0"
-description = "CER onboarding platform backend"
+description = "REC onboarding platform backend"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -40,7 +40,7 @@ packages = ["src/celine"]
 "src" = ""
 
 [project.scripts]
-cer = "celine.onboarding.cli.main:app"
+onboarding-cli = "celine.onboarding.cli.main:app"
 
 [dependency-groups]
 dev = [

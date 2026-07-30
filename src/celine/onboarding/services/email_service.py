@@ -20,7 +20,7 @@ def send_submission_email(
         return
 
     manifest = template_service.load_manifest(submission.rec_slug)
-    rec_name = manifest.get("name", "CER")
+    rec_name = manifest.get("name", "REC")
     notifications = manifest.get("notifications", {})
 
     recipients: list[str] = []

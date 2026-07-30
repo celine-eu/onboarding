@@ -192,7 +192,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="CER Onboarding",
+        title="REC Onboarding",
         version="0.1.0",
         lifespan=lifespan,
     )

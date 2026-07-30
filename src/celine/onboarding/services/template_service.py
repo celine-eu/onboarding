@@ -80,7 +80,7 @@ def get_config(rec_slug: str) -> dict[str, Any]:
     manifest = load_manifest(rec_slug)
     return {
         "slug": manifest.get("slug", rec_slug),
-        "name": manifest.get("name", "CER Onboarding"),
+        "name": manifest.get("name", "REC Onboarding"),
         "locale": manifest.get("locale", "it"),
         "branding": manifest.get("branding", {}),
         "fields": manifest.get("fields", {"extra": [], "hidden": []}),

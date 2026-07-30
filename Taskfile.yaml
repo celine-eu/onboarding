@@ -94,16 +94,16 @@ tasks:
     desc: Import template manifests into database
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run cer import-templates {{.CLI_ARGS}}
+      - uv run onboarding-cli import-templates {{.CLI_ARGS}}
 
   export-csv:
     desc: Export submissions to CSV
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run cer export-csv {{.CLI_ARGS}}
+      - uv run onboarding-cli export-csv {{.CLI_ARGS}}
 
   export-pod-list:
     desc: "Export consented supply points for a distributor (snapshot — re-export on cadence)"
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run cer export-pod-list {{.CLI_ARGS}}
+      - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}
