@@ -220,8 +220,15 @@ class AuditLogRead(BaseModel):
     action: str
     entity_type: str
     entity_id: str | None
+    rec_slug: str | None
     ip_address: str | None
     detail: str | None
+    # See ACTOR_TYPES in models/audit_log.py. `token` means the action predates
+    # per-operator authorization and cannot be attributed to anyone.
+    actor_type: str
+    actor_sub: str | None
+    actor_email: str | None
+    actor_client_id: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

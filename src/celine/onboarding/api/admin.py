@@ -11,7 +11,7 @@ from celine.onboarding.config.settings import settings
 from celine.onboarding.models.audit_log import AuditLog
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import AuditLogRead, SubmissionAdminRead, SubmissionUpdate
-from celine.onboarding.services import submission_service
+from celine.onboarding.services import audit_service, submission_service
 from celine.onboarding.workflows.engine import InvalidTransition
 
 router = APIRouter(tags=["admin"], dependencies=[Depends(require_rec_admin)])
@@ -25,13 +25,21 @@ def _client_ip(request: Request) -> str:
 
 async def _audit(
     db: AsyncSession, *, action: str, entity_type: str, entity_id: str | None,
-    ip: str, detail: str | None = None,
+    ip: str, rec_slug: str | None = None, detail: str | None = None,
 ) -> None:
-    db.add(AuditLog(
-        action=action, entity_type=entity_type, entity_id=entity_id,
-        ip_address=ip, detail=detail,
-    ))
-    await db.commit()
+    # Attributed to `Actor.shared_token()`: this surface authenticates with the
+    # deployment-wide ADMIN_TOKEN, so there is no identity to record. That is the
+    # gap the actor columns exist to close, and it closes when the token goes.
+    await audit_service.record_and_commit(
+        db,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=audit_service.Actor.shared_token(),
+        rec_slug=rec_slug,
+        ip=ip,
+        detail=detail,
+    )
 
 
 @router.get("/submissions", response_model=list[SubmissionAdminRead])
@@ -44,7 +52,8 @@ async def list_submissions(
 ):
     result = await submission_service.list_submissions(db, rec_slug=rec_slug, skip=skip, limit=limit)
     await _audit(db, action="list", entity_type="submission", entity_id=None,
-                 ip=_client_ip(request), detail=f"rec={rec_slug} skip={skip} limit={limit}")
+                 ip=_client_ip(request), rec_slug=rec_slug,
+                 detail=f"skip={skip} limit={limit}")
     return result
 
 
@@ -61,7 +70,7 @@ async def get_submission(
     if submission.rec_slug != rec_slug:
         raise HTTPException(404, "Submission not found")
     await _audit(db, action="view", entity_type="submission",
-                 entity_id=str(submission_id), ip=_client_ip(request))
+                 entity_id=str(submission_id), ip=_client_ip(request), rec_slug=rec_slug)
     return submission
 
 
@@ -88,7 +97,7 @@ async def update_submission(
         raise HTTPException(422, str(e))
     await _audit(db, action="update", entity_type="submission",
                  entity_id=str(submission_id), ip=_client_ip(request),
-                 detail=f"fields: {fields}")
+                 rec_slug=rec_slug, detail=f"fields: {fields}")
     return result
 
 
@@ -128,7 +137,7 @@ async def delete_submission(
 
     await _audit(db, action="delete", entity_type="submission",
                  entity_id=str(submission_id), ip=_client_ip(request),
-                 detail=f"rec={rec_slug} ref={ref} — GDPR erasure")
+                 rec_slug=rec_slug, detail=f"ref={ref} — GDPR erasure")
 
 
 @router.post("/submissions/{submission_id}/retry-share", response_model=SubmissionAdminRead)
@@ -160,6 +169,7 @@ async def retry_share(
 
     await _audit(db, action="retry_share", entity_type="submission",
                  entity_id=str(submission_id), ip=_client_ip(request),
+                 rec_slug=rec_slug,
                  detail=f"share_provisioned={submission.share_provisioned}")
     return submission
 
@@ -180,7 +190,7 @@ async def download_submission_pdf(
         raise HTTPException(404, "Submission not found")
 
     await _audit(db, action="download_pdf", entity_type="submission",
-                 entity_id=str(submission_id), ip=_client_ip(request))
+                 entity_id=str(submission_id), ip=_client_ip(request), rec_slug=rec_slug)
 
     pdf_bytes = generate_submission_pdf(submission)
     return Response(
@@ -192,11 +202,24 @@ async def download_submission_pdf(
 
 @router.get("/audit-logs", response_model=list[AuditLogRead])
 async def list_audit_logs(
+    rec_slug: str = Depends(valid_rec_slug),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
+    """One community's trail.
+
+    This used to return every community's — the endpoint sits under
+    `/api/{rec}/admin` but ignored the slug, so any token holder read the whole
+    deployment's history. Rows written before `rec_slug` existed and not
+    recoverable by the 0009 backfill are excluded: they name no community, and
+    showing them under an arbitrary one would be inventing the fact.
+    """
     result = await db.execute(
-        select(AuditLog).order_by(AuditLog.created_at.desc()).offset(skip).limit(limit)
+        select(AuditLog)
+        .where(AuditLog.rec_slug == rec_slug)
+        .order_by(AuditLog.created_at.desc())
+        .offset(skip)
+        .limit(limit)
     )
     return list(result.scalars().all())
