@@ -10,7 +10,16 @@ rather than in front of it, which is where it used to be.
 
 from fastapi import APIRouter
 
-from celine.onboarding.api.admin import audit, enablement, me, recs, submissions
+from celine.onboarding.api.admin import (
+    audit,
+    documents,
+    enablement,
+    exports,
+    me,
+    recs,
+    stats,
+    submissions,
+)
 
 
 def create_admin_router() -> APIRouter:
@@ -24,6 +33,9 @@ def create_admin_router() -> APIRouter:
 
     router.include_router(submissions.router)
     router.include_router(enablement.router)
+    router.include_router(documents.router)
+    router.include_router(exports.router)
+    router.include_router(stats.router)
     router.include_router(audit.router)
     return router
 

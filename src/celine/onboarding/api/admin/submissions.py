@@ -10,6 +10,7 @@ erase.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -26,6 +27,7 @@ from celine.onboarding.api.admin.deps import (
     organization_of,
     require,
 )
+from celine.onboarding.api.admin.masking import MASKED_FIELDS, mask_value
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.schemas import SubmissionAdminRead, SubmissionUpdate
 from celine.onboarding.models.submission import SubmissionStatus
@@ -41,6 +43,21 @@ WriteDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_WRITE))]
 PurgeDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_PURGE))]
 RetryDep = Annotated[JwtUser, Depends(require(Capability.ENABLEMENT_RETRY))]
 ReviewDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_REVIEW))]
+
+
+def _read(submission, *, reveal: bool = False) -> SubmissionAdminRead:
+    """Serialise a submission, masking the identifiers unless asked otherwise.
+
+    `fiscal_code` and `pod_code` are encrypted at rest; handing them back in clear
+    to every operator would mean the encryption protects the backup tape and
+    nothing else. See `api/admin/masking.py`.
+    """
+    model = SubmissionAdminRead.model_validate(submission)
+    if reveal:
+        return model
+    return model.model_copy(
+        update={field: mask_value(getattr(model, field)) for field in MASKED_FIELDS}
+    )
 
 
 async def _owned_submission(db, submission_id: uuid.UUID, rec_slug: str):
@@ -62,12 +79,39 @@ async def list_submissions(
     ip: IpDep,
     db: DbDep,
     rec_slug: RecDep,
+    response: Response,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    status: SubmissionStatus | None = Query(None),
+    ref: str | None = Query(
+        None,
+        max_length=40,
+        description="Substring of the submission reference. Deliberately the only "
+        "searchable field: everything else is encrypted with a non-deterministic "
+        "IV, so there is no ciphertext to match against.",
+    ),
+    created_from: datetime | None = Query(None),
+    created_to: datetime | None = Query(None),
 ):
+    """One page of the queue, always masked.
+
+    Reveal is a per-record act on the detail endpoint, not something a list can
+    do wholesale.
+    """
+    filters = {
+        "status": status,
+        "ref": ref,
+        "created_from": created_from,
+        "created_to": created_to,
+    }
     result = await submission_service.list_submissions(
-        db, rec_slug=rec_slug, skip=skip, limit=limit
+        db, rec_slug=rec_slug, skip=skip, limit=limit, **filters
     )
+    # Without the total the console cannot paginate — it has no way to tell a
+    # full last page from a page that merely happens to be full.
+    total = await submission_service.count_submissions(db, rec_slug=rec_slug, **filters)
+    response.headers["X-Total-Count"] = str(total)
+
     await audit_service.record_and_commit(
         db,
         action="list",
@@ -76,31 +120,55 @@ async def list_submissions(
         actor=actor,
         rec_slug=rec_slug,
         ip=ip,
-        detail=f"skip={skip} limit={limit}",
+        detail=f"skip={skip} limit={limit} total={total}",
     )
-    return result
+    return [_read(s) for s in result]
 
 
 @router.get("/{rec_slug}/submissions/{submission_id}", response_model=SubmissionAdminRead)
 async def get_submission(
     submission_id: uuid.UUID,
-    _: ReadDep,
+    user: ReadDep,
     actor: ActorDep,
     ip: IpDep,
     db: DbDep,
     rec_slug: RecDep,
+    reveal: bool = Query(
+        False,
+        description="Unmask the fiscal code and POD. Requires `submissions.reveal`, "
+        "and is recorded in the audit trail.",
+    ),
 ):
+    """One submission, with the identifiers masked unless `reveal` is asked for.
+
+    The point of the reveal capability is not that an operator must never see a
+    fiscal code — sometimes they must, to resolve exactly the kind of mismatch
+    review exists to catch — but that doing so is a deliberate act with their name
+    on it.
+    """
+    if reveal:
+        decision = get_policy().allow(
+            user, Capability.SUBMISSIONS_REVEAL, organization=organization_of(rec_slug)
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                403,
+                f"Revealing the fiscal code and POD requires the reveal capability: "
+                f"{decision.reason or 'access denied'}",
+            )
+
     submission = await _owned_submission(db, submission_id, rec_slug)
     await audit_service.record_and_commit(
         db,
-        action="view",
+        action="reveal" if reveal else "view",
         entity_type="submission",
         entity_id=str(submission_id),
         actor=actor,
         rec_slug=rec_slug,
         ip=ip,
+        detail="fiscal_code, pod_code unmasked" if reveal else None,
     )
-    return submission
+    return _read(submission, reveal=reveal)
 
 
 @router.patch("/{rec_slug}/submissions/{submission_id}", response_model=SubmissionAdminRead)
@@ -153,7 +221,7 @@ async def update_submission(
         ip=ip,
         detail=f"fields: {fields}",
     )
-    return result
+    return _read(result)
 
 
 class TransitionRequest(BaseModel):
@@ -210,7 +278,7 @@ async def transition_submission(
         raise HTTPException(422, str(exc))
     except (ValueError, InvalidTransition) as exc:
         raise HTTPException(422, str(exc))
-    return result
+    return _read(result)
 
 
 @router.delete("/{rec_slug}/submissions/{submission_id}", status_code=204)
@@ -260,6 +328,7 @@ async def delete_submission(
 @router.post(
     "/{rec_slug}/submissions/{submission_id}/retry-share",
     response_model=SubmissionAdminRead,
+    deprecated=True,
 )
 async def retry_share(
     submission_id: uuid.UUID,
@@ -269,11 +338,12 @@ async def retry_share(
     db: DbDep,
     rec_slug: RecDep,
 ):
-    """Re-attempt data-sharing provisioning for an already-provisioned identity.
+    """Deprecated alias for `enablement/retry?step=dataspace_share`.
 
-    A failed share does not fail approval, so a submission can be approved with
-    ``share_provisioned = false``. This retries just the connector push;
-    idempotent, and raises 422 if the connector rejects an offer.
+    Kept for one release because it is the only admin endpoint that existed before
+    the console did. The enablement endpoint supersedes it: it records the attempt
+    on the step row, so a repeated failure is visible as a count rather than as a
+    422 the operator sees and nothing remembers.
     """
     from celine.onboarding.services.dataspace_identity import provision_user_shares
 
@@ -295,7 +365,7 @@ async def retry_share(
         ip=ip,
         detail=f"share_provisioned={submission.share_provisioned}",
     )
-    return submission
+    return _read(submission)
 
 
 @router.get("/{rec_slug}/submissions/{submission_id}/pdf")
