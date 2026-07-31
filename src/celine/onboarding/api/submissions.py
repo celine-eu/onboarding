@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, valid_rec_slug
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
@@ -58,7 +59,7 @@ async def _get_live_submission(
 
 
 @router.post("", response_model=SubmissionCreatedRead, status_code=201)
-@limiter.limit("20/hour")
+@limiter.limit(lambda: settings.rate_limit_submissions)
 async def create_submission(
     request: Request,
     data: ConsentCreate,
@@ -101,7 +102,7 @@ async def update_submission(
 
 
 @router.get("/{submission_id}/pdf")
-@limiter.limit("5/minute")
+@limiter.limit(lambda: settings.rate_limit_pdf)
 async def download_submission_pdf(
     submission_id: uuid.UUID,
     request: Request,

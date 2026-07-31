@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, require_session
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import ExtractionConfirm, ExtractionRead
@@ -16,7 +17,7 @@ ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"
 
 
 @router.post("/extract")
-@limiter.limit("10/hour")
+@limiter.limit(lambda: settings.rate_limit_extraction)
 async def extract_from_upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],
@@ -36,7 +37,7 @@ async def extract_from_upload(
 
 
 @router.post("/extract-id")
-@limiter.limit("10/hour")
+@limiter.limit(lambda: settings.rate_limit_extraction)
 async def extract_from_id_upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],

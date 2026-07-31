@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, valid_rec_slug
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
@@ -26,7 +27,7 @@ def _resolve_phone(raw: str | None, submission) -> str:
 
 
 @router.post("/{submission_id}/verify-phone", response_model=PhoneVerifyStatus)
-@limiter.limit("10/hour")
+@limiter.limit(lambda: settings.rate_limit_otp_send)
 async def verify_phone(
     request: Request,
     submission_id: uuid.UUID,
@@ -57,7 +58,7 @@ async def verify_phone(
 
 
 @router.post("/{submission_id}/confirm-phone", response_model=PhoneVerifyStatus)
-@limiter.limit("20/hour")
+@limiter.limit(lambda: settings.rate_limit_otp_confirm)
 async def confirm_phone(
     request: Request,
     submission_id: uuid.UUID,

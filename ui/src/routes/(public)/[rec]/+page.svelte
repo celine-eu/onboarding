@@ -30,7 +30,9 @@
 	<a href="/{rec}/onboarding" class="cta-btn">
 		{$t('common.start_onboarding')}
 	</a>
-	<a href="/{rec}/admin" class="admin-link">Admin pratiche</a>
+	<!-- The console is per-operator and no longer per-REC in the URL; it lives
+	     behind authentication at /admin. -->
+	<a href="/admin/{rec}" class="admin-link">Console operatori</a>
 </div>
 
 <style>

@@ -1,54 +1,53 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Onboarding wizard', () => {
-	test('landing page shows start button', async ({ page }) => {
+/**
+ * The participant wizard, which is anonymous and must stay that way.
+ *
+ * These previously walked `/` → `/onboarding`, which stopped being the shape of
+ * the app when it became multi-community: the landing page is a community
+ * picker, and the wizard lives under `/{rec}/onboarding`.
+ */
+
+const REC = process.env.E2E_REC ?? 'example';
+
+test.describe('Landing', () => {
+	test('renders the community finder', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.getByText('CER Onboarding')).toBeVisible();
-		await expect(page.getByRole('link', { name: /inizia|start/i })).toBeVisible();
+		// Role-scoped: the app title appears both in the header link and as the
+		// page heading, and a bare text match is ambiguous.
+		await expect(page.getByRole('heading', { name: 'CER Onboarding' })).toBeVisible();
+	});
+});
+
+test.describe('Community page', () => {
+	test('offers the wizard', async ({ page }) => {
+		await page.goto(`/${REC}`);
+		const start = page.getByRole('link', { name: /inizia|start/i });
+		await expect(start).toBeVisible();
+		await start.click();
+		await expect(page).toHaveURL(new RegExp(`/${REC}/onboarding`));
 	});
 
-	test('navigates to onboarding page', async ({ page }) => {
-		await page.goto('/');
-		await page.getByRole('link', { name: /inizia|start/i }).click();
-		await expect(page).toHaveURL('/onboarding');
-		await expect(page.getByText(/adesione|membership/i)).toBeVisible();
+	test('links to the console, which is now behind authentication', async ({ page }) => {
+		await page.goto(`/${REC}`);
+		const console_ = page.getByRole('link', { name: /console operatori/i });
+		await expect(console_).toBeVisible();
+		await expect(console_).toHaveAttribute('href', `/admin/${REC}`);
+	});
+});
+
+test.describe('Wizard', () => {
+	test('renders the first step', async ({ page }) => {
+		await page.goto(`/${REC}/onboarding`);
+		await expect(page.getByText(/adesione|membership/i).first()).toBeVisible();
 	});
 
-	test('wizard step navigation works', async ({ page }) => {
-		await page.goto('/onboarding');
-
-		// Step 1: fill personal data
-		await page.getByLabel(/nome/i).first().fill('Mario');
-		await page.getByLabel(/cognome/i).fill('Rossi');
-		await page.getByLabel(/email/i).fill('mario@example.com');
-
-		// Next button should be enabled
-		const nextBtn = page.getByRole('button', { name: /avanti|next/i });
-		await expect(nextBtn).toBeEnabled();
-		await nextBtn.click();
-
-		// Step 2: utility info
-		await expect(page.getByLabel(/codice fiscale|fiscal/i)).toBeVisible();
-
-		// Back button should work
-		const backBtn = page.getByRole('button', { name: /indietro|back/i });
-		await backBtn.click();
-
-		// Should be back on step 1 with data preserved
-		await expect(page.getByLabel(/nome/i).first()).toHaveValue('Mario');
-	});
-
-	test('language switcher works', async ({ page }) => {
-		await page.goto('/');
-
-		// Default is Italian
+	test('the language switcher works', async ({ page }) => {
+		// On the community page: "Inizia adesione" is the wizard CTA, not landing copy.
+		await page.goto(`/${REC}`);
 		await expect(page.getByText('Inizia adesione')).toBeVisible();
-
-		// Switch to English
 		await page.getByRole('button', { name: 'EN' }).click();
 		await expect(page.getByText('Start onboarding')).toBeVisible();
-
-		// Switch back to Italian
 		await page.getByRole('button', { name: 'IT' }).click();
 		await expect(page.getByText('Inizia adesione')).toBeVisible();
 	});

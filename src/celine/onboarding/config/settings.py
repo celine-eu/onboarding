@@ -40,11 +40,6 @@ class Settings(BaseSettings):
     # Bearer` is the fallback, which is what the CLI and service accounts use.
     jwt_header_name: str = "x-auth-request-access-token"
 
-    # --- Admin console authorization -------------------------------------
-    # OPA policies evaluated in-process for every /api/admin request. Default is
-    # the repo's own policies/ directory rather than PoliciesSettings' relative
-    # "./policies", because the API is started from ./src and a relative path
-    # would resolve to src/policies.
     # --- onboarding-cli ---------------------------------------------------
     # The CLI drives the same HTTP endpoints the console does, with a service
     # account, so it exercises the real authorization and writes real audit rows.
@@ -56,6 +51,11 @@ class Settings(BaseSettings):
     # has to be asked for.
     allow_local_admin: bool = False
 
+    # --- Admin console authorization -------------------------------------
+    # OPA policies evaluated in-process for every /api/admin request. Default is
+    # the repo's own policies/ directory rather than PoliciesSettings' relative
+    # "./policies", because the API is started from ./src and a relative path
+    # would resolve to src/policies.
     policies_dir: str = str(REPO_ROOT / "policies")
     # When the policy bundle cannot be loaded, deny. A permissive fallback is
     # what celine-grid does, and it is genuinely convenient in development — but
@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     allow_permissive_policy: bool = False
 
     download_token_ttl: int = 86400  # 24 hours
+
+    # Public-endpoint rate limits, keyed per IP. Configurable because the right
+    # value depends on the deployment: a community whose members share one
+    # corporate or municipal NAT looks like a single very busy address.
+    rate_limit_submissions: str = "20/hour"
+    rate_limit_pdf: str = "5/minute"
+    rate_limit_extraction: str = "10/hour"
+    rate_limit_otp_send: str = "10/hour"
+    rate_limit_otp_confirm: str = "20/hour"
 
     smtp_host: str = ""
     smtp_port: int = 587

@@ -51,8 +51,14 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# The unit suite only. End-to-end tests boot a real app against a real database
+# and are opt-in: `task test:e2e`, or point pytest at tests/e2e directly.
 testpaths = ["tests"]
+norecursedirs = ["tests/e2e"]
 pythonpath = ["src"]
+markers = [
+    "e2e: needs a live app and a database (ONBOARDING_E2E_DATABASE_URL)",
+]
 
 [tool.ruff]
 target-version = "py312"

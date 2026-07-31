@@ -66,10 +66,13 @@ tasks:
       - uv run pytest
 
   test:frontend:
-    desc: Run frontend tests (Playwright)
-    dir: "{{.UI_DIR}}"
+    desc: >-
+      Run frontend tests (Playwright). Delegates to the e2e harness: the wizard
+      needs the API for its config, and the console needs an issuer to mint an
+      operator token from — `pnpm exec playwright test` alone would start a UI
+      with nothing behind it.
     cmds:
-      - pnpm exec playwright test
+      - ./scripts/e2e.sh ui
 
   lint:
     desc: Lint all code
@@ -117,3 +120,10 @@ tasks:
     dir: "{{.SRC_DIR}}"
     cmds:
       - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}
+
+  test:e2e:
+    desc: >-
+      End-to-end: a real database, a real app, a real browser.
+      `task test:e2e` runs everything; `task test:e2e -- api` or `-- ui` narrows it.
+    cmds:
+      - ./scripts/e2e.sh {{.CLI_ARGS}}
