@@ -7,9 +7,6 @@ dist/
 .venv/
 *.egg
 
-# uv
-uv.lock
-
 # Node / pnpm
 node_modules/
 .svelte-kit/
@@ -43,7 +40,12 @@ test-results/
 playwright-report/
 
 .claude
-.agents
 
 templates/**
 !templates/example
+
+# Execution state: transient, and the plan is what survives
+.agents/work/
+
+# Agent material is not published from this repository.
+.agents/

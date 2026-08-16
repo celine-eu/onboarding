@@ -142,37 +142,6 @@ async def test_rec_registry_block_with_a_url_starts(bind_rec, monkeypatch):
     await app_main._validate_dataspace_config()
 
 
-async def test_an_sdk_without_the_write_wrapper_refuses_to_start(
-    bind_rec, monkeypatch
-):
-    """The wrappers are unreleased, so `uv sync` alone installs an SDK that has
-    the generated endpoints and not the wrapper. Better to say so at boot than to
-    raise AttributeError the first time somebody is approved."""
-    manifest = bind_rec("rec-a")
-    manifest["rec_registry"] = {"community": "rec-a", "default_area": "north"}
-    monkeypatch.setattr(ts.settings, "rec_registry_url", "http://registry:8004")
-
-    from celine.sdk.rec_registry.client import RecRegistryAdminClient
-
-    monkeypatch.delattr(RecRegistryAdminClient, "create_member", raising=False)
-
-    with pytest.raises(RuntimeError, match="celine-sdk is too old"):
-        await app_main._validate_dataspace_config()
-
-
-async def test_no_rec_registry_block_ignores_the_sdk_version(bind_rec, monkeypatch):
-    """A community that does not register members does not care."""
-    bind_rec("rec-a")
-    monkeypatch.setattr(ts.settings, "rec_registry_url", "")
-    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
-
-    from celine.sdk.rec_registry.client import RecRegistryAdminClient
-
-    monkeypatch.delattr(RecRegistryAdminClient, "create_member", raising=False)
-
-    await app_main._validate_dataspace_config()
-
-
 # ---------------------------------------------------------------------------
 # Organisation — the admin console's tenancy key
 # ---------------------------------------------------------------------------

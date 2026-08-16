@@ -27,8 +27,8 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
 | Field | Where | Validated | Required for submit |
 |---|---|---|---|
 | First / last name | `submissions.first_name/last_name` | length only | ✅ `can_submit` |
-| Fiscal code (CF) | `submissions.fiscal_code` | ✅ checksum (`validators/fiscal_code.py`) | ✅ |
-| POD code | `submissions.pod_code` | ✅ format (`validators/pod_code.py`) | ✅ |
+| Fiscal code (CF) | `submissions.fiscal_code` | ✅ checksum (`src/celine/onboarding/validators/fiscal_code.py`) | ✅ |
+| POD code | `submissions.pod_code` | ✅ format (`src/celine/onboarding/validators/pod_code.py`) | ✅ |
 | Email / phone | `submissions.email/phone` | format; phone optionally SMS-verified | ✅ (one of) |
 | Supply address | `extracted_data.indirizzo` (bill OCR) | ❌ unstructured, optional | ❌ |
 | Energy assets (PV, kWp, battery, EV, heat pump) | `extra_data` (manifest fields) | type only | only if manifest marks `required` |
@@ -53,7 +53,7 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
 
 #### G1. Perimeter model
 The eligibility checker matches on **municipality / postal code / geographic
-rules** (`services/eligibility.py`), which is a *proxy* for the CER perimeter.
+rules** (`src/celine/onboarding/api/eligibility.py`), which is a *proxy* for the CER perimeter.
 The regulatory perimeter is the **primary-substation (cabina primaria) zone**.
 A member can be in the right municipality but the wrong CP zone, or vice-versa.
 **Recommendation:** support a CP-zone coverage rule type (GSE publishes the CP

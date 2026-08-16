@@ -142,7 +142,7 @@ adviser** and complete the bracketed fields.
 ## Provider extension
 
 To add a provider, implement the `SmsProvider` protocol in
-`services/sms.py`:
+`src/celine/onboarding/services/sms.py`:
 
 ```python
 class SmsProvider(Protocol):

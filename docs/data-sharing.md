@@ -45,7 +45,7 @@ task export-csv                 # all RECs → data/exports/<timestamp>/submissi
 task export-csv -- --rec my-rec # single REC
 ```
 
-The CSV includes (see `outputs/csv_export.py`):
+The CSV includes (see `src/celine/onboarding/outputs/csv_export.py`):
 
 - identity: `ref`, `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`
 - phone verification: `phone_verified`, `phone_verified_at`
