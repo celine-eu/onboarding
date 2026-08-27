@@ -168,3 +168,76 @@ async def test_approval_survives_share_failure(monkeypatch, submission, _enable_
     assert submission.dataspace_did == CREDENTIAL_RESPONSE["subjectDid"]
     assert submission.dataspace_vc_id == CREDENTIAL_RESPONSE["credentialId"]
     assert submission.share_provisioned is False
+
+
+# ── withdrawal ────────────────────────────────────────────────────────────────
+#
+# The mirror of provisioning, and the pair is the point: this service grants on
+# the person's behalf, so it withdraws on their behalf. Leaving that undone left
+# a consent standing for somebody who is no longer a member — and, because the
+# same revocation deletes their credential, no way for them to withdraw it in the
+# participant webapp either.
+
+
+async def test_withdrawal_flips_the_same_call_it_granted_with(
+    monkeypatch, submission, _enable_shares
+):
+    di._token_provider = _mock_token_provider()
+    _consented(submission)
+    submission.share_provisioned = True
+    captured = {}
+
+    def handler(req):
+        captured["url"] = str(req.url)
+        captured["body"] = req.read().decode()
+        return httpx.Response(200, json=[{"id": "row-1", "status": "revoked"}])
+
+    _patch_httpx(monkeypatch, handler)
+    ok = await di.withdraw_user_shares(submission, reason="Membership revoked in example")
+
+    assert ok is True
+    assert submission.share_provisioned is False
+    assert "consent/admin/shares" in captured["url"]
+
+    import json
+
+    sent = json.loads(captured["body"])
+    assert sent["subject_id"] == submission.dataspace_did
+    assert sent["offer_id"] == "household-energy-flexibility"
+    # One boolean apart from the grant. The connector moves the same row to
+    # `revoked`; `message` becomes its revocation_reason, which is where *why*
+    # is recorded.
+    assert sent["enabled"] is False
+    assert sent["message"] == "Membership revoked in example"
+
+
+async def test_withdrawal_is_skipped_when_there_is_nothing_to_withdraw(
+    monkeypatch, submission, _enable_shares
+):
+    di._token_provider = _mock_token_provider()
+    _consented(submission)
+    submission.data_sharing_consent_offer_ids = []
+
+    def handler(req):  # pragma: no cover — reaching it is the failure
+        raise AssertionError("no call should be made when no offers were recorded")
+
+    _patch_httpx(monkeypatch, handler)
+    assert await di.withdraw_user_shares(submission) is False
+
+
+async def test_withdrawal_reports_failure_rather_than_claiming_success(
+    monkeypatch, submission, _enable_shares
+):
+    """`share_provisioned` must not be cleared on a refusal.
+
+    It is the flag the POD export filters on, so clearing it after a failed
+    withdrawal would drop the member from exports while their consent is still
+    granted in the connector — the two records disagreeing, silently.
+    """
+    di._token_provider = _mock_token_provider()
+    _consented(submission)
+    submission.share_provisioned = True
+
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(500, text="boom"))
+    assert await di.withdraw_user_shares(submission) is False
+    assert submission.share_provisioned is True

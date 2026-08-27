@@ -485,6 +485,73 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
     return ok
 
 
+async def withdraw_user_shares(
+    submission: Submission, *, reason: str = "", raise_on_error: bool = False
+) -> bool:
+    """Withdraw the standing consent this service provisioned.
+
+    The mirror of :func:`provision_user_shares`, and it exists because the two
+    have to be a pair. This service grants on the person's behalf at approval —
+    same endpoint, same `connector.consent.provision` scope — so declining to
+    un-grant on their behalf at revocation was an asymmetry, not a principle. It
+    left a consent standing for somebody who is no longer a member, and (because
+    revocation also deletes their credential) no way for them to withdraw it
+    themselves.
+
+    ``enabled: false`` is the same call with one boolean flipped: the connector
+    moves the same row to ``revoked`` with a ``revocation_reason``, which is
+    where *why* is recorded. It is the identical row and status the subject's own
+    withdrawal produces — the two paths differ in which credential opens the
+    door, not in what they write.
+
+    Runs **before** the credential is deleted. Afterwards the connector would
+    still accept the call, but the ordering keeps the sequence readable: undo the
+    consent, then the identity that carried it.
+    """
+    if not settings.ds_connector_url:
+        return False
+    if not submission.dataspace_did:
+        return False
+
+    offer_ids = list(submission.data_sharing_consent_offer_ids or [])
+    if not offer_ids:
+        return False
+
+    connector_url = settings.ds_connector_url.rstrip("/")
+    headers = await _auth_headers()
+    detail = reason or f"Membership revoked in {submission.rec_slug}"
+
+    failures: list[str] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for offer_id in offer_ids:
+            try:
+                resp = await client.post(
+                    f"{connector_url}/consent/admin/shares",
+                    json={
+                        "subject_id": submission.dataspace_did,
+                        "offer_id": offer_id,
+                        "enabled": False,
+                        "message": detail,
+                    },
+                    headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                failures.append(f"{offer_id}: {exc}")
+                continue
+            # 404 is success here: nothing to withdraw is the state we want.
+            if resp.status_code >= 400 and resp.status_code != 404:
+                failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
+
+    if failures:
+        logger.error("Withdrawing shares for %s failed: %s", submission.ref, "; ".join(failures))
+        if raise_on_error:
+            raise ValueError("Share withdrawal failed: " + "; ".join(failures))
+        return False
+
+    submission.share_provisioned = False
+    return True
+
+
 async def _register_membership(
     base_url: str,
     headers: dict[str, str],

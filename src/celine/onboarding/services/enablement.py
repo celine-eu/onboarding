@@ -168,6 +168,19 @@ async def _run_dataspace_share(ctx: RunContext) -> StepOutcome:
     return StepOutcome(EnablementStatus.SUCCEEDED)
 
 
+async def _revoke_dataspace_share(ctx: RunContext, row: SubmissionEnablementStep) -> str:
+    from celine.onboarding.config.settings import settings
+    from celine.onboarding.services.dataspace_identity import withdraw_user_shares
+
+    if not settings.ds_connector_url:
+        return "no dataspace connector is configured"
+    if not ctx.submission.data_sharing_consent:
+        return "no data-sharing consent was recorded"
+
+    ok = await withdraw_user_shares(ctx.submission)
+    return "standing consent withdrawn" if ok else "nothing to withdraw"
+
+
 @dataclass(frozen=True)
 class StepSpec:
     step: EnablementStep
@@ -208,10 +221,22 @@ PIPELINE: tuple[StepSpec, ...] = (
         "Standing sharing consent",
         fail_closed=False,
         run=_run_dataspace_share,
-        # Withdrawal is the data subject's own act, authenticated with their own
-        # credential, and lives in the participant webapp. Onboarding holds no
-        # credential and must not revoke a consent on somebody's behalf.
-        revoke=None,
+        # This step grants on the person's behalf, so it withdraws on their
+        # behalf too. An earlier version left this `None`, reasoning that
+        # withdrawal is the subject's own act and belongs in the participant
+        # webapp. That is true of a person *choosing* to stop sharing, and it is
+        # not what happens here: a revocation removes them from the community,
+        # and the same sequence deletes the credential the webapp would have
+        # authenticated that choice with. The consent stood, and its subject had
+        # no way left to withdraw it.
+        #
+        # Nothing in ds distinguishes the two: `POST /consent/admin/shares`
+        # with `enabled: false` and `POST /consent/my/{id}/revoke` move the same
+        # row to the same `revoked` status. They differ in which credential opens
+        # the door, not in what is written — so `revocation_reason` is where this
+        # path says why, and the person's own withdrawal in the webapp is
+        # untouched and still theirs.
+        revoke=_revoke_dataspace_share,
     ),
 )
 

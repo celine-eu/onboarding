@@ -387,16 +387,62 @@ class TestRevoke:
         assert "keycloak_user:kc-123" in revocations
         assert "rec_registry_member:member-key-1" in revocations
 
-    async def test_sharing_consent_is_not_revoked_here(
-        self, db, submission, happy_path, revocations
+    async def test_sharing_consent_is_withdrawn_here(
+        self, db, submission, happy_path, revocations, monkeypatch
     ):
-        """Withdrawal is the data subject's own act, made with their own credential.
+        """This step grants on the person's behalf, so it withdraws on theirs.
 
-        Onboarding holds no credential and must not make it on their behalf.
+        It used to do nothing, on the reasoning that withdrawal is the subject's
+        own act. That holds for a person *choosing* to stop sharing; it does not
+        hold here, where the community removed them and the same sequence deletes
+        the credential they would have withdrawn with. The consent stood and its
+        subject had no way left to reach it.
         """
+        called: list[str] = []
+
+        async def _withdraw(sub, *, reason="", raise_on_error=False):
+            called.append(sub.ref)
+            return True
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+
         await enablement.enable(db, submission)
         rows = await enablement.revoke(db, submission)
-        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SUCCEEDED
+
+        assert called == [submission.ref]
+        # A revoked step goes back to PENDING — the same state the other steps
+        # land in, and what `test_revoked_steps_become_retriable_again` relies on.
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
+        assert rows[EnablementStep.DATASPACE_SHARE].detail == "standing consent withdrawn"
+
+    async def test_the_share_is_withdrawn_before_the_identity_that_carried_it(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """Ordering, and it is free: `revoke` walks `reversed(PIPELINE)`.
+
+        Asserted rather than assumed, because the two steps are adjacent and a
+        later reordering of the pipeline would silently swap them — leaving the
+        withdrawal to be attempted for a DID whose credential is already gone.
+        """
+        order: list[str] = []
+
+        async def _withdraw(sub, *, reason="", raise_on_error=False):
+            order.append("share")
+            return True
+
+        original = dataspace_identity.revoke_user_identity
+
+        async def _revoke_identity(sub):
+            order.append("identity")
+            return await original(sub)
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+        monkeypatch.setattr(dataspace_identity, "revoke_user_identity", _revoke_identity)
+
+        await enablement.enable(db, submission)
+        await enablement.revoke(db, submission)
+
+        assert order == ["share", "identity"]
 
     async def test_revoked_steps_become_retriable_again(
         self, db, submission, happy_path, revocations
