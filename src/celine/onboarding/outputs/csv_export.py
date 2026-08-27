@@ -1,8 +1,5 @@
 import csv
-import hashlib
-import json
 import logging
-from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -76,31 +73,6 @@ def _extra_field_keys(rec_slug: str | None) -> list[str]:
     return [f["key"] for f in manifest.get("fields", {}).get("extra", []) if "key" in f]
 
 
-def _disclosure_snapshot_hash(submissions: Sequence[Submission]) -> str:
-    """A recomputable, non-PII fingerprint of the consent state in a disclosure.
-
-    Mirrors the connector's ``consent_snapshot_hash`` (SHA-256 over sorted
-    tuples) but over what onboarding holds: **offer-level** consent, since
-    dataset-level resolution lives in the connector.  Each tuple is
-    ``(subject_ref, rec_slug, offer_ids, consent_text_version)`` for submissions
-    that opted in — ``subject_ref`` is the pseudonymous dataspace DID (or the
-    opaque subject id / submission ref as a fallback), never a name, email, CF or
-    POD.
-    """
-    tuples = sorted(
-        (
-            sub.dataspace_did or sub.dataspace_subject_id or sub.ref or "",
-            sub.rec_slug or "",
-            ",".join(sorted(sub.data_sharing_consent_offer_ids or [])),
-            sub.data_sharing_consent_text_version or "",
-        )
-        for sub in submissions
-        if sub.data_sharing_consent
-    )
-    payload = json.dumps(tuples, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 async def export_pod_list(
     db: AsyncSession,
     output_path: str | Path,
@@ -146,6 +118,27 @@ async def export_pod_list(
         if offer_id in (sub.data_sharing_consent_offer_ids or []) and sub.pod_code
     ]
 
+    # Recorded **before** the file is written. `POST /admin/disclosure` runs ahead
+    # of the handover by design, so a refusal means the disclosure does not
+    # happen — writing first and recording after is how an unrecorded handover
+    # gets out. A failure here raises and no file is produced.
+    from celine.onboarding.services.dataspace_identity import record_disclosure
+
+    disclosures = await record_disclosure(
+        offer_id=offer_id,
+        recipient_ref=recipient_ref,
+        purpose=purpose or [],
+        columns=["pod_code"],
+        subject_count=len(rows),
+        source_ref=rec_slug,
+        agreement_ref=agreement_ref,
+        # Stable across retries of *this* export, so a retry after a partial
+        # failure re-records rather than duplicating. The connector derives one
+        # key per dataset from it.
+        event_id=f"pod-list:{rec_slug}:{offer_id}:{generated_at.isoformat()}",
+        rec_slug=rec_slug,
+    )
+
     stamp = generated_at.isoformat()
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         f.write(f"# Supply points authorised for release under offer {offer_id}\n")
@@ -161,24 +154,15 @@ async def export_pod_list(
         for sub in rows:
             writer.writerow({"pod_code": _fmt(sub.pod_code)})
 
-    try:
-        from celine.onboarding.services.dataspace_identity import emit_data_disclosed
-
-        await emit_data_disclosed(
-            recipient_ref=recipient_ref,
-            purpose=purpose or [],
-            columns=["pod_code"],
-            subject_count=len(rows),
-            source_ref=rec_slug,
-            consent_snapshot_hash=_disclosure_snapshot_hash(rows),
-            agreement_ref=agreement_ref,
-            rec_slug=rec_slug,
+    for entry in disclosures:
+        logger.info(
+            "DataDisclosed recorded for %s: dataset=%s consent_snapshot_hash=%s "
+            "granted_parties=%s",
+            rec_slug,
+            entry.get("dataset_id"),
+            entry.get("consent_snapshot_hash"),
+            entry.get("granted_party_count"),
         )
-    except Exception:
-        # Accountability must never block the disclosure it documents; an
-        # operator who cannot export stops naming recipients, which loses the
-        # trail entirely.
-        logger.exception("Failed to emit DataDisclosed provenance for POD list")
 
     return len(rows)
 
@@ -211,25 +195,16 @@ async def export_submissions_csv(
                 row[key] = _fmt(extra.get(key))
             writer.writerow(row)
 
-    # Record the disclosure in ds-provenance, if a recipient was named. Naming a
-    # recipient is what makes an export a *disclosure* worth logging; without one
-    # (e.g. an internal dump) nothing is emitted. Import is local so the export
-    # keeps working in environments with no dataspace integration.
-    if recipient_ref:
-        try:
-            from celine.onboarding.services.dataspace_identity import emit_data_disclosed
-
-            await emit_data_disclosed(
-                recipient_ref=recipient_ref,
-                purpose=purpose or [],
-                columns=list(fieldnames),
-                subject_count=len(submissions),
-                source_ref=rec_slug,
-                consent_snapshot_hash=_disclosure_snapshot_hash(submissions),
-                agreement_ref=agreement_ref,
-                rec_slug=rec_slug,
-            )
-        except Exception:
-            logger.exception("Failed to emit DataDisclosed provenance for export")
-
+    # **No dataspace disclosure is recorded here, deliberately.** This exports
+    # every submission in the community — no consent filter, no offer, every
+    # field including name, fiscal code and POD. There is no offer to resolve and
+    # no governed dataset it corresponds to: the datasets governance declares are
+    # meter and weather data, not the onboarding database. Filing this under one
+    # of them would attach a PII export to a consent state that has nothing to do
+    # with it, which is worse than not recording it in the dataspace at all.
+    #
+    # It is accounted for where it belongs: `POST /{rec_slug}/exports/csv` writes
+    # an audit record — actor, IP, row count, named recipient — on every call.
+    # If that is not enough, the answer is a stronger admin audit trail, not a
+    # `DataDisclosed` event.
     return len(submissions)

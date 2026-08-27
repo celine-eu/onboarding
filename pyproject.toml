@@ -47,6 +47,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "respx>=0.22",
+    # `task lint:backend` runs `ruff check` and `ruff format --check`, and
+    # neither could run: ruff was never a dependency, so the task failed with
+    # "Failed to spawn: ruff" rather than reporting anything. A lint task that
+    # cannot run reads as a lint task that passes.
+    "ruff>=0.16",
 ]
 
 [tool.pytest.ini_options]
@@ -54,10 +59,14 @@ asyncio_mode = "auto"
 # The unit suite only. End-to-end tests boot a real app against a real database
 # and are opt-in: `task test:e2e`, or point pytest at tests/e2e directly.
 testpaths = ["tests"]
-norecursedirs = ["tests/e2e"]
-pythonpath = ["src"]
+# Both are opt-in and for the same reason: they need something the unit suite
+# deliberately does not boot. `tests/e2e` wants a real app and database
+# (`task test:e2e`); `tests/contract` wants a live ds (`task test:contract`).
+norecursedirs = ["tests/e2e", "tests/contract"]
+pythonpath = ["src", "tests"]
 markers = [
     "e2e: needs a live app and a database (ONBOARDING_E2E_DATABASE_URL)",
+    "ds_contract: needs a live ds stack (DS_CONTRACT_*_URL)",
 ]
 
 [tool.ruff]

@@ -431,6 +431,15 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
         elif not offer.get("requires_consent"):
             # Default set is consent-based offers; an explicit allow-list may
             # still include a contract offer for disclosure.
+            #
+            # Rendered is not consented, and the two used to be conflated here.
+            # The statute step shows a contract-based offer **without a toggle**
+            # (`docs/data-sharing.md`) because there is no choice to make — so it
+            # belongs in this list, and it must never reach
+            # `data_sharing_consent_offer_ids`. Nothing stopped it: the connector
+            # refused it at provisioning with a 409 days later, by which time the
+            # failure read as the member declining. That is now checked at capture
+            # by `submission_service._validate_sharing_offer_ids`.
             continue
         result.append(offer)
     return result

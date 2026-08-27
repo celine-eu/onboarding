@@ -112,6 +112,16 @@ tasks:
     cmds:
       - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}
 
+  test:contract:
+    desc: >-
+      Check this service's calls against the ds it talks to. Needs a live ds;
+      skips loudly when there is not one, and a skip is not a pass.
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      # `-rs` so the skip reasons are printed rather than counted. A check that
+      # stopped running has to be visible in the output that says it passed.
+      - uv run pytest ../tests/contract -rs {{.CLI_ARGS}}
+
   test:e2e:
     desc: >-
       End-to-end: a real database, a real app, a real browser.

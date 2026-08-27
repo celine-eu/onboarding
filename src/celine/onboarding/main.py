@@ -94,9 +94,11 @@ async def _validate_dataspace_config() -> None:
         if not (binding.enabled and settings.dataspace_enabled):
             continue
 
-        from celine.onboarding.services.dataspace_identity import organization_exists
+        from celine.onboarding.services.dataspace_identity import check_organization
 
-        if await organization_exists(binding.organization) is False:
+        owner = await check_organization(binding.organization)
+
+        if owner.found is False:
             raise RuntimeError(
                 f"\n\n"
                 f"═══════════════════════════════════════════════════════════════\n"
@@ -111,6 +113,35 @@ async def _validate_dataspace_config() -> None:
                 f"  2. Have an operator take it through the registry's\n"
                 f"     verify -> agreement -> credential -> promote chain\n"
                 f"  3. Or remove the 'dataspace' block from the REC's manifest\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
+
+        # Existing is not the same as admissible. The registry gained a lifecycle
+        # in August — verified, suspended, revoked — and the checks above only
+        # ever asked whether a row was there. Filing new members into a suspended
+        # organisation is the admission decision the registry's own enrolment
+        # service refuses to let a tool take: it will not issue an enrolment token
+        # for an owner that is not verified, on the grounds that doing so is a
+        # governance decision taken by whoever ran the command. Provisioning a
+        # person into one is the same act.
+        #
+        # A registry that reports no status at all leaves `status` None and this
+        # check passes — an absent field must not read as "not verified".
+        if owner.found and owner.status and owner.status != "verified":
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  Dataspace organization '{binding.organization}' is "
+                f"{owner.status}\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' is bound to it, and only a *verified* organization\n"
+                f"may take on new members. A suspended or revoked owner has had\n"
+                f"its register bits cleared and its participants deactivated, so\n"
+                f"anyone onboarded into it would hold a credential that authorises\n"
+                f"nothing — and would have been told otherwise.\n\n"
+                f"  1. Have an operator reinstate it in the identity registry\n"
+                f"  2. Or remove the 'dataspace' block from the REC's manifest\n"
+                f"     until it is reinstated\n\n"
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 

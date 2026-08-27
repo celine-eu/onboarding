@@ -23,15 +23,22 @@ def _vocab_configured(monkeypatch):
 
 @pytest.fixture()
 def _registry_says(monkeypatch):
-    """Stub the registry lookup: True known, False unknown, None unreachable."""
+    """Stub the registry lookup: True known, False unknown, None unreachable.
 
-    def _set(answer):
-        async def _exists(alias):
-            return answer
+    ``status`` is the owner's lifecycle state where one is known. Defaulting it
+    to ``verified`` keeps every pre-existing caller meaning what it meant: these
+    tests were written when existing and admissible were the same thing.
+    """
 
-        import celine.onboarding.services.dataspace_identity as di
+    import celine.onboarding.services.dataspace_identity as di
 
-        monkeypatch.setattr(di, "organization_exists", _exists)
+    def _set(answer, status="verified"):
+        async def _check(alias):
+            return di.OwnerCheck(
+                found=answer, status=status if answer else None
+            )
+
+        monkeypatch.setattr(di, "check_organization", _check)
 
     return _set
 
@@ -289,3 +296,55 @@ def test_reserved_rec_slug_refuses_to_start(seed_rec, _oidc_configured):
 def test_ordinary_slugs_start_fine(seed_rec, _oidc_configured):
     seed_rec("rec-a", organization="community-a")
     app_main._validate_admin_config()
+
+
+async def test_a_suspended_organization_refuses_to_start(
+    bind_rec, monkeypatch, _registry_says
+):
+    """Existing is not admissible.
+
+    The registry gained verified/suspended/revoked in August and this check only
+    ever asked whether the row was there, so a suspended owner kept taking new
+    members. Its own enrolment service refuses to issue a token for one.
+    """
+    bind_rec("rec-a", organization="org-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    _registry_says(True, status="suspended")
+
+    with pytest.raises(RuntimeError, match="is suspended"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_a_revoked_organization_refuses_to_start(
+    bind_rec, monkeypatch, _registry_says
+):
+    bind_rec("rec-a", organization="org-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    _registry_says(True, status="revoked")
+
+    with pytest.raises(RuntimeError, match="is revoked"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_a_verified_organization_starts(bind_rec, monkeypatch, _registry_says):
+    bind_rec("rec-a", organization="org-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    _registry_says(True, status="verified")
+
+    await app_main._validate_dataspace_config()
+
+
+async def test_a_registry_reporting_no_status_still_starts(
+    bind_rec, monkeypatch, _registry_says
+):
+    """An absent field must not read as "not verified".
+
+    A registry that predates the lifecycle, or a body that could not be parsed,
+    leaves the status unknown — and refusing on unknown would turn this check
+    into the outage it was written to avoid.
+    """
+    bind_rec("rec-a", organization="org-a")
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    _registry_says(True, status=None)
+
+    await app_main._validate_dataspace_config()

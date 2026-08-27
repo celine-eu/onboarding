@@ -224,6 +224,58 @@ def export_pod_list(
 
 
 @app.command()
+def check_offers(
+    rec: str = typer.Option(..., "--rec", "-r", help="REC slug"),
+):
+    """Report stored consents whose offer ids no longer validate.
+
+    Submissions taken before the ids were checked at capture, or taken against a
+    vocabulary that has since changed, can hold an offer this community no longer
+    offers — or one that is disclosed rather than consented. The connector refuses
+    both at provisioning, and the refusal reads as ``share_provisioned = false``,
+    which looks exactly like somebody choosing not to share.
+
+    Read-only. It names what to ask again for; it does not decide, because an
+    unusable consent cannot be repaired from this side — only re-asked.
+    """
+    from sqlalchemy import select
+
+    from celine.onboarding.models.database import async_session
+    from celine.onboarding.models.submission import Submission
+    from celine.onboarding.services import submission_service
+
+    async def _run():
+        async with async_session() as db:
+            rows = (
+                await db.execute(
+                    select(Submission)
+                    .where(Submission.rec_slug == rec)
+                    .where(Submission.data_sharing_consent.is_(True))
+                    .order_by(Submission.created_at.asc())
+                )
+            ).scalars().all()
+
+            bad = 0
+            for sub in rows:
+                ids = list(sub.data_sharing_consent_offer_ids or [])
+                if not ids:
+                    bad += 1
+                    typer.echo(f"  {sub.ref}  consent recorded, no offers named")
+                    continue
+                try:
+                    await submission_service._validate_sharing_offer_ids(rec, ids)
+                except ValueError as exc:
+                    bad += 1
+                    typer.echo(f"  {sub.ref}  {exc}")
+
+            typer.echo(
+                f"{len(rows)} consent(s) in '{rec}': {len(rows) - bad} valid, {bad} to re-ask."
+            )
+
+    asyncio.run(_run())
+
+
+@app.command()
 def upload_gdrive(folder_id: str = typer.Option(..., help="Google Drive folder ID")):
     """Upload documents to Google Drive."""
     typer.echo(f"Uploading to folder {folder_id}... (not yet implemented)")

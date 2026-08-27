@@ -16,7 +16,7 @@ from celine.onboarding.models.schemas import (
     SubmissionUpdate,
 )
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services import submission_service
+from celine.onboarding.services import submission_service, template_service
 from celine.onboarding.workflows.engine import InvalidTransition
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -97,6 +97,11 @@ async def update_submission(
         return await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
         )
+    except template_service.SharingOffersUnavailable as e:
+        # The offers could not be checked, so the consent is not recorded. 503
+        # rather than 422: the client's payload is not known to be wrong, it is
+        # unverified, and retrying the same request is the right response.
+        raise HTTPException(503, str(e)) from e
     except (ValueError, InvalidTransition) as e:
         raise HTTPException(422, str(e))
 

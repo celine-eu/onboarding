@@ -98,10 +98,6 @@ class Settings(BaseSettings):
     # renders offers from; empty falls back to the connector's /ns path.
     ds_connector_url: str = ""
     ds_ns_url: str = ""
-    # Provenance base URL for recording an offline data disclosure (a CSV export)
-    # as a DataDisclosed event (Block C). Empty disables the emission — the export
-    # itself still runs. Uses the svc-ds-onboarding M2M token (provenance.write).
-    ds_provenance_url: str = ""
 
     sms_provider: str = "log"
     brevo_api_key: str = ""

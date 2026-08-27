@@ -5,6 +5,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from dataclasses import dataclass
+
 import httpx
 
 from celine.onboarding.config.settings import settings
@@ -60,31 +62,54 @@ async def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token.access_token}"}
 
 
-async def emit_data_disclosed(
+async def record_disclosure(
     *,
+    offer_id: str,
     recipient_ref: str,
     purpose: list[str] | None = None,
     columns: list[str] | None = None,
     subject_count: int | None = None,
     source_ref: str | None = None,
-    consent_snapshot_hash: str | None = None,
     agreement_ref: str | None = None,
     event_id: str | None = None,
     rec_slug: str | None = None,
-) -> bool:
-    """Record an offline data disclosure (a CSV export) in ds-provenance.
+) -> list[dict[str, Any]]:
+    """Record an outbound disclosure with the connector, before it happens.
 
-    Non-fatal: a failed provenance emit must never fail the export it documents,
-    so this logs and returns False rather than raising.  Carries **codes, DIDs
-    and hashes only, never PII** — ``columns`` are field *names*, not values, and
-    ``consent_snapshot_hash`` is a recomputable fingerprint of the consent state.
+    Replaces a direct ``POST {DS_PROVENANCE_URL}/prov/events``. That call had no
+    ``dataset_id`` and the provenance service now requires one, so every emit was
+    answered 422 and discarded — silently, because the emit was non-fatal. The
+    export went out and nothing recorded it.
+
+    **The connector computes the consent snapshot hash**, which is the whole
+    reason the route exists: the hash is a fingerprint of *its* consent rows, and
+    a caller asserting one would be asserting a consent state it cannot read.
+
+    **Named by offer, expanded by the connector.** A POD list is scoped to one
+    sharing offer, never to a dataset. The connector resolves the offer to the
+    datasets it reaches and records one ``DataDisclosed`` per dataset, deriving a
+    per-dataset event id from ``event_id`` so a retry stays idempotent.
+
+    Returns one entry per dataset — ``dataset_id``, ``consent_snapshot_hash``,
+    ``granted_party_count``. **Every entry matters**: the response deliberately
+    does not flatten to top-level keys even when the offer resolves to a single
+    dataset, so that a caller cannot read one and be right today and wrong the
+    day a second dataset declares the offer.
+
+    **Fatal, unlike the emit it replaces.** The old call documented something that
+    had already happened, so losing it was worse than failing. This one runs
+    *before* the handover, so a refusal means the disclosure does not happen —
+    the answer that leaves no unrecorded handover. Callers must not write the
+    file if this raises.
     """
-    if not settings.ds_provenance_url:
-        return False
+    if not settings.ds_connector_url:
+        raise RuntimeError(
+            "DS_CONNECTOR_URL is not configured, so this disclosure cannot be "
+            "recorded — and an unrecorded handover is what this call prevents."
+        )
 
     # The disclosing agent is the REC that holds the data, so it is per-REC like
-    # every other dataspace binding. Without a slug there is nobody to name, and
-    # an unresolvable one must not fail the export this call only documents.
+    # every other dataspace binding.
     disclosed_by: str | None = None
     if rec_slug:
         try:
@@ -92,75 +117,110 @@ async def emit_data_disclosed(
             disclosed_by = binding.organization_did or binding.organization or None
         except (KeyError, ValueError):
             logger.warning(
-                "No dataspace binding for REC %r; DataDisclosed will not name a "
+                "No dataspace binding for REC %r; the disclosure will not name a "
                 "disclosing agent",
                 rec_slug,
             )
-    base_url = settings.ds_provenance_url.rstrip("/")
+
+    base_url = settings.ds_connector_url.rstrip("/")
     payload: dict[str, Any] = {
-        "event_type": "DataDisclosed",
-        "event_id": event_id,
-        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "offer_id": offer_id,
         "recipient_ref": recipient_ref,
         "purpose": purpose or [],
         "columns": columns or [],
         "subject_count": subject_count,
         "source_ref": source_ref,
         "disclosed_by": disclosed_by,
-        "consent_snapshot_hash": consent_snapshot_hash,
         "agreement_ref": agreement_ref,
+        "event_id": event_id,
     }
-    try:
-        headers = await _auth_headers()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{base_url}/prov/events", json=payload, headers=headers
-            )
-        if resp.status_code >= 400:
-            logger.warning(
-                "DataDisclosed emit failed (%s): %s", resp.status_code, resp.text
-            )
-            return False
-    except Exception:
-        logger.exception("DataDisclosed emit failed for recipient %s", recipient_ref)
-        return False
-    return True
+
+    headers = await _auth_headers()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base_url}/admin/disclosure", json=payload, headers=headers
+        )
+
+    if resp.status_code >= 400:
+        # 502 is the partial case and the connector names what it already
+        # recorded. Retry with the **same** event_id: the per-dataset derivation
+        # makes that idempotent, where a fresh one would record a second copy of
+        # what this failure already wrote.
+        raise RuntimeError(
+            f"Disclosure was not recorded ({resp.status_code}), so the data must "
+            f"not be handed over: {resp.text}"
+        )
+
+    body = resp.json()
+    disclosures = body.get("disclosures") or []
+    if not disclosures:
+        raise RuntimeError(
+            f"The connector recorded no disclosure for offer {offer_id!r}; "
+            "refusing to hand over data that nothing describes."
+        )
+    return disclosures
 
 
-async def organization_exists(org_alias: str) -> bool | None:
-    """Is *org_alias* a known owner in the identity registry?
+@dataclass(frozen=True, slots=True)
+class OwnerCheck:
+    """What the registry said about a bound organisation.
 
-    Returns ``True``/``False``, or ``None`` when the registry could not be
-    reached. The distinction is the point: a registry that answers "no such
-    owner" is a configuration error worth refusing to start on, while a registry
-    that is briefly down is not — coupling boot to another service's availability
-    would turn a transient outage into an outage here.
+    found keeps the three-way answer this check has always given, and the
+    three-way is the point: *no such owner* is a configuration error worth
+    refusing to start on, while *registry unreachable* is not — coupling boot to
+    another service's availability would turn a transient outage into an outage
+    here. A 403 belongs with unreachable, not with unknown.
+
+    status is the owner's lifecycle state — verified, suspended,
+    revoked — and is None when the owner was not found, or when the
+    registry did not report one.
     """
+
+    found: bool | None
+    status: str | None = None
+
+
+async def check_organization(org_alias: str) -> OwnerCheck:
+    """Resolve *org_alias* in the identity registry and report what it is."""
     if not settings.identity_registry_url:
-        return None
+        return OwnerCheck(found=None)
     base_url = settings.identity_registry_url.rstrip("/")
     try:
         headers = await _auth_headers()
         async with httpx.AsyncClient(timeout=10) as client:
+            # `/owners/resolve`, not `/admin/owners/{alias}`. The latter matches on
+            # `Owner.id`; an alias 404s there, and this function reported that as
+            # "no such organisation" — a startup refusal for a deployment that was
+            # configured correctly. The registry added this route for exactly this
+            # caller and does the id-then-alias fallback itself, so the fallback is
+            # not reimplemented here.
             resp = await client.get(
-                f"{base_url}/admin/owners/{org_alias}", headers=headers
+                f"{base_url}/owners/resolve",
+                params={"alias": org_alias},
+                headers=headers,
             )
     except Exception:
         logger.warning(
             "Could not reach the identity registry to verify organization %r",
             org_alias,
         )
-        return None
+        return OwnerCheck(found=None)
     if resp.status_code == 404:
-        return False
+        return OwnerCheck(found=False)
     if resp.status_code >= 400:
         logger.warning(
             "Identity registry answered %s verifying organization %r",
             resp.status_code,
             org_alias,
         )
-        return None
-    return True
+        return OwnerCheck(found=None)
+    try:
+        status = str(resp.json().get("status") or "").strip() or None
+    except ValueError:
+        # Found, but the body was not readable. Do not invent a status: an
+        # absent one must not read as "not verified" and refuse boot.
+        status = None
+    return OwnerCheck(found=True, status=status)
 
 
 async def _resolve_or_derive_subject(
