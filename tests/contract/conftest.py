@@ -11,6 +11,7 @@ A check that silently stops running is how the drift this plan repairs survived
 three weeks — so the skip names the URL it could not reach, and the task runs
 pytest with `-rs` so the reasons are printed rather than counted.
 """
+
 from __future__ import annotations
 
 import os
@@ -85,8 +86,7 @@ def token() -> str:
         resp.raise_for_status()
         return resp.json()["access_token"]
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(_unreachable("the ds token endpoint", TOKEN_URL, exc),
-                    allow_module_level=True)
+        pytest.skip(_unreachable("the ds token endpoint", TOKEN_URL, exc), allow_module_level=True)
 
 
 @pytest.fixture(scope="session")

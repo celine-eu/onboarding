@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from dataclasses import dataclass
-
 import httpx
+from celine.sdk.auth import OidcClientCredentialsProvider
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import template_service
-from celine.sdk.auth import OidcClientCredentialsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +53,7 @@ def _parse_generated_at(value: Any) -> datetime:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             pass
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _auth_headers() -> dict[str, str]:
@@ -117,8 +116,7 @@ async def record_disclosure(
             disclosed_by = binding.organization_did or binding.organization or None
         except (KeyError, ValueError):
             logger.warning(
-                "No dataspace binding for REC %r; the disclosure will not name a "
-                "disclosing agent",
+                "No dataspace binding for REC %r; the disclosure will not name a disclosing agent",
                 rec_slug,
             )
 
@@ -137,9 +135,7 @@ async def record_disclosure(
 
     headers = await _auth_headers()
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{base_url}/admin/disclosure", json=payload, headers=headers
-        )
+        resp = await client.post(f"{base_url}/admin/disclosure", json=payload, headers=headers)
 
     if resp.status_code >= 400:
         # 502 is the partial case and the connector names what it already
@@ -224,7 +220,9 @@ async def check_organization(org_alias: str) -> OwnerCheck:
 
 
 async def _resolve_or_derive_subject(
-    base_url: str, headers: dict[str, str], email: str,
+    base_url: str,
+    headers: dict[str, str],
+    email: str,
 ) -> str:
     """Resolve or derive a subject_id via the identity-registry.
 
@@ -243,9 +241,7 @@ async def _resolve_or_derive_subject(
         sid = resp.json().get("subject_id")
         if sid:
             return sid
-    raise ValueError(
-        f"Subject id derivation failed: identity registry returned {resp.status_code}"
-    )
+    raise ValueError(f"Subject id derivation failed: identity registry returned {resp.status_code}")
 
 
 async def provision_user_identity(
@@ -290,14 +286,14 @@ async def provision_user_identity(
         if not submission.email:
             raise ValueError("Cannot derive subject id: submission has no email")
         subject_id = await _resolve_or_derive_subject(
-            base_url, headers, submission.email,
+            base_url,
+            headers,
+            submission.email,
         )
     elif source in {"submission_ref", "ref"}:
         subject_id = _submission_ref_subject_id(submission)
     else:
-        raise ValueError(
-            "Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref."
-        )
+        raise ValueError("Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref.")
 
     allowed_actions = [
         a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
@@ -329,9 +325,7 @@ async def provision_user_identity(
     did: str | None = evidence.get("subjectDid")
     cred_id: str | None = evidence.get("credentialId")
     if not did or not cred_id:
-        raise ValueError(
-            "Identity-registry response is missing subjectDid or credentialId"
-        )
+        raise ValueError("Identity-registry response is missing subjectDid or credentialId")
 
     submission.dataspace_did = did
     submission.dataspace_vc_id = cred_id
@@ -339,9 +333,7 @@ async def provision_user_identity(
 
     org_alias = binding.organization
     if org_alias:
-        await _register_membership(
-            base_url, headers, did, org_alias, binding.membership_role
-        )
+        await _register_membership(base_url, headers, did, org_alias, binding.membership_role)
 
     if keycloak_user_id and keycloak_realm:
         await _sync_keycloak(
@@ -400,9 +392,7 @@ def _evidence_problems(submission: Submission) -> list[str]:
     return problems
 
 
-async def provision_user_shares(
-    submission: Submission, *, raise_on_error: bool = False
-) -> bool:
+async def provision_user_shares(submission: Submission, *, raise_on_error: bool = False) -> bool:
     """Push the subject's standing data-sharing consent to the connector.
 
     Called at the end of :func:`provision_user_identity` and again by the admin
@@ -523,9 +513,7 @@ async def _register_membership(
     }
 
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{base_url}/admin/memberships", json=body, headers=headers
-        )
+        resp = await client.post(f"{base_url}/admin/memberships", json=body, headers=headers)
 
     if resp.status_code == 409:
         logger.info("Membership for %s in %s already exists", did, org_alias)
@@ -538,9 +526,7 @@ async def _register_membership(
             "deliberately does not create it."
         )
     if resp.status_code >= 400:
-        raise ValueError(
-            f"Membership registration failed ({resp.status_code}): {resp.text}"
-        )
+        raise ValueError(f"Membership registration failed ({resp.status_code}): {resp.text}")
 
 
 async def _delete_membership(
@@ -548,9 +534,7 @@ async def _delete_membership(
 ) -> None:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            await client.delete(
-                f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers
-            )
+            await client.delete(f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers)
     except Exception:
         logger.exception("Failed to delete membership %s/%s during rollback", did, org_alias)
 
@@ -603,16 +587,18 @@ async def _sync_keycloak(
                     # credential, so we accept it but surface it for operators.
                     _warn_if_partial_sync(resp, did)
                     return
-                last_error = ValueError(
-                    f"KC sync failed ({resp.status_code}): {resp.text}"
-                )
+                last_error = ValueError(f"KC sync failed ({resp.status_code}): {resp.text}")
         except httpx.HTTPError as exc:
             last_error = exc
 
         if attempt < _KC_SYNC_MAX_RETRIES:
             logger.warning("KC sync attempt %d/%d failed, retrying", attempt, _KC_SYNC_MAX_RETRIES)
 
-    logger.error("KC sync failed after %d attempts, revoking credential %s", _KC_SYNC_MAX_RETRIES, credential_id)
+    logger.error(
+        "KC sync failed after %d attempts, revoking credential %s",
+        _KC_SYNC_MAX_RETRIES,
+        credential_id,
+    )
     if organization_alias:
         await _delete_membership(base_url, headers, did, organization_alias)
     try:
@@ -658,15 +644,11 @@ async def revoke_user_identity(submission: Submission) -> str:
         await _delete_membership(base_url, headers, did, binding.organization)
 
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.delete(
-            f"{base_url}/admin/credentials/{credential_id}", headers=headers
-        )
+        resp = await client.delete(f"{base_url}/admin/credentials/{credential_id}", headers=headers)
         # 404 is success for this purpose: the credential is gone either way, and
         # refusing to clear the local columns would make the state unrepairable.
         if resp.status_code >= 400 and resp.status_code != 404:
-            raise ValueError(
-                f"Credential revocation failed ({resp.status_code}): {resp.text}"
-            )
+            raise ValueError(f"Credential revocation failed ({resp.status_code}): {resp.text}")
 
     submission.dataspace_vc_id = None
     submission.dataspace_did = None

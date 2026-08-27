@@ -14,16 +14,16 @@ The call is also **named by offer**. A POD list is scoped to one sharing offer;
 the connector resolves it to the datasets it reaches and records one event per
 dataset.
 """
+
 from __future__ import annotations
 
 import json
 
 import httpx
 import pytest
+from test_dataspace_identity import _mock_token_provider, _patch_httpx  # noqa: F401
 
 import celine.onboarding.services.dataspace_identity as di
-
-from test_dataspace_identity import _mock_token_provider, _patch_httpx  # noqa: F401
 
 
 def _ok(payload=None):
@@ -58,8 +58,7 @@ async def test_posts_the_offer_and_lets_the_connector_expand_it(monkeypatch, bin
     monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30001")
     # The disclosing agent is the REC that holds the data, so it comes from that
     # community's manifest binding — not a deployment-wide setting.
-    bind_rec("example", organization="rec-example",
-             organization_did="did:web:rec.example")
+    bind_rec("example", organization="rec-example", organization_did="did:web:rec.example")
     di._token_provider = _mock_token_provider()
 
     captured: dict = {}
@@ -107,19 +106,29 @@ async def test_every_dataset_is_returned_not_just_the_first(monkeypatch, bind_re
     di._token_provider = _mock_token_provider()
     monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30001")
     bind_rec("example", organization="rec-example")
-    _patch_httpx(monkeypatch, _ok({
-        "status": "recorded",
-        "offer_id": "o",
-        "disclosures": [
-            {"dataset_id": "d1", "consent_snapshot_hash": "b" * 64,
-             "granted_party_count": 2},
-            {"dataset_id": "d2", "consent_snapshot_hash": "c" * 64,
-             "granted_party_count": 5},
-        ],
-    }))
+    _patch_httpx(
+        monkeypatch,
+        _ok(
+            {
+                "status": "recorded",
+                "offer_id": "o",
+                "disclosures": [
+                    {
+                        "dataset_id": "d1",
+                        "consent_snapshot_hash": "b" * 64,
+                        "granted_party_count": 2,
+                    },
+                    {
+                        "dataset_id": "d2",
+                        "consent_snapshot_hash": "c" * 64,
+                        "granted_party_count": 5,
+                    },
+                ],
+            }
+        ),
+    )
 
-    disclosures = await di.record_disclosure(offer_id="o", recipient_ref="dso",
-                                             rec_slug="example")
+    disclosures = await di.record_disclosure(offer_id="o", recipient_ref="dso", rec_slug="example")
     assert [d["dataset_id"] for d in disclosures] == ["d1", "d2"]
 
 
@@ -136,8 +145,7 @@ async def test_a_refusal_is_fatal(monkeypatch, bind_rec):
     _patch_httpx(monkeypatch, lambda req: httpx.Response(502, text="partial"))
 
     with pytest.raises(RuntimeError, match="must not be handed over"):
-        await di.record_disclosure(offer_id="o", recipient_ref="dso",
-                                   rec_slug="example")
+        await di.record_disclosure(offer_id="o", recipient_ref="dso", rec_slug="example")
 
 
 async def test_an_empty_expansion_is_refused(monkeypatch, bind_rec):
@@ -145,9 +153,7 @@ async def test_an_empty_expansion_is_refused(monkeypatch, bind_rec):
     di._token_provider = _mock_token_provider()
     monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30001")
     bind_rec("example", organization="rec-example")
-    _patch_httpx(monkeypatch, _ok({"status": "recorded", "offer_id": "o",
-                                   "disclosures": []}))
+    _patch_httpx(monkeypatch, _ok({"status": "recorded", "offer_id": "o", "disclosures": []}))
 
     with pytest.raises(RuntimeError, match="recorded no disclosure"):
-        await di.record_disclosure(offer_id="o", recipient_ref="dso",
-                                   rec_slug="example")
+        await di.record_disclosure(offer_id="o", recipient_ref="dso", rec_slug="example")

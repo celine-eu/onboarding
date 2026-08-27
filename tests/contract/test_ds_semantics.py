@@ -12,6 +12,7 @@ So these call ds and assert behaviour. They are read-only or deliberately
 invalid: nothing here creates a participant, issues a credential or records a
 disclosure, because a check that mutates a shared dev stack gets switched off.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -33,6 +34,7 @@ def _ds_is_up(specs):
     one signal and say the same thing.
     """
 
+
 # Seeded by the ds dev fixtures: an owner whose id and alias differ, which is the
 # whole point — the two are indistinguishable on any deployment where they match.
 OWNER_ID = "example-org"
@@ -48,8 +50,9 @@ def test_owners_resolve_accepts_an_alias(auth):
     A manifest's `organization:` holds an alias. If this ever 404s again, this
     service refuses to start on a deployment that is configured correctly.
     """
-    r = httpx.get(f"{IR_URL}/owners/resolve", params={"alias": OWNER_ALIAS},
-                  headers=auth, timeout=10)
+    r = httpx.get(
+        f"{IR_URL}/owners/resolve", params={"alias": OWNER_ALIAS}, headers=auth, timeout=10
+    )
     assert r.status_code == 200, (
         f"/owners/resolve no longer resolves the alias {OWNER_ALIAS!r} "
         f"({r.status_code}); check_organization would read that as 'no such "
@@ -64,8 +67,9 @@ def test_owners_resolve_reports_a_lifecycle_status(auth):
     An absent status is treated as "unknown, carry on" by design — which means
     ds dropping the field would silently disable the check rather than break it.
     """
-    r = httpx.get(f"{IR_URL}/owners/resolve", params={"alias": OWNER_ALIAS},
-                  headers=auth, timeout=10)
+    r = httpx.get(
+        f"{IR_URL}/owners/resolve", params={"alias": OWNER_ALIAS}, headers=auth, timeout=10
+    )
     assert r.status_code == 200
     assert r.json().get("status"), (
         "no `status` on the resolved owner — the suspended/revoked check in "

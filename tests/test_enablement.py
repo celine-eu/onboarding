@@ -24,7 +24,7 @@ from celine.onboarding.services import (
     keycloak_identity,
     rec_registry,
 )
-from celine.onboarding.services.enablement import EnablementFailed
+from celine.onboarding.services.enablement import EnablementError
 from celine.onboarding.services.keycloak_identity import KeycloakProvisionResult
 
 
@@ -174,13 +174,13 @@ class TestFailClosed:
         monkeypatch.setattr(rec_registry, "register_member", _boom)
 
     async def test_raises_so_approval_does_not_complete(self, db, submission, registry_fails):
-        with pytest.raises(EnablementFailed) as exc:
+        with pytest.raises(EnablementError) as exc:
             await enablement.enable(db, submission)
         assert exc.value.step == EnablementStep.REC_REGISTRY_MEMBER
         assert "registry said no" in str(exc.value)
 
     async def test_the_failure_is_recorded_not_just_raised(self, db, submission, registry_fails):
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await enablement.enable(db, submission)
 
         rows = await enablement.load_steps(db, submission.id)
@@ -196,7 +196,7 @@ class TestFailClosed:
         next attempt would create a second one. Keeping it is what makes the
         retry idempotent.
         """
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await enablement.enable(db, submission)
 
         rows = await enablement.load_steps(db, submission.id)
@@ -204,7 +204,7 @@ class TestFailClosed:
         assert rows[EnablementStep.KEYCLOAK_USER].external_ref == "kc-123"
 
     async def test_later_steps_do_not_run(self, db, submission, registry_fails, happy_path):
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await enablement.enable(db, submission)
 
         assert "dataspace_identity" not in [c.split("(")[0] for c in happy_path]
@@ -212,7 +212,7 @@ class TestFailClosed:
         assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.PENDING
 
     async def test_state_is_failed(self, db, submission, registry_fails):
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await enablement.enable(db, submission)
         rows = await enablement.load_steps(db, submission.id)
         assert enablement.state_of(rows) == "failed"
@@ -284,7 +284,7 @@ class TestRetry:
             raise ValueError("registry said no")
 
         monkeypatch.setattr(rec_registry, "register_member", _boom)
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await enablement.enable(db, submission)
         happy_path.clear()
         return happy_path
@@ -511,7 +511,7 @@ class TestApprovalRecordsTheAttempt:
 
         from celine.onboarding.services.audit_service import Actor
 
-        with pytest.raises(EnablementFailed):
+        with pytest.raises(EnablementError):
             await review.transition(
                 db, submission, SubmissionStatus.APPROVED, actor=Actor.system("test")
             )

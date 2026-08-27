@@ -3,8 +3,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, valid_rec_slug
+from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
     PhoneConfirmRequest,
@@ -13,7 +13,7 @@ from celine.onboarding.models.schemas import (
 )
 from celine.onboarding.services import otp as otp_service
 from celine.onboarding.services.sms import SmsDeliveryError
-from celine.onboarding.validators.phone import InvalidPhoneNumber, normalize_mobile
+from celine.onboarding.validators.phone import InvalidPhoneNumberError, normalize_mobile
 
 router = APIRouter(prefix="/submissions", tags=["phone-verification"])
 
@@ -22,7 +22,7 @@ def _resolve_phone(raw: str | None, submission) -> str:
     candidate = (raw or "").strip() or (submission.phone or "")
     try:
         return normalize_mobile(candidate)
-    except InvalidPhoneNumber as exc:
+    except InvalidPhoneNumberError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
@@ -38,17 +38,15 @@ async def verify_phone(
     """Send an OTP to the submission's phone number."""
     from celine.onboarding.api.submissions import _get_live_submission
 
-    submission = await _get_live_submission(
-        submission_id, request, rec_slug=rec_slug, db=db
-    )
+    submission = await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
 
     e164 = _resolve_phone(data.phone, submission)
 
     try:
         await otp_service.send_otp(db, submission.id, e164)
-    except otp_service.Locked as exc:
+    except otp_service.LockedError as exc:
         raise HTTPException(429, str(exc)) from exc
-    except otp_service.RateLimited as exc:
+    except otp_service.RateLimitedError as exc:
         raise HTTPException(429, str(exc)) from exc
     except SmsDeliveryError as exc:
         # Do not leak provider internals to the client.
@@ -69,19 +67,17 @@ async def confirm_phone(
     """Confirm the OTP and mark the submission's phone as verified."""
     from celine.onboarding.api.submissions import _get_live_submission
 
-    submission = await _get_live_submission(
-        submission_id, request, rec_slug=rec_slug, db=db
-    )
+    submission = await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
 
     e164 = _resolve_phone(data.phone, submission)
 
     try:
         verified = await otp_service.verify_otp(db, submission.id, e164, data.code)
-    except otp_service.Locked as exc:
+    except otp_service.LockedError as exc:
         raise HTTPException(429, str(exc)) from exc
-    except otp_service.Expired as exc:
+    except otp_service.ExpiredError as exc:
         raise HTTPException(410, str(exc)) from exc
-    except otp_service.InvalidCode as exc:
+    except otp_service.InvalidCodeError as exc:
         raise HTTPException(400, str(exc)) from exc
 
     # Persist the normalized number so the verified value is the stored value.

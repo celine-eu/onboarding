@@ -1,4 +1,5 @@
 """Block B — the wizard's data-sharing offer resolution (§3.4 backend)."""
+
 from __future__ import annotations
 
 import httpx
@@ -48,14 +49,15 @@ async def test_no_connector_configured_raises(monkeypatch):
     monkeypatch.setattr(ts.settings, "ds_ns_url", "")
     monkeypatch.setattr(ts.settings, "ds_connector_url", "")
     monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
-    with pytest.raises(ts.SharingOffersUnavailable):
+    with pytest.raises(ts.SharingOffersUnavailableError):
         await ts.get_sharing_offers("rec")
 
 
 async def test_allow_list_filters(monkeypatch):
     monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
     monkeypatch.setattr(
-        ts, "load_manifest",
+        ts,
+        "load_manifest",
         lambda slug: {"consent": {"data_sharing": {"offers": ["consent-a"]}}},
     )
     _serve_offers(monkeypatch)
@@ -66,7 +68,8 @@ async def test_allow_list_filters(monkeypatch):
 async def test_default_is_consent_based_only(monkeypatch):
     monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
     monkeypatch.setattr(
-        ts, "load_manifest",
+        ts,
+        "load_manifest",
         lambda slug: {"consent": {"data_sharing": {}}},  # no allow-list
     )
     _serve_offers(monkeypatch)
@@ -89,5 +92,5 @@ async def test_connector_unreachable_raises_rather_than_falling_back(monkeypatch
         raise httpx.ConnectError("down")
 
     _patch_httpx(monkeypatch, boom)
-    with pytest.raises(ts.SharingOffersUnavailable):
+    with pytest.raises(ts.SharingOffersUnavailableError):
         await ts.get_sharing_offers("rec")

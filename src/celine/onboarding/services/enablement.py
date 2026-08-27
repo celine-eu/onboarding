@@ -45,7 +45,7 @@ from celine.onboarding.models.submission import Submission
 logger = logging.getLogger(__name__)
 
 
-class EnablementFailed(RuntimeError):
+class EnablementError(RuntimeError):
     """A fail-closed step did not succeed, so the person is not enabled."""
 
     def __init__(self, step: EnablementStep, message: str) -> None:
@@ -315,7 +315,7 @@ async def enable(
 ) -> dict[str, SubmissionEnablementStep]:
     """Run the pipeline, or one step of it.
 
-    Raises `EnablementFailed` when a fail-closed step does not succeed, having
+    Raises `EnablementError` when a fail-closed step does not succeed, having
     first committed everything that did. A step already `succeeded` or `skipped`
     is not re-run: retry means "finish what is unfinished", not "do it all again".
     """
@@ -332,7 +332,7 @@ async def enable(
 
         row = await _run_one(db, ctx, spec)
         if row.status == EnablementStatus.FAILED and spec.fail_closed:
-            raise EnablementFailed(
+            raise EnablementError(
                 EnablementStep(spec.step),
                 f"{spec.label} could not be provisioned: {row.last_error}",
             )
@@ -354,7 +354,7 @@ async def retry(
 
     try:
         return await enable(db, submission, only=step)
-    except EnablementFailed:
+    except EnablementError:
         return await load_steps(db, submission.id)
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 from unittest.mock import MagicMock
 
@@ -117,9 +116,7 @@ def operator_token(issue_token):
             "sub": "operator-sub",
             "email": "operator@example.org",
             "preferred_username": "operator",
-            "organization": {
-                organization: {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
-            },
+            "organization": {organization: {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}},
             **extra,
         }
         if realm:

@@ -1,10 +1,9 @@
 import io
 import zipfile
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends
 
 from celine.onboarding.models.database import get_db
 from celine.onboarding.services.crypto import validate_download_token
@@ -27,8 +26,8 @@ async def download_submission_package(
     if submission is None:
         raise HTTPException(404, "Submission not found")
 
-    from celine.onboarding.services.pdf_service import generate_submission_pdf
     from celine.onboarding.services.document_service import read_file
+    from celine.onboarding.services.pdf_service import generate_submission_pdf
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

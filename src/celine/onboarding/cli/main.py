@@ -247,13 +247,17 @@ def check_offers(
     async def _run():
         async with async_session() as db:
             rows = (
-                await db.execute(
-                    select(Submission)
-                    .where(Submission.rec_slug == rec)
-                    .where(Submission.data_sharing_consent.is_(True))
-                    .order_by(Submission.created_at.asc())
+                (
+                    await db.execute(
+                        select(Submission)
+                        .where(Submission.rec_slug == rec)
+                        .where(Submission.data_sharing_consent.is_(True))
+                        .order_by(Submission.created_at.asc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             bad = 0
             for sub in rows:

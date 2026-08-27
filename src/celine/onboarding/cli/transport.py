@@ -288,8 +288,8 @@ class LocalTransport:
     async def transition(self, rec, submission_id, target, reason):
         from celine.onboarding.models.submission import SubmissionStatus
         from celine.onboarding.services import review
-        from celine.onboarding.services.enablement import EnablementFailed
-        from celine.onboarding.workflows.engine import InvalidTransition
+        from celine.onboarding.services.enablement import EnablementError
+        from celine.onboarding.workflows.engine import InvalidTransitionError
 
         async with await self._session() as db:
             submission = await self._load(db, rec, submission_id)
@@ -302,9 +302,9 @@ class LocalTransport:
                     reason=reason,
                     rec_slug=rec,
                 )
-            except EnablementFailed as exc:
+            except EnablementError as exc:
                 raise CliError(str(exc)) from exc
-            except (ValueError, InvalidTransition) as exc:
+            except (ValueError, InvalidTransitionError) as exc:
                 raise CliError(str(exc)) from exc
             return await self._serialise(result)
 

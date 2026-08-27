@@ -7,16 +7,17 @@ records of the same consent start to disagree.
 The file is a snapshot, so the re-export cadence is the revocation latency. It
 says so in its own header.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from celine.onboarding.outputs import csv_export
 
-GENERATED_AT = datetime(2026, 7, 27, 9, 0, tzinfo=timezone.utc)
+GENERATED_AT = datetime(2026, 7, 27, 9, 0, tzinfo=UTC)
 OFFER = "household-energy-flexibility"
 
 
@@ -65,11 +66,13 @@ def _disclosure_recorded(monkeypatch):
     import celine.onboarding.services.dataspace_identity as di
 
     async def _ok(**kw):
-        return [{
-            "dataset_id": "datasets.silver.meters_15m",
-            "consent_snapshot_hash": "a" * 64,
-            "granted_party_count": 1,
-        }]
+        return [
+            {
+                "dataset_id": "datasets.silver.meters_15m",
+                "consent_snapshot_hash": "a" * 64,
+                "granted_party_count": 1,
+            }
+        ]
 
     monkeypatch.setattr(di, "record_disclosure", _ok)
 
@@ -140,16 +143,17 @@ async def test_records_the_disclosure(tmp_path, monkeypatch):
 
     async def _capture(**kw):
         captured.update(kw)
-        return [{
-            "dataset_id": "datasets.silver.meters_15m",
-            "consent_snapshot_hash": "a" * 64,
-            "granted_party_count": 1,
-        }]
+        return [
+            {
+                "dataset_id": "datasets.silver.meters_15m",
+                "consent_snapshot_hash": "a" * 64,
+                "granted_party_count": 1,
+            }
+        ]
 
     monkeypatch.setattr(di, "record_disclosure", _capture)
 
-    await _export(tmp_path, [_sub()], purpose=["FlexibilityResearch"],
-                  agreement_ref="dpa-1.0")
+    await _export(tmp_path, [_sub()], purpose=["FlexibilityResearch"], agreement_ref="dpa-1.0")
 
     assert captured["recipient_ref"] == "dso-org"
     assert captured["columns"] == ["pod_code"]

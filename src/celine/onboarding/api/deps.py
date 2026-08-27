@@ -32,9 +32,7 @@ async def require_session(
     if not token:
         raise HTTPException(401, "Session token required")
 
-    result = await db.execute(
-        select(Submission).where(Submission.session_token == token)
-    )
+    result = await db.execute(select(Submission).where(Submission.session_token == token))
     submission = result.scalar_one_or_none()
     if not submission:
         raise HTTPException(403, "Invalid session token")

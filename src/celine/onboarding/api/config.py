@@ -23,7 +23,7 @@ async def get_sharing_offers(rec_slug: str = Depends(valid_rec_slug)):
     """
     try:
         return await template_service.get_sharing_offers(rec_slug)
-    except template_service.SharingOffersUnavailable as exc:
+    except template_service.SharingOffersUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
 
 

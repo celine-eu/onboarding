@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -154,7 +154,7 @@ async def test_generated_at_parsed(monkeypatch, submission, _enable_vc):
 
     await di.provision_user_identity(submission)
 
-    assert submission.dataspace_vc_issued_at == datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    assert submission.dataspace_vc_issued_at == datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
 
 
 # ── error handling ────────────────────────────────────────────────
@@ -236,9 +236,7 @@ def _membership_handler(calls, *, membership_status=201):
     return handler
 
 
-async def test_membership_registered_after_credential(
-    monkeypatch, submission, _enable_vc
-):
+async def test_membership_registered_after_credential(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
     calls = []
     _patch_httpx(monkeypatch, _membership_handler(calls))
@@ -258,9 +256,7 @@ async def test_membership_registered_after_credential(
     }
 
 
-async def test_organization_is_never_created(
-    monkeypatch, submission, _enable_vc
-):
+async def test_organization_is_never_created(monkeypatch, submission, _enable_vc):
     """Onboarding must not mint dataspace trust state.
 
     An owner created from an approval carries no verification, no agreement and
@@ -277,9 +273,7 @@ async def test_organization_is_never_created(
     assert not any("admin/owners" in url for _, url, _ in calls)
 
 
-async def test_missing_organization_is_an_actionable_error(
-    monkeypatch, submission, _enable_vc
-):
+async def test_missing_organization_is_an_actionable_error(monkeypatch, submission, _enable_vc):
     """A 404 on membership means the org was never seeded — say so."""
     di._token_provider = _mock_token_provider()
     calls = []
@@ -289,9 +283,7 @@ async def test_missing_organization_is_an_actionable_error(
         await di.provision_user_identity(submission)
 
 
-async def test_membership_conflict_is_success(
-    monkeypatch, submission, _enable_vc
-):
+async def test_membership_conflict_is_success(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
     calls = []
     _patch_httpx(monkeypatch, _membership_handler(calls, membership_status=409))
@@ -301,9 +293,7 @@ async def test_membership_conflict_is_success(
     assert submission.dataspace_did == CREDENTIAL_RESPONSE["subjectDid"]
 
 
-async def test_membership_failure_raises(
-    monkeypatch, submission, _enable_vc
-):
+async def test_membership_failure_raises(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
     calls = []
     _patch_httpx(monkeypatch, _membership_handler(calls, membership_status=500))
@@ -346,9 +336,7 @@ async def test_binding_is_per_rec(monkeypatch, submission, _enable_vc, bind_rec)
     assert seen == ["org-a", "org-b"]
 
 
-async def test_membership_deleted_on_kc_sync_failure(
-    monkeypatch, submission, _enable_vc
-):
+async def test_membership_deleted_on_kc_sync_failure(monkeypatch, submission, _enable_vc):
     di._token_provider = _mock_token_provider()
     calls = []
 
@@ -413,9 +401,7 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
     assert "keycloak/sync" in calls[3]
 
 
-async def test_kc_sync_partial_is_accepted_and_warned(
-    monkeypatch, submission, _enable_vc, caplog
-):
+async def test_kc_sync_partial_is_accepted_and_warned(monkeypatch, submission, _enable_vc, caplog):
     """A 200 'partial' sync must succeed (no rollback) but log a warning."""
     di._token_provider = _mock_token_provider()
     calls = []

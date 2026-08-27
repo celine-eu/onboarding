@@ -33,6 +33,7 @@ async def save_document(
         raise ValueError(f"File too large: {size} bytes (max {max_size})")
 
     from celine.onboarding.extractors.openai_extractor import _detect_mime
+
     detected = _detect_mime(content)
     mime = detected if detected != "application/octet-stream" else (file.content_type or "")
     if mime not in ALLOWED_MIME_TYPES:

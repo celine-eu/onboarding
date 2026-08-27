@@ -7,13 +7,14 @@ Security model (Block 5.3):
   OTP_LOCKOUT_SECONDS
 - codes expire after OTP_TTL_SECONDS
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,19 +30,19 @@ class OtpError(RuntimeError):
     """Base for OTP failures that map to a 4xx."""
 
 
-class RateLimited(OtpError):
+class RateLimitedError(OtpError):
     pass
 
 
-class Locked(OtpError):
+class LockedError(OtpError):
     pass
 
 
-class InvalidCode(OtpError):
+class InvalidCodeError(OtpError):
     pass
 
 
-class Expired(OtpError):
+class ExpiredError(OtpError):
     pass
 
 
@@ -72,12 +73,12 @@ def generate_code() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _as_aware(value: datetime) -> datetime:
     """Postgres returns tz-aware datetimes; be defensive for naive ones."""
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 async def _latest_otp(db: AsyncSession, phone_hash: str) -> PhoneOtp | None:
@@ -99,9 +100,7 @@ async def _assert_not_locked(db: AsyncSession, phone_hash: str) -> None:
 
     unlock_at = _as_aware(latest.created_at) + timedelta(seconds=settings.otp_lockout_seconds)
     if _now() < unlock_at:
-        raise Locked(
-            "Too many incorrect codes. Try again later."
-        )
+        raise LockedError("Too many incorrect codes. Try again later.")
 
 
 async def _assert_send_quota(db: AsyncSession, phone_hash: str) -> None:
@@ -112,11 +111,11 @@ async def _assert_send_quota(db: AsyncSession, phone_hash: str) -> None:
         .where(PhoneOtp.phone_hash == phone_hash, PhoneOtp.created_at >= window_start)
     )
     if (result.scalar_one() or 0) >= settings.otp_max_sends_per_hour:
-        raise RateLimited("Too many codes requested for this number. Try again later.")
+        raise RateLimitedError("Too many codes requested for this number. Try again later.")
 
 
 async def send_otp(db: AsyncSession, submission_id, e164: str) -> PhoneOtp:
-    """Issue and deliver a new OTP. Raises RateLimited / Locked / SmsDeliveryError."""
+    """Issue and deliver a new OTP. Raises RateLimitedError / LockedError / SmsDeliveryError."""
     phone_hash = hash_phone(e164)
 
     await _assert_not_locked(db, phone_hash)
@@ -144,24 +143,24 @@ async def send_otp(db: AsyncSession, submission_id, e164: str) -> PhoneOtp:
 async def verify_otp(db: AsyncSession, submission_id, e164: str, code: str) -> PhoneOtp:
     """Check `code` against the newest outstanding OTP for `e164`.
 
-    Raises Locked / Expired / InvalidCode. Returns the verified row on success.
+    Raises LockedError / ExpiredError / InvalidCodeError. Returns the verified row on success.
     """
     phone_hash = hash_phone(e164)
     otp = await _latest_otp(db, phone_hash)
 
     if otp is None:
-        raise InvalidCode("No code has been requested for this number")
+        raise InvalidCodeError("No code has been requested for this number")
     if otp.verified_at is not None:
-        raise InvalidCode("This code has already been used")
+        raise InvalidCodeError("This code has already been used")
 
     if otp.attempts >= settings.otp_max_attempts:
         unlock_at = _as_aware(otp.created_at) + timedelta(seconds=settings.otp_lockout_seconds)
         if _now() < unlock_at:
-            raise Locked("Too many incorrect codes. Try again later.")
-        raise InvalidCode("No code has been requested for this number")
+            raise LockedError("Too many incorrect codes. Try again later.")
+        raise InvalidCodeError("No code has been requested for this number")
 
     if _now() > _as_aware(otp.expires_at):
-        raise Expired("This code has expired. Request a new one.")
+        raise ExpiredError("This code has expired. Request a new one.")
 
     # Count the attempt before comparing, and commit it even on failure, so a
     # crash or disconnect mid-verify cannot be used to retry without cost.
@@ -176,7 +175,7 @@ async def verify_otp(db: AsyncSession, submission_id, e164: str, code: str) -> P
             submission_id,
             remaining,
         )
-        raise InvalidCode(f"Incorrect code. {remaining} attempt(s) remaining.")
+        raise InvalidCodeError(f"Incorrect code. {remaining} attempt(s) remaining.")
 
     otp.verified_at = _now()
     await db.commit()

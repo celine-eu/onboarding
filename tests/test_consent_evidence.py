@@ -10,10 +10,11 @@ what somebody was shown.
 So the check belongs at capture, with a pre-flight before provisioning and an
 explanation on the review screen.
 """
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -164,7 +165,7 @@ async def test_provisioning_raises_on_retry(monkeypatch):
 
 
 def _admin_read(**overrides):
-    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     fields = dict(
         id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
         ref="20260713-abcd",
@@ -231,6 +232,6 @@ def test_review_is_quiet_when_provisioned():
 
 
 def test_review_is_quiet_without_a_sharing_consent():
-    assert _admin_read(
-        data_sharing_consent=False, share_provisioned=False
-    ).data_sharing_issues == []
+    assert (
+        _admin_read(data_sharing_consent=False, share_provisioned=False).data_sharing_issues == []
+    )

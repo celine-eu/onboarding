@@ -99,24 +99,23 @@ def find_recs_for_location(lat: float, lng: float) -> list[dict]:
         result = checker.check(lat, lng)
         if result.eligible:
             manifest = template_service.load_manifest(slug)
-            results.append({
-                "slug": slug,
-                "name": manifest.get("name", slug),
-                "branding": manifest.get("branding", {}),
-                "locale": manifest.get("locale", "it"),
-                "matched_rule": result.matched_rule,
-                "matched_value": result.matched_value,
-            })
+            results.append(
+                {
+                    "slug": slug,
+                    "name": manifest.get("name", slug),
+                    "branding": manifest.get("branding", {}),
+                    "locale": manifest.get("locale", "it"),
+                    "matched_rule": result.matched_rule,
+                    "matched_value": result.matched_value,
+                }
+            )
     return results
 
 
 def _parse_address(addr: dict) -> dict:
     return {
         "municipality": (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("village")
-            or addr.get("municipality")
+            addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality")
         ),
         "postal_code": addr.get("postcode"),
         "county": addr.get("county"),

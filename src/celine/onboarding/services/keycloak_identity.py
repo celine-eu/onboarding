@@ -30,7 +30,9 @@ def _display_name(value: str | None) -> str | None:
 def _base_url() -> str:
     base_url = settings.dataspace_keycloak_base_url.strip().rstrip("/")
     if not base_url:
-        raise ValueError("DATASPACE_KEYCLOAK_BASE_URL is required when Keycloak provisioning is enabled")
+        raise ValueError(
+            "DATASPACE_KEYCLOAK_BASE_URL is required when Keycloak provisioning is enabled"
+        )
     return base_url
 
 

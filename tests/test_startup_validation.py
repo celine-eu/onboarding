@@ -7,6 +7,7 @@ surface at boot, where an operator is looking — not mid-review.
 Dataspace integration stays optional per community: a REC with no `dataspace`
 block runs the full wizard and provisions no identity. That is supported.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -34,9 +35,7 @@ def _registry_says(monkeypatch):
 
     def _set(answer, status="verified"):
         async def _check(alias):
-            return di.OwnerCheck(
-                found=answer, status=status if answer else None
-            )
+            return di.OwnerCheck(found=answer, status=status if answer else None)
 
         monkeypatch.setattr(di, "check_organization", _check)
 
@@ -49,9 +48,7 @@ async def test_rec_without_a_block_starts(bind_rec, monkeypatch):
     await app_main._validate_dataspace_config()
 
 
-async def test_missing_organization_refuses_to_start(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_missing_organization_refuses_to_start(bind_rec, monkeypatch, _registry_says):
     bind_rec("rec-a", organization="org-a")
     monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     _registry_says(False)
@@ -60,9 +57,7 @@ async def test_missing_organization_refuses_to_start(
         await app_main._validate_dataspace_config()
 
 
-async def test_unreachable_registry_does_not_block_boot(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_unreachable_registry_does_not_block_boot(bind_rec, monkeypatch, _registry_says):
     """A transient outage elsewhere must not become an outage here.
 
     "No such owner" is a configuration error worth refusing on; "I could not
@@ -84,9 +79,7 @@ async def test_known_organization_starts(bind_rec, monkeypatch, _registry_says):
     await app_main._validate_dataspace_config()
 
 
-async def test_binding_ignored_when_vc_disabled(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_binding_ignored_when_vc_disabled(bind_rec, monkeypatch, _registry_says):
     bind_rec("rec-a", organization="org-a")
     monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
     _registry_says(False)
@@ -97,9 +90,7 @@ async def test_binding_ignored_when_vc_disabled(
 # ── the offers vocabulary ─────────────────────────────────────────────────────
 
 
-async def test_data_sharing_without_a_vocabulary_refuses_to_start(
-    bind_rec, monkeypatch
-):
+async def test_data_sharing_without_a_vocabulary_refuses_to_start(bind_rec, monkeypatch):
     """Otherwise the sharing step vanishes and nobody is ever asked."""
     manifest = bind_rec("rec-a")
     manifest["consent"] = {"data_sharing": {"required": False}}
@@ -110,9 +101,7 @@ async def test_data_sharing_without_a_vocabulary_refuses_to_start(
         await app_main._validate_dataspace_config()
 
 
-async def test_data_sharing_with_a_vocabulary_starts(
-    bind_rec, monkeypatch, _vocab_configured
-):
+async def test_data_sharing_with_a_vocabulary_starts(bind_rec, monkeypatch, _vocab_configured):
     manifest = bind_rec("rec-a")
     manifest["consent"] = {"data_sharing": {"required": False}}
     monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
@@ -181,9 +170,7 @@ async def test_malformed_organization_refuses_to_start(seed_rec, monkeypatch):
         await app_main._validate_dataspace_config()
 
 
-async def test_rec_without_an_organization_warns_but_starts(
-    seed_rec, monkeypatch, caplog
-):
+async def test_rec_without_an_organization_warns_but_starts(seed_rec, monkeypatch, caplog):
     """Not fatal: platform operators with a realm group can still run it.
 
     But per-community delegation is impossible, and being told at boot beats
@@ -215,9 +202,7 @@ async def test_rec_with_an_organization_does_not_warn(seed_rec, monkeypatch, cap
 
 @pytest.fixture()
 def _oidc_configured(monkeypatch):
-    monkeypatch.setattr(
-        app_main.settings, "oidc_base_url", "http://keycloak.test/realms/celine"
-    )
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "http://keycloak.test/realms/celine")
     monkeypatch.setattr(app_main.settings, "oidc_jwks_uri", "")
     monkeypatch.setattr(app_main.settings, "removed_admin_token", "")
     monkeypatch.setattr(app_main.settings, "allow_permissive_policy", False)
@@ -298,9 +283,7 @@ def test_ordinary_slugs_start_fine(seed_rec, _oidc_configured):
     app_main._validate_admin_config()
 
 
-async def test_a_suspended_organization_refuses_to_start(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_a_suspended_organization_refuses_to_start(bind_rec, monkeypatch, _registry_says):
     """Existing is not admissible.
 
     The registry gained verified/suspended/revoked in August and this check only
@@ -315,9 +298,7 @@ async def test_a_suspended_organization_refuses_to_start(
         await app_main._validate_dataspace_config()
 
 
-async def test_a_revoked_organization_refuses_to_start(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_a_revoked_organization_refuses_to_start(bind_rec, monkeypatch, _registry_says):
     bind_rec("rec-a", organization="org-a")
     monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
     _registry_says(True, status="revoked")
@@ -334,9 +315,7 @@ async def test_a_verified_organization_starts(bind_rec, monkeypatch, _registry_s
     await app_main._validate_dataspace_config()
 
 
-async def test_a_registry_reporting_no_status_still_starts(
-    bind_rec, monkeypatch, _registry_says
-):
+async def test_a_registry_reporting_no_status_still_starts(bind_rec, monkeypatch, _registry_says):
     """An absent field must not read as "not verified".
 
     A registry that predates the lifecycle, or a body that could not be parsed,

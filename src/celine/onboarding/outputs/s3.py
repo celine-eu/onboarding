@@ -84,9 +84,7 @@ class S3Backend:
         pdf_bytes: bytes,
         documents: list[tuple[str, bytes, str]],
     ) -> StorageResult:
-        return await asyncio.to_thread(
-            self._sync_upload, ref, pdf_bytes, documents
-        )
+        return await asyncio.to_thread(self._sync_upload, ref, pdf_bytes, documents)
 
     def _sync_upload(
         self,

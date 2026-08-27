@@ -5,6 +5,7 @@ word, and the connector only disagreed days later, at provisioning: a 409 for a
 contract-based offer, a 422 for an unknown one. Both surfaced as
 ``share_provisioned = false``, which reads as *this member chose not to share*.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -38,9 +39,7 @@ def offers(monkeypatch):
     monkeypatch.setattr(
         ts,
         "load_manifest",
-        lambda slug: {
-            "consent": {"data_sharing": {"offers": [o["id"] for o in _OFFERS]}}
-        },
+        lambda slug: {"consent": {"data_sharing": {"offers": [o["id"] for o in _OFFERS]}}},
     )
     transport = httpx.MockTransport(lambda req: httpx.Response(200, json=_OFFERS))
 
@@ -84,9 +83,7 @@ async def test_a_contract_based_offer_is_refused(offers):
 async def test_the_message_names_every_bad_id_not_just_the_first(offers):
     """An operator retyping one id at a time is how a two-line fix takes a day."""
     with pytest.raises(ValueError) as exc:
-        await submission_service._validate_sharing_offer_ids(
-            "example", ["nope-a", "nope-b"]
-        )
+        await submission_service._validate_sharing_offer_ids("example", ["nope-a", "nope-b"])
     assert "nope-a" in str(exc.value)
     assert "nope-b" in str(exc.value)
 
@@ -99,10 +96,8 @@ async def test_an_unreachable_vocabulary_fails_closed(monkeypatch):
     """
     monkeypatch.setattr(ts.settings, "ds_ns_url", "")
     monkeypatch.setattr(ts.settings, "ds_connector_url", "")
-    monkeypatch.setattr(
-        ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}}
-    )
-    with pytest.raises(ts.SharingOffersUnavailable):
+    monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
+    with pytest.raises(ts.SharingOffersUnavailableError):
         await submission_service._validate_sharing_offer_ids("example", ["anything"])
 
 

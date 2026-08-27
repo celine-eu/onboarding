@@ -38,5 +38,3 @@ async def find_recs_by_address(req: FindByAddressRequest):
 # `POST /recs/reload` moved to `POST /api/admin/recs/reload`. It was protected by
 # the shared admin token, which no longer exists; every authenticated operation
 # now lives under the one prefix the ingress guards.
-
-

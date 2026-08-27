@@ -81,5 +81,7 @@ async def download_consent_document(slug: str, rec_slug: str = Depends(valid_rec
         doc_path,
         media_type=meta.get("mime_type", "application/pdf"),
         filename=meta.get("filename", f"{slug}.pdf"),
-        headers={"Content-Disposition": f"inline; filename=\"{meta.get('filename', slug + '.pdf')}\""},
+        headers={
+            "Content-Disposition": f'inline; filename="{meta.get("filename", slug + ".pdf")}"'
+        },
     )

@@ -10,14 +10,14 @@ TRANSITIONS: dict[SubmissionStatus, set[SubmissionStatus]] = {
 }
 
 
-class InvalidTransition(ValueError):
+class InvalidTransitionError(ValueError):
     pass
 
 
 def validate_transition(current: SubmissionStatus, target: SubmissionStatus) -> None:
     allowed = TRANSITIONS.get(current, set())
     if target not in allowed:
-        raise InvalidTransition(
+        raise InvalidTransitionError(
             f"Cannot transition from {current.value} to {target.value}. "
             f"Allowed: {', '.join(s.value for s in allowed) or 'none'}"
         )

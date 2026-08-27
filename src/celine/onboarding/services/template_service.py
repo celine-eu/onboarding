@@ -24,11 +24,12 @@ SAFE_ORG_ALIAS = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
 async def load_recs_from_db() -> None:
     global _cache_loaded_at
     from sqlalchemy import select
+
     from celine.onboarding.models.database import async_session
     from celine.onboarding.models.rec import Rec
 
     async with async_session() as db:
-        result = await db.execute(select(Rec).where(Rec.active == True))
+        result = await db.execute(select(Rec).where(Rec.active.is_(True)))
         recs = result.scalars().all()
         _cache.clear()
         for rec in recs:
@@ -50,12 +51,14 @@ def get_all_recs_summary() -> list[dict[str, Any]]:
     for slug, manifest in _cache.items():
         if not manifest:
             continue
-        result.append({
-            "slug": slug,
-            "name": manifest.get("name", slug),
-            "locale": manifest.get("locale", "it"),
-            "branding": manifest.get("branding", {}),
-        })
+        result.append(
+            {
+                "slug": slug,
+                "name": manifest.get("name", slug),
+                "locale": manifest.get("locale", "it"),
+                "branding": manifest.get("branding", {}),
+            }
+        )
     return result
 
 
@@ -165,7 +168,7 @@ def get_config(rec_slug: str) -> dict[str, Any]:
     }
 
 
-class SharingOffersUnavailable(RuntimeError):
+class SharingOffersUnavailableError(RuntimeError):
     """The published offers vocabulary could not be read.
 
     Distinct from "this community offers nothing to share", which is an empty
@@ -248,9 +251,7 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
     return DataspaceBinding(
         organization=str(block["organization"]).strip(),
         organization_did=str(block.get("organization_did", "") or "").strip(),
-        linked_participant_did=str(
-            block.get("linked_participant_did", "") or ""
-        ).strip(),
+        linked_participant_did=str(block.get("linked_participant_did", "") or "").strip(),
         membership_role=str(block.get("membership_role") or "member").strip(),
     )
 
@@ -335,8 +336,7 @@ def validate_rec_registry_block(block: Any, *, where: str) -> None:
             isinstance(m, str) for m in municipalities
         ):
             raise ValueError(
-                f"{where}: 'rec_registry.areas.{area_key}' must be a list of "
-                "municipality names"
+                f"{where}: 'rec_registry.areas.{area_key}' must be a list of municipality names"
             )
 
     # A municipality in two areas resolves to whichever is declared first, which
@@ -364,9 +364,7 @@ def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
     return RecRegistryBinding(
         community=str(block["community"]).strip(),
         default_area=str(block["default_area"]).strip(),
-        areas={
-            str(k): [str(m) for m in v] for k, v in (block.get("areas") or {}).items()
-        },
+        areas={str(k): [str(m) for m in v] for k, v in (block.get("areas") or {}).items()},
     )
 
 
@@ -398,7 +396,7 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
             "not be shown",
             rec_slug,
         )
-        raise SharingOffersUnavailable("No sharing-offers vocabulary is configured")
+        raise SharingOffersUnavailableError("No sharing-offers vocabulary is configured")
 
     allow = data_sharing.get("offers")  # None → all consent-based
     try:
@@ -419,7 +417,7 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
             base,
             exc,
         )
-        raise SharingOffersUnavailable(
+        raise SharingOffersUnavailableError(
             "The sharing-offers vocabulary could not be reached"
         ) from exc
 

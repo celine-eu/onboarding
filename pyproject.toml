@@ -75,3 +75,17 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# `class X(str, Enum)` -> `StrEnum` is not a formatting change, and these two are
+# persisted: `DocumentType` and `SubmissionStatus` back SQLAlchemy `Enum` columns
+# and travel in API responses. The two spellings format differently — `f"{x}"` is
+# `"SubmissionStatus.APPROVED"` under `(str, Enum)` and `"approved"` under
+# `StrEnum` — so adopting it is a deliberate change with a migration question
+# attached, not something a lint sweep should decide. Ignored here so the rule
+# stops hiding real findings; raise it as its own change.
+ignore = ["UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+# The long lines here are the extraction prompt, and the prompt is the product:
+# wrapping it splits a literal whose exact wording and whitespace are what the
+# model reads. A width rule written for code should not get a vote on it.
+"src/celine/onboarding/extractors/openai_extractor.py" = ["E501"]

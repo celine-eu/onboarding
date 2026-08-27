@@ -33,8 +33,8 @@ from celine.onboarding.models.schemas import SubmissionAdminRead, SubmissionUpda
 from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.security.policy import Capability, get_policy
 from celine.onboarding.services import audit_service, review, submission_service
-from celine.onboarding.services.enablement import EnablementFailed
-from celine.onboarding.workflows.engine import InvalidTransition
+from celine.onboarding.services.enablement import EnablementError
+from celine.onboarding.workflows.engine import InvalidTransitionError
 
 router = APIRouter(tags=["admin"])
 
@@ -208,7 +208,7 @@ async def update_submission(
         result = await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
         )
-    except (ValueError, InvalidTransition) as exc:
+    except (ValueError, InvalidTransitionError) as exc:
         raise HTTPException(422, str(exc))
 
     await audit_service.record_and_commit(
@@ -274,9 +274,9 @@ async def transition_submission(
             rec_slug=rec_slug,
             background_tasks=background_tasks,
         )
-    except EnablementFailed as exc:
+    except EnablementError as exc:
         raise HTTPException(422, str(exc))
-    except (ValueError, InvalidTransition) as exc:
+    except (ValueError, InvalidTransitionError) as exc:
         raise HTTPException(422, str(exc))
     return _read(result)
 

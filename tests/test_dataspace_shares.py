@@ -4,21 +4,21 @@ Covers §3.5: the share is pushed when the person consented and skipped when the
 did not; a failed push never tears down a valid identity; retry is explicit and
 fails loudly on an unknown offer.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
-
-import celine.onboarding.services.dataspace_identity as di
-
 from test_dataspace_identity import (  # reuse the established harness
     CREDENTIAL_RESPONSE,
     DERIVE_RESPONSE,
     _mock_token_provider,
     _patch_httpx,
 )
+
+import celine.onboarding.services.dataspace_identity as di
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,7 @@ def _enable_shares(monkeypatch, bind_rec):
 def _consented(submission):
     submission.dataspace_did = "did:web:users.example:email-abc123"
     submission.data_sharing_consent = True
-    submission.data_sharing_consent_at = datetime(2026, 7, 13, 10, tzinfo=timezone.utc)
+    submission.data_sharing_consent_at = datetime(2026, 7, 13, 10, tzinfo=UTC)
     submission.data_sharing_consent_offer_ids = ["household-energy-flexibility"]
     submission.data_sharing_consent_text_version = "1.0"
     submission.data_sharing_consent_locale = "it"
@@ -60,6 +60,7 @@ def _consented(submission):
 
 
 # ── provision_user_shares ─────────────────────────────────────────────────────
+
 
 async def test_shares_skipped_when_not_consented(monkeypatch, submission, _enable_shares):
     di._token_provider = _mock_token_provider()
@@ -138,10 +139,11 @@ async def test_share_failure_is_silent_on_approval_path(monkeypatch, submission,
 
 # ── full provision_user_identity: identity survives a share failure ───────────
 
+
 async def test_approval_survives_share_failure(monkeypatch, submission, _enable_shares):
     di._token_provider = _mock_token_provider()
     submission.data_sharing_consent = True
-    submission.data_sharing_consent_at = datetime(2026, 7, 13, 10, tzinfo=timezone.utc)
+    submission.data_sharing_consent_at = datetime(2026, 7, 13, 10, tzinfo=UTC)
     submission.data_sharing_consent_offer_ids = ["household-energy-flexibility"]
     submission.data_sharing_consent_text_version = "1.0"
     submission.data_sharing_consent_locale = "it"

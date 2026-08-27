@@ -1,5 +1,4 @@
-import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fpdf import FPDF
 
@@ -21,11 +20,10 @@ def generate_submission_pdf(submission: Submission) -> bytes:
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 6, f"Submission ref: {submission.ref}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(
-        0, 6,
-        f"Date: {submission.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if submission.created_at else '-'}",
-        new_x="LMARGIN", new_y="NEXT",
-    )
+    created = "-"
+    if submission.created_at:
+        created = submission.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    pdf.cell(0, 6, f"Date: {created}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Status: {submission.status.value}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(6)
 
@@ -41,9 +39,27 @@ def generate_submission_pdf(submission: Submission) -> bytes:
     pdf.ln(4)
 
     _section(pdf, "Consents")
-    _consent_row(pdf, "GDPR", submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version)
-    _consent_row(pdf, "Policy", submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version)
-    _consent_row(pdf, "Statute", submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version)
+    _consent_row(
+        pdf,
+        "GDPR",
+        submission.gdpr_consent,
+        submission.gdpr_consent_at,
+        submission.gdpr_consent_version,
+    )
+    _consent_row(
+        pdf,
+        "Policy",
+        submission.policy_consent,
+        submission.policy_consent_at,
+        submission.policy_consent_version,
+    )
+    _consent_row(
+        pdf,
+        "Statute",
+        submission.statute_consent,
+        submission.statute_consent_at,
+        submission.statute_consent_version,
+    )
     _row(pdf, "Keep me updated", "Yes" if submission.keep_me_updated else "No")
     _row(pdf, "Consent IP", submission.consent_ip)
     pdf.ln(4)
@@ -64,11 +80,19 @@ def generate_submission_pdf(submission: Submission) -> bytes:
         pdf.ln(4)
 
     extraction_labels = {
-        "nome": "Nome", "cognome": "Cognome", "codice_fiscale": "Codice Fiscale",
-        "pod": "POD", "indirizzo": "Indirizzo", "fornitore": "Fornitore",
-        "numero_contratto": "N. Contratto", "tipo_documento": "Tipo documento",
-        "data_nascita": "Data di nascita", "luogo_nascita": "Luogo di nascita",
-        "sesso": "Sesso", "numero_documento": "N. Documento", "scadenza": "Scadenza",
+        "nome": "Nome",
+        "cognome": "Cognome",
+        "codice_fiscale": "Codice Fiscale",
+        "pod": "POD",
+        "indirizzo": "Indirizzo",
+        "fornitore": "Fornitore",
+        "numero_contratto": "N. Contratto",
+        "tipo_documento": "Tipo documento",
+        "data_nascita": "Data di nascita",
+        "luogo_nascita": "Luogo di nascita",
+        "sesso": "Sesso",
+        "numero_documento": "N. Documento",
+        "scadenza": "Scadenza",
     }
 
     if submission.extracted_data:
@@ -92,7 +116,7 @@ def generate_submission_pdf(submission: Submission) -> bytes:
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(150, 150, 150)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     pdf.cell(0, 5, f"Generated: {now} | Ref: {submission.ref}", new_x="LMARGIN", new_y="NEXT")
 
     return bytes(pdf.output())

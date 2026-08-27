@@ -6,6 +6,7 @@ organisation — silently, since the wrong membership is still a successful 201.
 The alias is one identifier across the platform: the owner id in the deployment's
 owners.yaml, the Keycloak organization alias, and the identity-registry owner id.
 """
+
 from __future__ import annotations
 
 import pytest

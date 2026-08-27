@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,9 +30,7 @@ async def run_extraction(db: AsyncSession, document: Document) -> Extraction:
 
 
 async def get_extraction(db: AsyncSession, extraction_id: uuid.UUID) -> Extraction | None:
-    result = await db.execute(
-        select(Extraction).where(Extraction.id == extraction_id)
-    )
+    result = await db.execute(select(Extraction).where(Extraction.id == extraction_id))
     return result.scalar_one_or_none()
 
 
@@ -42,7 +40,7 @@ async def confirm_extraction(
     if data.extracted_data is not None:
         extraction.extracted_data = data.extracted_data
     extraction.confirmed_by_user = True
-    extraction.confirmed_at = datetime.now(timezone.utc)
+    extraction.confirmed_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(extraction)
     return extraction

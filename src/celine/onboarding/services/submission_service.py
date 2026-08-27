@@ -195,7 +195,7 @@ async def _validate_sharing_offer_ids(rec_slug: str, offer_ids: list[str]) -> No
     /admin/disclosure`` accepts one.
 
     Fails closed when the vocabulary cannot be reached: an unverifiable consent is
-    not recorded. `SharingOffersUnavailable` propagates for the route to answer
+    not recorded. `SharingOffersUnavailableError` propagates for the route to answer
     503, which is the honest code — the claim is not wrong, it is unchecked.
     """
     from celine.onboarding.services import template_service

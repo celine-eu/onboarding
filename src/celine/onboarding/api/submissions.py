@@ -1,13 +1,13 @@
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, valid_rec_slug
+from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
     ConsentCreate,
@@ -17,7 +17,7 @@ from celine.onboarding.models.schemas import (
 )
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import submission_service, template_service
-from celine.onboarding.workflows.engine import InvalidTransition
+from celine.onboarding.workflows.engine import InvalidTransitionError
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -42,7 +42,7 @@ async def _get_live_submission(
     if not token or not secrets.compare_digest(token, submission.session_token):
         raise HTTPException(403, "Invalid session token")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     anchor = submission.last_active_at or submission.created_at
     if anchor and (now - anchor).total_seconds() > SESSION_TTL_SECONDS:
         raise HTTPException(410, "Session expired. Please start a new submission.")
@@ -97,12 +97,12 @@ async def update_submission(
         return await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
         )
-    except template_service.SharingOffersUnavailable as e:
+    except template_service.SharingOffersUnavailableError as e:
         # The offers could not be checked, so the consent is not recorded. 503
         # rather than 422: the client's payload is not known to be wrong, it is
         # unverified, and retrying the same request is the right response.
         raise HTTPException(503, str(e)) from e
-    except (ValueError, InvalidTransition) as e:
+    except (ValueError, InvalidTransitionError) as e:
         raise HTTPException(422, str(e))
 
 

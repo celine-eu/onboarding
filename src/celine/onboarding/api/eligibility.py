@@ -1,6 +1,5 @@
-from pydantic import BaseModel
-
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from celine.onboarding.api.deps import valid_rec_slug
 from celine.onboarding.services.eligibility import geocode_address, get_checker

@@ -4,8 +4,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.config.settings import settings
 from celine.onboarding.api.deps import limiter, require_session
+from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import ExtractionConfirm, ExtractionRead
 from celine.onboarding.models.submission import Submission
@@ -57,7 +57,9 @@ async def extract_from_id_upload(
 
     extractor = OpenAIExtractor()
     extracted_data, _ = await extractor.extract_pages(
-        pages, system_prompt=ID_CARD_SYSTEM_PROMPT, user_prompt=ID_CARD_USER_PROMPT,
+        pages,
+        system_prompt=ID_CARD_SYSTEM_PROMPT,
+        user_prompt=ID_CARD_USER_PROMPT,
     )
     return extracted_data
 

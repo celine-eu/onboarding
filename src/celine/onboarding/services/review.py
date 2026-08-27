@@ -77,7 +77,7 @@ async def transition(
         # they are not approved.
         try:
             await enablement.enable(db, submission)
-        except enablement.EnablementFailed as exc:
+        except enablement.EnablementError as exc:
             # The attempt is worth recording even though it changed no status.
             # The step rows say what broke; only the audit trail says who tried,
             # and "nobody ever tried to approve this" is a different fact from

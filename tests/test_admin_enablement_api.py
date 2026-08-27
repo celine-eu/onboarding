@@ -292,10 +292,10 @@ class TestTransition:
 
     def test_a_fail_closed_step_is_422(self, client, operator_token, monkeypatch):
         from celine.onboarding.api.admin import submissions as submissions_api
-        from celine.onboarding.services.enablement import EnablementFailed
+        from celine.onboarding.services.enablement import EnablementError
 
         async def _fails(db, submission, target, **kwargs):
-            raise EnablementFailed(
+            raise EnablementError(
                 EnablementStep.REC_REGISTRY_MEMBER,
                 "Community member could not be provisioned: registry said no",
             )

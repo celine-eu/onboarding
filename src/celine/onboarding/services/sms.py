@@ -3,6 +3,7 @@
 The OTP flow depends only on the `SmsProvider` protocol, so swapping Brevo for
 another gateway is a settings change rather than a code change.
 """
+
 from __future__ import annotations
 
 import logging

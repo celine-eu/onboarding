@@ -10,6 +10,7 @@ Unlike share provisioning this step **fails closed**. A missing consent row is
 recoverable; a member who does not exist is not a state anything downstream can
 work around.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -147,9 +148,7 @@ class TestPayload:
     def test_missing_name_falls_back_to_the_reference(self):
         """A member row needs a name; the submission reference is the honest
         placeholder rather than an empty string."""
-        payload = rr.build_member_payload(
-            _sub(first_name=None, last_name=None), BINDING
-        )
+        payload = rr.build_member_payload(_sub(first_name=None, last_name=None), BINDING)
         assert payload["name"] == "20260727-abcd"
 
     def test_the_geocoded_municipality_wins(self):
@@ -165,15 +164,11 @@ class TestPayload:
         assert payload["area"] == "valley-north"
 
     def test_area_comes_from_the_extracted_municipality(self):
-        payload = rr.build_member_payload(
-            _sub(extracted_data={"comune": "Springfield"}), BINDING
-        )
+        payload = rr.build_member_payload(_sub(extracted_data={"comune": "Springfield"}), BINDING)
         assert payload["area"] == "valley-north"
 
     def test_an_uncovered_municipality_uses_the_default(self):
-        payload = rr.build_member_payload(
-            _sub(extracted_data={"comune": "Somewhere"}), BINDING
-        )
+        payload = rr.build_member_payload(_sub(extracted_data={"comune": "Somewhere"}), BINDING)
         assert payload["area"] == "north"
 
     def test_no_extraction_uses_the_default(self):
@@ -213,9 +208,7 @@ class TestNoAssetsAreRegistered:
     """
 
     def test_declared_pv_creates_no_asset(self):
-        payload = rr.build_member_payload(
-            _sub(extra_data={"has_pv": True, "pv_kwp": 4.5}), BINDING
-        )
+        payload = rr.build_member_payload(_sub(extra_data={"has_pv": True, "pv_kwp": 4.5}), BINDING)
         assert payload["assets"] == {}
 
     def test_declared_battery_creates_no_asset(self):
@@ -315,9 +308,7 @@ class TestRegisterMember:
         with pytest.raises(ValueError, match="REC registry refused"):
             await rr.register_member(_sub())
 
-    async def test_the_refusal_says_what_the_registry_said(
-        self, monkeypatch, _configured
-    ):
+    async def test_the_refusal_says_what_the_registry_said(self, monkeypatch, _configured):
         _stub_client(monkeypatch, 422, b"area 'north' unknown")
 
         with pytest.raises(ValueError, match="area 'north' unknown"):

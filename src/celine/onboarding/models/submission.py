@@ -1,18 +1,24 @@
 import enum
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from celine.onboarding.models.database import Base
+
+if TYPE_CHECKING:  # relationship annotations only — SQLAlchemy resolves
+    # these strings at mapper configuration time, so importing them at
+    # runtime would be a circular import for no benefit.
+    from celine.onboarding.models.document import Document
 from celine.onboarding.models.encrypted import EncryptedJSON, EncryptedString
 
 
 def _sortable_ref() -> str:
-    date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
+    date_prefix = datetime.now(UTC).strftime("%Y%m%d")
     short_id = uuid.uuid4().hex[:8]
     return f"{date_prefix}-{short_id}"
 
@@ -27,16 +33,15 @@ class SubmissionStatus(str, enum.Enum):
 
 class Submission(Base):
     __tablename__ = "submissions"
-    __table_args__ = (
-        Index("ix_submissions_rec_created", "rec_slug", "created_at"),
-    )
+    __table_args__ = (Index("ix_submissions_rec_created", "rec_slug", "created_at"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     ref: Mapped[str] = mapped_column(String(20), unique=True, default=_sortable_ref)
     rec_slug: Mapped[str] = mapped_column(
-        String(40), ForeignKey("recs.slug"), nullable=False, index=True,
+        String(40),
+        ForeignKey("recs.slug"),
+        nullable=False,
+        index=True,
         server_default="default",
     )
     status: Mapped[SubmissionStatus] = mapped_column(
@@ -53,9 +58,7 @@ class Submission(Base):
     # geocoder. Kept because it decides which registry area the member is
     # registered into, and the geocoder resolves it far more reliably than OCR
     # of a bill does. Encrypted like the rest of the address data it comes from.
-    supply_municipality: Mapped[str | None] = mapped_column(
-        EncryptedString, nullable=True
-    )
+    supply_municipality: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
 
     # Session binding — token ties the session to the browser tab
     session_token: Mapped[str] = mapped_column(
@@ -119,16 +122,12 @@ class Submission(Base):
         String(200), nullable=True
     )
     data_sharing_consent_locale: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    data_sharing_consent_text_sha256: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    data_sharing_consent_text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Whether the standing share was pushed to the connector after approval. A
     # failed push never fails approval (§3.5) — it is retried from the admin UI.
     share_provisioned: Mapped[bool] = mapped_column(default=False)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

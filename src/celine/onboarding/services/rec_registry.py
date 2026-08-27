@@ -95,9 +95,7 @@ def build_member_payload(
 ) -> dict[str, Any]:
     """The member body, as the registry's own bundle schema expects it."""
     extra = submission.extra_data or {}
-    name = " ".join(
-        part for part in (submission.first_name, submission.last_name) if part
-    ).strip()
+    name = " ".join(part for part in (submission.first_name, submission.last_name) if part).strip()
 
     payload: dict[str, Any] = {
         "key": submission.ref,
@@ -176,9 +174,7 @@ async def register_member(
 
     from celine.sdk.openapi.rec_registry.models import MemberCreate
 
-    response = await _get_client().create_member(
-        binding.community, MemberCreate.from_dict(payload)
-    )
+    response = await _get_client().create_member(binding.community, MemberCreate.from_dict(payload))
 
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0
@@ -229,9 +225,7 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
     if not binding.enabled:
         return "this community declares no rec_registry binding"
 
-    response = await _get_client().delete_member(
-        binding.community, member_key, purge=False
-    )
+    response = await _get_client().delete_member(binding.community, member_key, purge=False)
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from celine.onboarding.outputs import csv_export
 
@@ -10,7 +10,7 @@ def test_fmt_none_is_empty_string():
 
 
 def test_fmt_datetime_is_isoformat():
-    dt = datetime(2026, 7, 23, 10, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 7, 23, 10, 0, tzinfo=UTC)
     assert csv_export._fmt(dt) == dt.isoformat()
 
 

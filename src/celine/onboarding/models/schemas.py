@@ -3,8 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.models.document import DocumentType
+from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.validators.fiscal_code import validate_fiscal_code
 from celine.onboarding.validators.pod_code import validate_pod_code
 

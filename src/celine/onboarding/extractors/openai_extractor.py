@@ -130,17 +130,25 @@ def _pdf_to_images(pdf_bytes: bytes) -> list[tuple[bytes, str]]:
 
 class OpenAIExtractor:
     async def extract(
-        self, file_bytes: bytes, declared_mime: str, *,
-        system_prompt: str | None = None, user_prompt: str | None = None,
+        self,
+        file_bytes: bytes,
+        declared_mime: str,
+        *,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
     ) -> tuple[dict, dict]:
         return await self.extract_pages(
             [(file_bytes, declared_mime)],
-            system_prompt=system_prompt, user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
         )
 
     async def extract_pages(
-        self, pages: list[tuple[bytes, str]], *,
-        system_prompt: str | None = None, user_prompt: str | None = None,
+        self,
+        pages: list[tuple[bytes, str]],
+        *,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
     ) -> tuple[dict, dict]:
         if not settings.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
@@ -153,24 +161,30 @@ class OpenAIExtractor:
             if mime == "application/pdf":
                 text = _pdf_to_text(data)
                 if len(text.strip()) >= MIN_TEXT_LENGTH:
-                    content.append({
-                        "type": "text",
-                        "text": f"--- Page {i + 1} (PDF text) ---\n{text}",
-                    })
+                    content.append(
+                        {
+                            "type": "text",
+                            "text": f"--- Page {i + 1} (PDF text) ---\n{text}",
+                        }
+                    )
                 else:
                     for img_bytes, img_mime in _pdf_to_images(data):
                         b64 = base64.b64encode(img_bytes).decode("utf-8")
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{img_mime};base64,{b64}"},
-                        })
+                        content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{img_mime};base64,{b64}"},
+                            }
+                        )
             elif mime in IMAGE_MIME_TYPES:
                 compressed, cmime = _compress_image(data)
                 b64 = base64.b64encode(compressed).decode("utf-8")
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{cmime};base64,{b64}"},
-                })
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{cmime};base64,{b64}"},
+                    }
+                )
             else:
                 raise ValueError(f"Unsupported file type: {mime}")
 

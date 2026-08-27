@@ -36,9 +36,7 @@ def send_submission_email(
 
     from_addr = notifications.get("from") or settings.smtp_from or settings.smtp_user
     date_str = (
-        submission.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-        if submission.created_at
-        else "-"
+        submission.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if submission.created_at else "-"
     )
 
     msg = EmailMessage()

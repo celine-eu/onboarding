@@ -156,8 +156,7 @@ async def export_pod_list(
 
     for entry in disclosures:
         logger.info(
-            "DataDisclosed recorded for %s: dataset=%s consent_snapshot_hash=%s "
-            "granted_parties=%s",
+            "DataDisclosed recorded for %s: dataset=%s consent_snapshot_hash=%s granted_parties=%s",
             rec_slug,
             entry.get("dataset_id"),
             entry.get("consent_snapshot_hash"),

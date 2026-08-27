@@ -10,6 +10,7 @@ moved, a method that went, a field that became required. It cannot catch a path
 that stayed and changed meaning, which is what `/admin/owners/{owner_id}` did.
 That is `test_ds_semantics.py`'s job.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -109,9 +110,9 @@ def test_the_checker_can_see_the_failure_that_started_this(specs):
     spec = specs["provenance"]
     probe = Call("provenance", "post", "/prov/events", variant="DataDisclosed")
 
-    top_level = next(iter(
-        spec["paths"]["/prov/events"]["post"]["requestBody"]["content"].values()
-    ))["schema"]
+    top_level = next(
+        iter(spec["paths"]["/prov/events"]["post"]["requestBody"]["content"].values())
+    )["schema"]
     assert "oneOf" in top_level, (
         "the union shape is gone — re-read the spec before trusting this check"
     )

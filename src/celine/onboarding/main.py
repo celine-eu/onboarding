@@ -238,6 +238,7 @@ async def lifespan(app: FastAPI):
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
     from celine.onboarding.services.template_service import load_recs_from_db
+
     await load_recs_from_db()
 
     from celine.onboarding.services.template_service import get_slugs, load_manifest
@@ -343,17 +344,17 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization", "X-Session-Token"],
     )
 
-    from celine.onboarding.api.health import router as health_router
-    from celine.onboarding.api.recs import router as recs_router
-    from celine.onboarding.api.downloads import router as downloads_router
-    from celine.onboarding.api.config import router as config_router
-    from celine.onboarding.api.submissions import router as submissions_router
-    from celine.onboarding.api.documents import router as documents_router
-    from celine.onboarding.api.extractions import router as extractions_router
-    from celine.onboarding.api.consent_documents import router as consent_docs_router
-    from celine.onboarding.api.eligibility import router as eligibility_router
-    from celine.onboarding.api.phone_verify import router as phone_verify_router
     from celine.onboarding.api.admin import create_admin_router
+    from celine.onboarding.api.config import router as config_router
+    from celine.onboarding.api.consent_documents import router as consent_docs_router
+    from celine.onboarding.api.documents import router as documents_router
+    from celine.onboarding.api.downloads import router as downloads_router
+    from celine.onboarding.api.eligibility import router as eligibility_router
+    from celine.onboarding.api.extractions import router as extractions_router
+    from celine.onboarding.api.health import router as health_router
+    from celine.onboarding.api.phone_verify import router as phone_verify_router
+    from celine.onboarding.api.recs import router as recs_router
+    from celine.onboarding.api.submissions import router as submissions_router
 
     app.include_router(health_router, prefix="/api")
     app.include_router(recs_router, prefix="/api")

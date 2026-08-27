@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 import celine.onboarding.services.otp as otp_service
 from celine.onboarding.services import sms
-from celine.onboarding.validators.phone import InvalidPhoneNumber, normalize_mobile, normalize_phone
+from celine.onboarding.validators.phone import (
+    InvalidPhoneNumberError,
+    normalize_mobile,
+    normalize_phone,
+)
 
 # ── phone normalization (2.11) ───────────────────────────────────
 
@@ -25,13 +29,13 @@ def test_foreign_number_keeps_its_prefix():
 
 
 def test_landline_rejected_as_non_mobile():
-    with pytest.raises(InvalidPhoneNumber, match="mobile"):
+    with pytest.raises(InvalidPhoneNumberError, match="mobile"):
         normalize_mobile("+390212345678")
 
 
 @pytest.mark.parametrize("raw", ["", "   ", "abc", "12"])
 def test_invalid_numbers_rejected(raw):
-    with pytest.raises(InvalidPhoneNumber):
+    with pytest.raises(InvalidPhoneNumberError):
         normalize_phone(raw)
 
 
@@ -88,7 +92,7 @@ class FakeSession:
         return FakeResult(self._latest())
 
     def _recent(self):
-        window = datetime.now(timezone.utc) - timedelta(hours=1)
+        window = datetime.now(UTC) - timedelta(hours=1)
         return [r for r in self.rows if r.created_at >= window]
 
     def _latest(self):
@@ -128,7 +132,7 @@ PHONE = "+393331234567"
 
 
 def _make_row(**kw):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     row = otp_service.PhoneOtp(
         submission_id=kw.get("submission_id", uuid.uuid4()),
         phone=PHONE,
@@ -172,13 +176,13 @@ async def test_send_quota_enforced(provider, monkeypatch):
     monkeypatch.setattr(otp_service.settings, "otp_max_sends_per_hour", 3)
     db = FakeSession([_make_row(), _make_row(), _make_row()])
 
-    with pytest.raises(otp_service.RateLimited):
+    with pytest.raises(otp_service.RateLimitedError):
         await otp_service.send_otp(db, uuid.uuid4(), PHONE)
 
 
 async def test_old_sends_fall_out_of_the_window(provider, monkeypatch):
     monkeypatch.setattr(otp_service.settings, "otp_max_sends_per_hour", 3)
-    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    old = datetime.now(UTC) - timedelta(hours=2)
     db = FakeSession([_make_row(created_at=old, verified_at=old) for _ in range(3)])
 
     await otp_service.send_otp(db, uuid.uuid4(), PHONE)
@@ -197,7 +201,7 @@ async def test_verify_wrong_code_counts_attempt():
     row = _make_row()
     db = FakeSession([row])
 
-    with pytest.raises(otp_service.InvalidCode, match="2 attempt"):
+    with pytest.raises(otp_service.InvalidCodeError, match="2 attempt"):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "999999")
 
     assert row.attempts == 1
@@ -209,7 +213,7 @@ async def test_verify_locks_after_max_attempts(monkeypatch):
     row = _make_row(attempts=3)
     db = FakeSession([row])
 
-    with pytest.raises(otp_service.Locked):
+    with pytest.raises(otp_service.LockedError):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "111111")
 
 
@@ -219,7 +223,7 @@ async def test_correct_code_rejected_once_locked(monkeypatch):
     row = _make_row(attempts=3, code_hash=otp_service.hash_code(PHONE, "111111"))
     db = FakeSession([row])
 
-    with pytest.raises(otp_service.Locked):
+    with pytest.raises(otp_service.LockedError):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "111111")
 
 
@@ -229,7 +233,7 @@ async def test_send_blocked_while_locked(provider, monkeypatch):
     monkeypatch.setattr(otp_service.settings, "otp_lockout_seconds", 3600)
     db = FakeSession([_make_row(attempts=3)])
 
-    with pytest.raises(otp_service.Locked):
+    with pytest.raises(otp_service.LockedError):
         await otp_service.send_otp(db, uuid.uuid4(), PHONE)
 
     assert provider.sent == []
@@ -239,7 +243,7 @@ async def test_send_allowed_after_lockout_expires(provider, monkeypatch):
     monkeypatch.setattr(otp_service.settings, "otp_max_attempts", 3)
     monkeypatch.setattr(otp_service.settings, "otp_lockout_seconds", 3600)
     monkeypatch.setattr(otp_service.settings, "otp_max_sends_per_hour", 3)
-    long_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+    long_ago = datetime.now(UTC) - timedelta(hours=2)
     db = FakeSession([_make_row(attempts=3, created_at=long_ago)])
 
     await otp_service.send_otp(db, uuid.uuid4(), PHONE)
@@ -247,25 +251,25 @@ async def test_send_allowed_after_lockout_expires(provider, monkeypatch):
 
 
 async def test_verify_expired_code():
-    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    past = datetime.now(UTC) - timedelta(seconds=1)
     db = FakeSession([_make_row(expires_at=past)])
 
-    with pytest.raises(otp_service.Expired):
+    with pytest.raises(otp_service.ExpiredError):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "111111")
 
 
 async def test_verify_without_any_code():
     db = FakeSession([])
 
-    with pytest.raises(otp_service.InvalidCode, match="No code"):
+    with pytest.raises(otp_service.InvalidCodeError, match="No code"):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "111111")
 
 
 async def test_code_cannot_be_reused():
-    row = _make_row(verified_at=datetime.now(timezone.utc))
+    row = _make_row(verified_at=datetime.now(UTC))
     db = FakeSession([row])
 
-    with pytest.raises(otp_service.InvalidCode, match="already been used"):
+    with pytest.raises(otp_service.InvalidCodeError, match="already been used"):
         await otp_service.verify_otp(db, uuid.uuid4(), PHONE, "111111")
 
 
