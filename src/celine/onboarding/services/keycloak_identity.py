@@ -11,6 +11,9 @@ from celine.onboarding.models.submission import Submission
 @dataclass(frozen=True)
 class KeycloakProvisionResult:
     user_id: str
+    #: The value the participant authenticates as, read back from Keycloak rather
+    #: than assumed. It is what the REC registry stores as ``Member.user_id``,
+    #: because that is what a token's ``preferred_username`` carries.
     username: str
     created: bool
 
@@ -20,6 +23,19 @@ def _normalized_email(submission: Submission) -> str:
     if not email:
         raise ValueError("Cannot create Keycloak user: approved submission has no email")
     return email
+
+
+def keycloak_username(submission: Submission) -> str | None:
+    """The username this service *would* create for a submission, or ``None``.
+
+    A proxy, not an observation: it is the normalised email, which is what
+    :func:`provision_keycloak_user` sets on every user it creates. Callers that
+    can have the real value — anything running after provisioning in the same
+    pass — should use the ``username`` it returned instead, because a user that
+    already existed may authenticate under another convention entirely.
+    """
+    email = (getattr(submission, "email", "") or "").strip().lower()
+    return email or None
 
 
 def _display_name(value: str | None) -> str | None:
@@ -49,7 +65,19 @@ async def provision_keycloak_user(submission: Submission) -> KeycloakProvisionRe
             user_id = str(existing["id"])
             if settings.dataspace_keycloak_update_existing:
                 await _update_user(client, token, user_id, submission, email)
-            return KeycloakProvisionResult(user_id=user_id, username=email, created=False)
+            # The username Keycloak holds, which is not always the email we
+            # asked by: `_find_user`'s second query matches on the *email*, so a
+            # user created by anything other than this service can come back
+            # under a name of its choosing. Usernames here are not emails by
+            # convention — `celine-policies` names participants by their registry
+            # member key — so the value is read rather than assumed. Whatever it
+            # is, it is what their token will carry, and what the registry needs
+            # in `Member.user_id` for them to resolve themselves.
+            return KeycloakProvisionResult(
+                user_id=user_id,
+                username=str(existing.get("username") or email),
+                created=False,
+            )
 
         user_id = await _create_user(client, token, submission, email)
         if settings.dataspace_keycloak_default_password:
@@ -142,10 +170,20 @@ async def _update_user(
     submission: Submission,
     email: str,
 ) -> None:
+    """Fill in the profile of a user who already existed — but not their username.
+
+    `username` is deliberately absent from the body. This user may have been
+    created elsewhere under another convention, and renaming their login is not
+    what "update existing" is for: it would change what they type to sign in, and
+    it would silently invalidate the `user_id` any registry row already holds for
+    them. What is safe to refresh is the profile: email, names, verified flags.
+    """
+    payload = _user_payload(submission, email)
+    payload.pop("username", None)
     response = await client.put(
         f"/admin/realms/{settings.dataspace_keycloak_realm}/users/{user_id}",
         headers=_auth_headers(token),
-        json=_user_payload(submission, email),
+        json=payload,
     )
     if response.status_code >= 400:
         raise ValueError(f"Keycloak user update failed: {response.text}")

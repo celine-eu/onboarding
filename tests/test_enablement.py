@@ -94,8 +94,8 @@ def happy_path(monkeypatch):
         calls.append("keycloak_user")
         return KeycloakProvisionResult(user_id="kc-123", username=sub.email, created=True)
 
-    async def _registry(sub, *, keycloak_user_id=None):
-        calls.append(f"rec_registry_member(kc={keycloak_user_id})")
+    async def _registry(sub, *, keycloak_username=None):
+        calls.append(f"rec_registry_member(user={keycloak_username})")
         return "member-key-1"
 
     async def _identity(sub, **kwargs):
@@ -145,10 +145,33 @@ class TestEnable:
         assert rows[EnablementStep.DATASPACE_IDENTITY].external_ref == "cred-1"
 
     async def test_keycloak_user_id_reaches_later_steps(self, db, submission, happy_path):
-        """The registry keys a member on the Keycloak user, so the id has to flow."""
+        """The dataspace sync maps a DID onto the Keycloak user, so the id has to flow."""
         await enablement.enable(db, submission)
-        assert "rec_registry_member(kc=kc-123)" in happy_path
         assert "dataspace_identity(kc=kc-123)" in happy_path
+
+    async def test_the_keycloak_username_reaches_the_registry(self, db, submission, happy_path):
+        """Not the user id: the registry resolves a self-service caller by
+        `preferred_username`, so a member row keyed on the UUID belongs to
+        somebody who can never see it."""
+        await enablement.enable(db, submission)
+        assert "rec_registry_member(user=member@example.org)" in happy_path
+
+    async def test_the_username_is_the_one_keycloak_reported(
+        self, db, submission, happy_path, monkeypatch
+    ):
+        """A user provisioning found rather than created may log in under a name
+        that is not their email, and it is that value the registry needs — not
+        the email we asked by."""
+
+        async def _kc(sub):
+            happy_path.append("keycloak_user")
+            return KeycloakProvisionResult(user_id="kc-123", username="gl-00001", created=False)
+
+        monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _kc)
+
+        await enablement.enable(db, submission)
+
+        assert "rec_registry_member(user=gl-00001)" in happy_path
 
     async def test_counts_attempts(self, db, submission, happy_path):
         rows = await enablement.enable(db, submission)
@@ -168,7 +191,7 @@ class TestEnable:
 class TestFailClosed:
     @pytest.fixture()
     def registry_fails(self, monkeypatch, happy_path):
-        async def _boom(sub, *, keycloak_user_id=None):
+        async def _boom(sub, *, keycloak_username=None):
             raise ValueError("registry said no")
 
         monkeypatch.setattr(rec_registry, "register_member", _boom)
@@ -244,7 +267,7 @@ class TestSkipping:
     async def test_unbound_community_skips_rather_than_fails(
         self, db, submission, monkeypatch, happy_path
     ):
-        async def _none(sub, *, keycloak_user_id=None):
+        async def _none(sub, *, keycloak_username=None):
             return None
 
         monkeypatch.setattr(rec_registry, "register_member", _none)
@@ -280,7 +303,7 @@ class TestSkipping:
 class TestRetry:
     @pytest.fixture()
     async def after_failure(self, db, submission, monkeypatch, happy_path):
-        async def _boom(sub, *, keycloak_user_id=None):
+        async def _boom(sub, *, keycloak_username=None):
             raise ValueError("registry said no")
 
         monkeypatch.setattr(rec_registry, "register_member", _boom)
@@ -292,7 +315,7 @@ class TestRetry:
     async def test_does_not_rerun_succeeded_steps(self, db, submission, after_failure, monkeypatch):
         """Retry means finish what is unfinished, not do it all again."""
 
-        async def _ok(sub, *, keycloak_user_id=None):
+        async def _ok(sub, *, keycloak_username=None):
             after_failure.append("rec_registry_member")
             return "member-key-1"
 
@@ -303,7 +326,7 @@ class TestRetry:
         assert enablement.state_of(rows) == "complete"
 
     async def test_counts_a_second_attempt(self, db, submission, after_failure, monkeypatch):
-        async def _ok(sub, *, keycloak_user_id=None):
+        async def _ok(sub, *, keycloak_username=None):
             return "member-key-1"
 
         monkeypatch.setattr(rec_registry, "register_member", _ok)
@@ -312,7 +335,7 @@ class TestRetry:
         assert rows[EnablementStep.KEYCLOAK_USER].attempts == 1
 
     async def test_clears_the_previous_error(self, db, submission, after_failure, monkeypatch):
-        async def _ok(sub, *, keycloak_user_id=None):
+        async def _ok(sub, *, keycloak_username=None):
             return "member-key-1"
 
         monkeypatch.setattr(rec_registry, "register_member", _ok)
@@ -329,7 +352,7 @@ class TestRetry:
         assert rows[EnablementStep.REC_REGISTRY_MEMBER].attempts == 2
 
     async def test_one_named_step_only(self, db, submission, after_failure, monkeypatch):
-        async def _ok(sub, *, keycloak_user_id=None):
+        async def _ok(sub, *, keycloak_username=None):
             return "member-key-1"
 
         monkeypatch.setattr(rec_registry, "register_member", _ok)
@@ -550,7 +573,7 @@ class TestApprovalRecordsTheAttempt:
         review, recorded = review_env
         submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW)
 
-        async def _boom(sub, *, keycloak_user_id=None):
+        async def _boom(sub, *, keycloak_username=None):
             raise ValueError("registry unreachable")
 
         monkeypatch.setattr(rec_registry, "register_member", _boom)

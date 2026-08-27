@@ -25,6 +25,7 @@ from typing import Any
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import template_service
+from celine.onboarding.services.keycloak_identity import keycloak_username as _username_from_email
 
 logger = logging.getLogger(__name__)
 
@@ -90,16 +91,57 @@ def member_role(submission: Submission) -> str:
     return "prosumer" if extra.get("has_pv") else "consumer"
 
 
+def member_user_id(submission: Submission, keycloak_username: str | None = None) -> str:
+    """What the registry resolves this person by: their **Keycloak username**.
+
+    Not the member key, and not a UUID. Every self-service route in the registry
+    matches ``Member.user_id`` against the token's ``preferred_username``, so a
+    row holding anything else belongs to a member who can never see it — they get
+    ``403 You are not a member of any community`` and the message points at the
+    registry rather than at what wrote the row. The registry's own comment beside
+    the column says "e.g. Keycloak UUID", which names the one value that does not
+    work.
+
+    ``keycloak_username`` is the value provisioning read back, and it wins. The
+    normalised email is the fallback: it is what this service sets as the username
+    on every user it creates, so it is right for all of them and wrong only for a
+    user it adopted from another convention. ``submission.ref`` is the last
+    resort — it is the broken value, kept only because there is nothing better
+    when a submission has no email at all, and logged so it is not silent.
+    """
+    if keycloak_username and keycloak_username.strip():
+        return keycloak_username.strip()
+
+    email = _username_from_email(submission)
+    if email:
+        return email
+
+    logger.warning(
+        "Submission %s has no Keycloak username and no email; registering with its "
+        "reference as user_id, which the registry cannot resolve a caller by",
+        submission.ref,
+    )
+    return submission.ref
+
+
 def build_member_payload(
-    submission: Submission, binding: template_service.RecRegistryBinding
+    submission: Submission,
+    binding: template_service.RecRegistryBinding,
+    *,
+    keycloak_username: str | None = None,
 ) -> dict[str, Any]:
-    """The member body, as the registry's own bundle schema expects it."""
+    """The member body, as the registry's own bundle schema expects it.
+
+    ``key`` and ``user_id`` are different identifiers and deliberately so: the
+    key is the registry's own handle on the member, the ``user_id`` is who they
+    log in as. See :func:`member_user_id`.
+    """
     extra = submission.extra_data or {}
     name = " ".join(part for part in (submission.first_name, submission.last_name) if part).strip()
 
     payload: dict[str, Any] = {
         "key": submission.ref,
-        "user_id": submission.ref,
+        "user_id": member_user_id(submission, keycloak_username),
         "name": name or submission.ref,
         "type": "schema:Person",
         "role": member_role(submission),
@@ -145,9 +187,14 @@ def build_member_payload(
 
 
 async def register_member(
-    submission: Submission, *, keycloak_user_id: str | None = None
+    submission: Submission, *, keycloak_username: str | None = None
 ) -> str | None:
     """Register the approved participant, returning the member key.
+
+    ``keycloak_username`` is what provisioning read back from Keycloak, and it
+    becomes the member's ``user_id`` — the thing that lets them resolve
+    themselves. Omitting it falls back to the submission's email; see
+    :func:`member_user_id` for when that differs.
 
     Returns ``None`` when registration is not configured — a deployment with no
     registry, or a community whose manifest declares no ``rec_registry`` block.
@@ -170,7 +217,7 @@ async def register_member(
         )
         return None
 
-    payload = build_member_payload(submission, binding)
+    payload = build_member_payload(submission, binding, keycloak_username=keycloak_username)
 
     from celine.sdk.openapi.rec_registry.models import MemberCreate
 
@@ -182,10 +229,19 @@ async def register_member(
     if status_value == 409:
         # Already there. Approval is retriable, so treat this as success rather
         # than wedging a submission that cannot be approved a second time.
+        #
+        # The registry answers 409 for a taken *key* and for a taken *user_id*,
+        # and only the first is the retry this expects. The second means somebody
+        # else in this community already logs in as `user_id` — a real clash,
+        # which is why both readings are named here rather than the first assumed.
+        # It stays non-fatal either way: refusing would wedge the approval, and a
+        # clash is not something this side can resolve.
         logger.info(
-            "Participant %s is already a member of %s",
-            submission.ref,
+            "REC registry answered 409 for member %s in %s: already registered, or "
+            "another member there already holds user_id %r",
+            payload["key"],
             binding.community,
+            payload["user_id"],
         )
         return payload["key"]
 

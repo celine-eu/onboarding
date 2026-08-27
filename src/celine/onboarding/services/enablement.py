@@ -68,10 +68,17 @@ class RunContext:
     Step 3 needs the Keycloak user id step 1 produced. Reading it from the step
     rows rather than threading it through arguments means a *retry* of step 3
     alone still finds it.
+
+    The Keycloak *username* is different: it is not on the step row, which holds
+    one external reference and that one is the user id. It is set here when step 1
+    runs, and is therefore ``None`` on a retry of step 2 alone — which is why
+    :func:`~celine.onboarding.services.rec_registry.member_user_id` falls back to
+    the submission's email rather than requiring it.
     """
 
     submission: Submission
     rows: dict[str, SubmissionEnablementStep] = field(default_factory=dict)
+    keycloak_username: str | None = None
 
     @property
     def keycloak_user_id(self) -> str | None:
@@ -92,6 +99,10 @@ async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
     result = await provision_keycloak_user(ctx.submission)
     if result is None:
         return StepOutcome(EnablementStatus.SKIPPED, detail="Keycloak provisioning is disabled")
+    # Step 2 registers this as the member's `user_id`, because it is what their
+    # token will carry. Read back from Keycloak rather than assumed: a user that
+    # already existed may authenticate under a username that is not their email.
+    ctx.keycloak_username = result.username
     return StepOutcome(
         EnablementStatus.SUCCEEDED,
         external_ref=result.user_id,
@@ -111,7 +122,7 @@ async def _revoke_keycloak_user(ctx: RunContext, row: SubmissionEnablementStep) 
 async def _run_registry_member(ctx: RunContext) -> StepOutcome:
     from celine.onboarding.services.rec_registry import register_member
 
-    key = await register_member(ctx.submission, keycloak_user_id=ctx.keycloak_user_id)
+    key = await register_member(ctx.submission, keycloak_username=ctx.keycloak_username)
     if key is None:
         return StepOutcome(
             EnablementStatus.SKIPPED,

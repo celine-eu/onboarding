@@ -212,6 +212,14 @@ Registry registration **fails closed**, so a dataspace identity is never issued
 to somebody who is not a community member. See `AGENTS.md` for what is derived
 from the wizard's answers and what is deliberately not.
 
+The member carries two identifiers and they are not interchangeable. `key` is the
+registry's own handle on the member and is the submission reference. `user_id` is
+**the Keycloak username** — read back from provisioning, falling back to the
+normalised email — because the registry resolves a self-service caller by matching
+that column against their token's `preferred_username`. A member row holding
+anything else looks correct everywhere and its owner is told `403 You are not a
+member of any community` on every self-service route.
+
 ## Error Handling
 
 The integration follows a **fail-closed** strategy:

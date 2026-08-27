@@ -25,6 +25,7 @@ def _sub(**overrides):
     base = dict(
         ref="20260727-abcd",
         rec_slug="example",
+        email="Alice.Rossi@example.org",
         first_name="Alice",
         last_name="Rossi",
         pod_code="IT001E00000001",
@@ -185,6 +186,60 @@ class TestPayload:
         assert payload["area"] == "north"
 
 
+class TestUserId:
+    """`user_id` is what the participant authenticates as — issue #1.
+
+    The registry resolves a self-service caller by matching `Member.user_id`
+    against the token's `preferred_username`. Writing anything else produces a
+    member row that is correct in every listing, exports and round-trips cleanly,
+    and whose owner is told `403 You are not a member of any community`.
+    """
+
+    def test_the_keycloak_username_is_written(self):
+        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="gl-00001")
+        assert payload["user_id"] == "gl-00001"
+
+    def test_the_key_stays_the_reference(self):
+        """The two identifiers are different on purpose: the key is the
+        registry's handle on the member, the user_id is who they log in as."""
+        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="gl-00001")
+        assert payload["key"] == "20260727-abcd"
+
+    def test_the_reference_is_never_the_user_id(self):
+        """What the bug was."""
+        payload = rr.build_member_payload(_sub(), BINDING)
+        assert payload["user_id"] != payload["key"]
+
+    def test_the_email_is_the_fallback(self):
+        """It is the username this service sets on every user it creates, so it
+        is right for all of them — and it is what a retry of registration alone
+        has, since that does not re-run provisioning."""
+        payload = rr.build_member_payload(_sub(), BINDING)
+        assert payload["user_id"] == "alice.rossi@example.org"
+
+    def test_the_fallback_is_normalised_the_way_provisioning_normalises_it(self):
+        payload = rr.build_member_payload(_sub(email="  Alice.Rossi@Example.org "), BINDING)
+        assert payload["user_id"] == "alice.rossi@example.org"
+
+    def test_a_reported_username_beats_the_email(self):
+        """A user provisioning found rather than created can log in under a name
+        that is not their email, and asking by email says nothing about what
+        their token will carry."""
+        payload = rr.build_member_payload(
+            _sub(email="alice@example.org"), BINDING, keycloak_username="gl-00001"
+        )
+        assert payload["user_id"] == "gl-00001"
+
+    def test_no_username_and_no_email_falls_back_to_the_reference(self, caplog):
+        """The broken value, kept because there is nothing better — and logged,
+        so that a member who cannot resolve themselves is not silent."""
+        with caplog.at_level("WARNING"):
+            payload = rr.build_member_payload(_sub(email=None), BINDING)
+
+        assert payload["user_id"] == "20260727-abcd"
+        assert "cannot resolve" in caplog.text
+
+
 class TestRole:
     def test_pv_makes_a_prosumer(self):
         assert rr.member_role(_sub(extra_data={"has_pv": True})) == "prosumer"
@@ -313,3 +368,19 @@ class TestRegisterMember:
 
         with pytest.raises(ValueError, match="area 'north' unknown"):
             await rr.register_member(_sub())
+
+
+class TestRegisterMemberUserId:
+    async def test_the_username_reaches_the_registry(self, monkeypatch, _configured):
+        calls = _stub_client(monkeypatch, 201)
+
+        await rr.register_member(_sub(), keycloak_username="gl-00001")
+
+        assert calls[0][1].to_dict()["user_id"] == "gl-00001"
+
+    async def test_without_one_the_email_reaches_the_registry(self, monkeypatch, _configured):
+        calls = _stub_client(monkeypatch, 201)
+
+        await rr.register_member(_sub())
+
+        assert calls[0][1].to_dict()["user_id"] == "alice.rossi@example.org"
