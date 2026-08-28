@@ -94,3 +94,43 @@ async def test_connector_unreachable_raises_rather_than_falling_back(monkeypatch
     _patch_httpx(monkeypatch, boom)
     with pytest.raises(ts.SharingOffersUnavailableError):
         await ts.get_sharing_offers("rec")
+
+
+# ── one offer, for the export ─────────────────────────────────────
+
+
+async def test_resolves_one_offer_by_id(monkeypatch):
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
+    monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
+    _serve_offers(monkeypatch)
+
+    offer = await ts.get_sharing_offer("rec", "consent-a")
+
+    assert offer["id"] == "consent-a"
+
+
+async def test_an_offer_this_rec_does_not_publish_is_refused(monkeypatch):
+    """The allow-list decides both questions, because they are one question.
+
+    An offer this community does not offer is not one it may export under, so
+    the export resolves it through the same path the wizard renders from rather
+    than filtering the connector's whole vocabulary.
+    """
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
+    monkeypatch.setattr(
+        ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {"offers": ["consent-b"]}}}
+    )
+    _serve_offers(monkeypatch)
+
+    with pytest.raises(ValueError, match="publishes no sharing offer"):
+        await ts.get_sharing_offer("rec", "consent-a")
+
+
+async def test_an_unreadable_vocabulary_fails_closed(monkeypatch):
+    """Never export against a cached or local copy of the offer's terms."""
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
+    monkeypatch.setattr(ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {}}})
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(503, text="unavailable"))
+
+    with pytest.raises(ts.SharingOffersUnavailableError):
+        await ts.get_sharing_offer("rec", "consent-a")

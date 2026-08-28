@@ -592,3 +592,193 @@ async def test_resolve_failure_is_fatal(monkeypatch, submission, _enable_vc):
 
     with pytest.raises(ValueError, match="Subject id derivation failed"):
         await di.provision_user_identity(submission)
+
+
+# ── reading the consent plane ─────────────────────────────────────
+#
+# The two calls the POD export makes before it writes a file: resolve the
+# offer's controller to the DID the consent plane is keyed by, then ask who
+# currently consents. Both fail closed, and the two failure kinds are kept
+# apart deliberately — a configuration an operator can fix raises `ValueError`,
+# an unreachable or refusing service raises `RuntimeError`, because only the
+# second is worth retrying.
+
+
+@pytest.fixture()
+def _consent_plane(monkeypatch):
+    monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
+    monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30006")
+    monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
+    monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
+    monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
+    di._token_provider = _mock_token_provider()
+
+
+OWNER_RESPONSE = {
+    "id": "grid-operator",
+    "name": "Grid Operator",
+    "did": "did:web:grid-operator.dataspaces.localhost",
+    "aliases": ["grid"],
+    "status": "verified",
+}
+
+AUDIENCE_RESPONSE = {
+    "offer_id": "household-energy-flexibility",
+    "consumer_id": "did:web:grid-operator.dataspaces.localhost",
+    "purpose": ["FlexibilityResearch"],
+    "controller_role": "operations",
+    "datasets": [
+        {
+            "dataset_id": "datasets.silver.meters_15m",
+            "subject_ids": ["did:web:users.example:b", "did:web:users.example:a"],
+            "subject_count": 2,
+        }
+    ],
+}
+
+
+async def test_owner_check_carries_the_did(monkeypatch, _consent_plane):
+    """`/owners/resolve` already returns it; the registry is the only mapping."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=OWNER_RESPONSE))
+
+    check = await di.check_organization("grid-operator")
+
+    assert check.found is True
+    assert check.status == "verified"
+    assert check.did == OWNER_RESPONSE["did"]
+
+
+async def test_resolves_the_controller_to_a_did(monkeypatch, _consent_plane):
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        return httpx.Response(200, json=OWNER_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+
+    assert await di.resolve_consumer_did("grid-operator") == OWNER_RESPONSE["did"]
+    # By alias, through the route that does the id-then-alias fallback itself.
+    assert "owners/resolve" in captured["url"]
+    assert "alias=grid-operator" in captured["url"]
+
+
+async def test_an_unknown_controller_is_refused(monkeypatch, _consent_plane):
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(404, text="Owner not found"))
+
+    with pytest.raises(ValueError, match="does not know"):
+        await di.resolve_consumer_did("grid-operator")
+
+
+async def test_a_controller_without_a_did_is_refused(monkeypatch, _consent_plane):
+    """Registered but not onboarded: the consent plane has no key for it.
+
+    This is the state a fresh deployment is in, and the answer must not be a
+    plausible guess — the connector would return an audience for a wrong DID
+    and nothing in the response would say so.
+    """
+    _patch_httpx(
+        monkeypatch,
+        lambda req: httpx.Response(200, json={**OWNER_RESPONSE, "did": None}),
+    )
+
+    with pytest.raises(ValueError, match="no dataspace identifier"):
+        await di.resolve_consumer_did("grid-operator")
+
+
+async def test_an_unreachable_registry_is_not_a_missing_owner(monkeypatch, _consent_plane):
+    """Retryable, and told apart from the configuration errors beside it."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(503, text="unavailable"))
+
+    with pytest.raises(RuntimeError, match="could not be reached"):
+        await di.resolve_consumer_did("grid-operator")
+
+
+async def test_reads_the_audience_for_an_offer(monkeypatch, _consent_plane):
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        return httpx.Response(200, json=AUDIENCE_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+
+    audience = await di.get_offer_audience(
+        "household-energy-flexibility", "did:web:grid-operator.dataspaces.localhost"
+    )
+
+    assert audience.dataset_id == "datasets.silver.meters_15m"
+    assert audience.subject_ids == frozenset({"did:web:users.example:a", "did:web:users.example:b"})
+    assert audience.subject_count == 2
+    assert "consent/admin/shares" in captured["url"]
+    assert "consumer_id=did%3Aweb%3Agrid-operator.dataspaces.localhost" in captured["url"]
+
+
+async def test_the_audience_call_sends_no_purpose(monkeypatch, _consent_plane):
+    """The connector stamps purpose and role from the offer, and must.
+
+    A caller that cannot supply a purpose cannot omit one, which is what makes
+    the under-specification that answers "nobody" on the connector's internal
+    check unreachable from here.
+    """
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["query"] = req.url.params
+        return httpx.Response(200, json=AUDIENCE_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+
+    assert set(captured["query"].keys()) == {"offer_id", "consumer_id"}
+
+
+async def test_two_datasets_are_refused_rather_than_merged(monkeypatch, _consent_plane):
+    """One file cannot honestly carry two audiences.
+
+    The connector deliberately does not flatten them: reading the first element
+    would be right today and silently wrong the day a second dataset declares
+    the offer — an export made against one dataset's audience and drawn from
+    two. So it is refused here rather than merged.
+    """
+    body = {
+        **AUDIENCE_RESPONSE,
+        "datasets": [
+            AUDIENCE_RESPONSE["datasets"][0],
+            {"dataset_id": "datasets.silver.meters_1h", "subject_ids": [], "subject_count": 0},
+        ],
+    }
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=body))
+
+    with pytest.raises(ValueError, match="two audiences"):
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+
+
+@pytest.mark.parametrize("status", [409, 422])
+async def test_the_connectors_answers_about_the_offer_are_caller_errors(
+    monkeypatch, _consent_plane, status
+):
+    """Unknown offer, or one that is disclosed rather than consented."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(status, text="nope"))
+
+    with pytest.raises(ValueError, match="refused to report an audience"):
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+
+
+async def test_an_unreachable_connector_stops_the_export(monkeypatch, _consent_plane):
+    """Who consents is unknown, which is not the same as nobody consenting."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(500, text="boom"))
+
+    with pytest.raises(RuntimeError, match="must not proceed"):
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+
+
+async def test_an_empty_dataset_list_is_not_read_as_nobody(monkeypatch, _consent_plane):
+    """The connector refuses a dataset-less offer with a 422, so this is a shape
+    this caller was not written against — not a true "nobody consents"."""
+    _patch_httpx(
+        monkeypatch, lambda req: httpx.Response(200, json={**AUDIENCE_RESPONSE, "datasets": []})
+    )
+
+    with pytest.raises(RuntimeError, match="no dataset"):
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x")

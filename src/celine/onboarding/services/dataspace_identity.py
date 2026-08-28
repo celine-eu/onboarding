@@ -174,6 +174,18 @@ class OwnerCheck:
 
     found: bool | None
     status: str | None = None
+    did: str | None = None
+    """The owner's dataspace identifier, when the registry published one.
+
+    Carried because ``/owners/resolve`` already returns it and the POD export
+    needs exactly this mapping: a sharing offer names its controller by *alias*,
+    and the consent plane is keyed by *DID*. The registry is the only place that
+    mapping exists, so reading it here is what stops a second one being invented
+    somewhere else.
+
+    None when the owner was not found, when the registry did not report one, or
+    when the owner has not been onboarded into the dataspace yet.
+    """
 
 
 async def check_organization(org_alias: str) -> OwnerCheck:
@@ -211,12 +223,173 @@ async def check_organization(org_alias: str) -> OwnerCheck:
         )
         return OwnerCheck(found=None)
     try:
-        status = str(resp.json().get("status") or "").strip() or None
+        body = resp.json()
+        status = str(body.get("status") or "").strip() or None
+        did = str(body.get("did") or "").strip() or None
     except ValueError:
         # Found, but the body was not readable. Do not invent a status: an
         # absent one must not read as "not verified" and refuse boot.
         status = None
-    return OwnerCheck(found=True, status=status)
+        did = None
+    return OwnerCheck(found=True, status=status, did=did)
+
+
+async def resolve_consumer_did(controller_alias: str) -> str:
+    """The dataspace identifier of the party a sharing offer names as controller.
+
+    A sharing offer names its controller by **alias** — ``grid-operator``,
+    ``example-org`` — and the connector's consent plane is keyed by **DID**. The
+    identity registry holds the only mapping between the two, and it is already
+    reachable from here: this is the same ``/owners/resolve`` call
+    :func:`check_organization` makes at boot, read for a different field.
+
+    **The alias comes from the offer, never from the community.** The person
+    consented to disclosure to the controller *that offer names*; taking the
+    recipient from anywhere else — a manifest binding, the REC's grid operator —
+    can hand data to a party the offer does not name, which is a disclosure
+    against a consent nobody gave.
+
+    Raises ``ValueError`` when the mapping cannot be made, because every reason
+    it cannot is a deployment configuration an operator can fix, and refusing is
+    the only safe answer: the connector would accept a wrong-but-plausible DID
+    and return an audience for it.
+    """
+    check = await check_organization(controller_alias)
+    if check.found is None:
+        raise RuntimeError(
+            f"The identity registry could not be reached to resolve controller "
+            f"{controller_alias!r}, so the recipient of this disclosure is "
+            "unknown and it must not proceed."
+        )
+    if not check.found:
+        raise ValueError(
+            f"The sharing offer names controller {controller_alias!r}, which the "
+            "identity registry does not know. Register the owner before "
+            "exporting under this offer."
+        )
+    if not check.did:
+        raise ValueError(
+            f"Controller {controller_alias!r} is registered but holds no "
+            "dataspace identifier, so the consent plane has no key to answer "
+            "for it. Onboard the owner into the dataspace — mint its DID and "
+            "record it on the owner — before exporting under this offer."
+        )
+    return check.did
+
+
+@dataclass(frozen=True, slots=True)
+class OfferAudience:
+    """Who currently consents to one offer, for one recipient.
+
+    ``subject_ids`` are dataspace DIDs, which is what makes this joinable
+    against ``Submission.dataspace_did``.
+    """
+
+    dataset_id: str
+    subject_ids: frozenset[str]
+    subject_count: int
+
+
+async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
+    """Ask the connector who currently consents to *offer_id* for *consumer_id*.
+
+    The read counterpart to :func:`provision_user_shares`, and the reason the
+    POD export can stop reading a form. A ``Submission`` records what somebody
+    agreed to on one afternoon; the connector holds the decision as it stands
+    now, including one made or withdrawn in the participant webapp afterwards.
+
+    **The purpose and controller role are not sent, and must not be.** The
+    connector stamps them from the offer, the same way
+    ``POST /consent/admin/shares`` and ``POST /admin/disclosure`` already do. A
+    caller that cannot supply a purpose cannot omit one, which is what makes the
+    under-specification that answers "nobody" on the connector's internal check
+    unreachable from here.
+
+    **``consumer_id`` is required and is never the wildcard.** The standing
+    rows this service writes are wildcard-scoped, and a per-party opt-out beats
+    the standing wildcard. Asking as the wildcard would read only the standing
+    rows and return people who have specifically opted out of *this* recipient —
+    a disclosure against a withdrawn consent, which is the thing the whole
+    change exists to prevent. The connector refuses it; naming the recipient is
+    this caller's part of that.
+
+    **One dataset, or nothing.** The response carries one subject set per
+    dataset the offer resolves to and deliberately does not flatten them. A
+    single CSV cannot honestly carry two audiences: reading the first element
+    would be right today and silently wrong the day a second dataset declares
+    the offer. So more than one is refused here rather than merged.
+    """
+    if not settings.ds_connector_url:
+        raise RuntimeError(
+            "DS_CONNECTOR_URL is not configured, so the connector cannot be asked who consents."
+        )
+
+    base_url = settings.ds_connector_url.rstrip("/")
+    headers = await _auth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{base_url}/consent/admin/shares",
+                params={"offer_id": offer_id, "consumer_id": consumer_id},
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"The connector could not be reached to read the audience for offer "
+            f"{offer_id!r}, so who consents is unknown and the export must not "
+            f"proceed: {exc}"
+        ) from exc
+
+    if resp.status_code in (409, 422):
+        # The connector's own two answers about the offer: unknown, or not
+        # consent-based. Both are the caller naming the wrong offer, and both
+        # are fixable without touching the deployment.
+        raise ValueError(
+            f"The connector refused to report an audience for offer {offer_id!r} "
+            f"({resp.status_code}): {resp.text}"
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"The connector answered {resp.status_code} reading the audience for "
+            f"offer {offer_id!r}, so who consents is unknown and the export must "
+            f"not proceed: {resp.text}"
+        )
+
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"The connector's audience for offer {offer_id!r} was not readable, "
+            "so who consents is unknown and the export must not proceed."
+        ) from exc
+
+    datasets = body.get("datasets") or []
+    if not datasets:
+        # Distinct from "nobody consents": the connector refuses an offer that
+        # resolves to no dataset with a 422, so an empty list here means the
+        # response was not the shape this caller was written against.
+        raise RuntimeError(
+            f"The connector reported no dataset for offer {offer_id!r}; refusing "
+            "to export against an audience that describes nothing."
+        )
+    if len(datasets) > 1:
+        raise ValueError(
+            f"Offer {offer_id!r} resolves to {len(datasets)} datasets "
+            f"({', '.join(str(d.get('dataset_id')) for d in datasets)}), and one "
+            "file cannot carry two audiences without saying which row came from "
+            "which. Export per dataset, or narrow the offer."
+        )
+
+    entry = datasets[0]
+    subject_ids = frozenset(str(s) for s in (entry.get("subject_ids") or []))
+    return OfferAudience(
+        dataset_id=str(entry.get("dataset_id") or ""),
+        subject_ids=subject_ids,
+        # The connector's own count, kept beside the set it was taken from
+        # rather than recomputed: they agreeing is worth being able to assert,
+        # and they are two different claims.
+        subject_count=int(entry.get("subject_count") or 0),
+    )
 
 
 async def _resolve_or_derive_subject(

@@ -443,6 +443,34 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
     return result
 
 
+async def get_sharing_offer(rec_slug: str, offer_id: str) -> dict[str, Any]:
+    """One published sharing offer, as this REC is allowed to use it.
+
+    Resolved through :func:`get_sharing_offers` rather than by filtering the
+    connector's whole vocabulary, so the REC's manifest allow-list applies: an
+    offer this community does not offer is not one it may export under, and the
+    two questions have one answer.
+
+    The record is the connector's published projection — the same facts the
+    person was shown when they decided. That is what makes it the right source
+    for an export's header: coverage, resolution and retention describe what was
+    consented to, and a second copy of them anywhere else is a second record of
+    the same thing waiting to disagree.
+
+    Raises ``ValueError`` when the offer is not one this REC publishes, and
+    :class:`SharingOffersUnavailableError` when the vocabulary cannot be read —
+    the same failure the wizard fails closed on, for the same reason.
+    """
+    offers = await get_sharing_offers(rec_slug)
+    for offer in offers:
+        if offer.get("id") == offer_id:
+            return offer
+    raise ValueError(
+        f"REC {rec_slug!r} publishes no sharing offer {offer_id!r}"
+        + (f" (it publishes: {', '.join(str(o.get('id')) for o in offers)})" if offers else "")
+    )
+
+
 def get_consent_dir(rec_slug: str) -> Path:
     tpl = template_dir_for(rec_slug)
     consent_dir = tpl / "consent"

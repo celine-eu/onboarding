@@ -103,7 +103,9 @@ The onboarding service authenticates to identity-registry using **M2M (machine-t
 - **Auth provider**: `celine.sdk.auth.OidcClientCredentialsProvider` from `celine-sdk>=1.13.0`
 - **Token handling**: The provider acquires tokens via the OIDC client credentials flow, caches them in memory, and auto-refreshes before expiry. No manual token management is needed.
 
-The `httpx.AsyncClient` is configured with the auth provider, so all outgoing requests to identity-registry automatically include a valid Bearer token. The same `svc-ds-onboarding` service token is used for the connector share-provisioning calls, carrying the `connector.consent.provision` scope and `svc-ds-connector` audience.
+The `httpx.AsyncClient` is configured with the auth provider, so all outgoing requests to identity-registry automatically include a valid Bearer token. The same `svc-ds-onboarding` service token is used for the connector calls, carrying `connector.consent.provision` for share provisioning, `connector.consent.audience` for reading a decision back, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience.
+
+`connector.consent.audience` is separate from `.provision` deliberately: provisioning is part of ds's `ds-participant-admin` bundle, and a write grant must not carry bulk subject enumeration with it. It is what `GET /consent/admin/shares` requires, and the POD export is its only caller here.
 
 ## Configuration
 
@@ -247,4 +249,4 @@ The integration follows a **fail-closed** strategy:
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
 - **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`
-- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions, including the `connector.consent.provision` scope and `svc-ds-connector` audience for share provisioning
+- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions, including `connector.consent.provision` for share provisioning, `connector.consent.audience` for the POD export's consent read, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience

@@ -86,6 +86,16 @@ CALLS: tuple[Call, ...] = (
     ),
     Call(
         "connector",
+        "get",
+        "/consent/admin/shares",
+        why=(
+            "Read that decision back before exporting against it: who currently "
+            "consents to this offer. The read counterpart to the POST above, and "
+            "what lets the POD export stop reading the intake form."
+        ),
+    ),
+    Call(
+        "connector",
         "post",
         "/admin/disclosure",
         sends=frozenset(

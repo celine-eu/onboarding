@@ -110,19 +110,58 @@ task export-pod-list -- --rec my-rec \
   --agreement-ref dpa-participation-1.0
 ```
 
-- Rows are members with a **current consent covering that offer**, provisioned to
-  the dataspace. Consent is purpose-scoped: agreeing to a different offer is not
-  agreeing to this handover.
+- **The connector decides who is in the list.** When `DS_CONNECTOR_URL` is set,
+  the export asks `GET /consent/admin/shares` who currently consents to that
+  offer and joins the answer to members by their dataspace DID. Consent is
+  purpose-scoped: agreeing to a different offer is not agreeing to this
+  handover, and the connector enforces that server-side by keying its answer on
+  the offer.
+- **The recipient comes from the offer.** Its `recipients.controller` is an owner
+  alias; the identity registry resolves that to the DID the consent plane is
+  keyed by. Nothing else names the recipient — the person consented to
+  disclosure to the controller *that offer* names, so a manifest binding or the
+  community's grid operator must not stand in for it.
 - The file carries one column. No names, no hashes, no DIDs, no evidence bundle —
   that material lives in the dataspace, where it is verifiable and revocable, and
   a second copy is how two records of the same consent start to disagree.
-- A `DataDisclosed` event records the handover.
+- The header carries the offer's own terms — controller, purpose, coverage,
+  resolution, measures, retention — read from the published vocabulary. They
+  describe what was consented to and are uniform across everyone who accepted
+  the offer, which is why they are not collected from each person.
+- A `DataDisclosed` event records the handover, before the file is written. A
+  refusal means no file.
+
+**Why not the intake form.** A submission records what somebody agreed to on one
+afternoon. The participant webapp owns the ongoing decision and writes it to the
+connector, and nothing writes back here — so reading the local columns left a
+person who granted afterwards **out** of the export, and a person who withdrew
+afterwards **in**. The second is a disclosure of personal data against a
+withdrawn consent, and no re-export cadence fixes it, because the staleness is
+in the source rather than in the snapshot.
 
 **The file is a snapshot, so the re-export cadence is the revocation latency.**
 Somebody who withdraws stays on the recipient's copy until the next run. The
 header states when it was generated and that it goes stale; agree a cadence, tell
 members what it is, and hold to it. This is inherent to an offline handover — it
 disappears if the distributor ever reads consent directly.
+
+**Without a connector the local columns still decide.** A deployment with no
+dataspace has no running system to ask, and the intake form is then the only
+record a consent decision has. The header says which of the two wrote the file
+and, in that case, does not promise that re-exporting picks up a later change —
+because it does not.
+
+**What the export refuses, and why each refusal is safe.** All of these leave no
+file:
+
+| Refusal | Reason |
+|---|---|
+| the REC does not publish that offer | an offer this community does not offer is not one it may export under |
+| the offer names no controller | there is nothing to resolve a recipient from, and guessing one is undetectable in the answer |
+| the controller is unknown to the registry | register the owner first |
+| the controller holds no DID | registered but not onboarded into the dataspace — the consent plane has no key for it |
+| the offer resolves to more than one dataset | one file cannot honestly carry two audiences |
+| the connector or registry is unreachable | who consents is unknown, which is not the same as nobody consenting |
 
 ## Phase B — Governed sharing via the dataspace
 
