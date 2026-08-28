@@ -324,6 +324,10 @@ def _stub_client(monkeypatch, status: int, content: bytes = b""):
             calls.append((community, body))
             return SimpleNamespace(status_code=status, content=content)
 
+        async def patch_member(self, community, member_key, body):
+            calls.append((community, member_key, body))
+            return SimpleNamespace(status_code=status, content=content)
+
     monkeypatch.setattr(rr, "_get_client", lambda: _Client())
     return calls
 
@@ -384,3 +388,71 @@ class TestRegisterMemberUserId:
         await rr.register_member(_sub())
 
         assert calls[0][1].to_dict()["user_id"] == "alice.rossi@example.org"
+
+
+# ── the dataspace DID ─────────────────────────────────────────────────────────
+
+
+class TestSetMemberDid:
+    """The second write to the registry, and the join key the platform needs.
+
+    The connector answers *who consents* in DIDs and the registry knows *what
+    they hold*; without this column nothing joins the two, and the POD export is
+    left reading the intake form — a record of what somebody typed once, not of
+    what the running system says now.
+    """
+
+    async def test_skipped_without_a_registry_url(self, monkeypatch, bind_rec):
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "")
+
+        assert (
+            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:x")
+            == "no registry configured"
+        )
+
+    async def test_skipped_without_a_binding(self, monkeypatch, bind_rec):
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "http://registry:8004")
+
+        assert (
+            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:x")
+            == "this community declares no rec_registry binding"
+        )
+
+    async def test_the_did_reaches_the_addressed_member(self, monkeypatch, _configured):
+        calls = _stub_client(monkeypatch, 200)
+
+        await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+
+        community, member_key, body = calls[0]
+        assert community == "test-community"
+        assert member_key == "20260727-abcd"
+        assert body.to_dict()["did"] == "did:web:alice"
+
+    async def test_nothing_but_the_did_is_sent(self, monkeypatch, _configured):
+        """Absent fields are left alone by the registry, so a patch that named
+        anything else could clobber what an operator changed there since
+        registration. It names one field because it knows one field."""
+        calls = _stub_client(monkeypatch, 200)
+
+        await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+
+        assert list(calls[0][2].to_dict()) == ["did"]
+
+    async def test_a_clash_raises(self, monkeypatch, _configured):
+        """`did` is globally unique in the registry, so 409 means another member
+        already holds this one — two people with one dataspace identity, which
+        would attribute one person's supply points to the other in every export
+        that follows. Retrying does not clear it, so it must not be logged past.
+        """
+        _stub_client(monkeypatch, 409, b"did 'did:web:alice' already belongs to another member")
+
+        with pytest.raises(ValueError, match="already belongs to another member"):
+            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+
+    async def test_an_unknown_member_raises(self, monkeypatch, _configured):
+        _stub_client(monkeypatch, 404, b"member not found")
+
+        with pytest.raises(ValueError, match="REC registry refused the dataspace DID"):
+            await rr.set_member_did(_sub(), member_key="nobody", did="did:web:alice")

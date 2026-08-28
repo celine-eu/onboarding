@@ -23,6 +23,12 @@ The order is load-bearing: the registry keys a member on `(community, user_id)`,
 so the Keycloak user has to exist first, and the dataspace identity is later
 because it is the step that can be retried afterwards.
 
+Step 3 does one thing more than its name says: the DID it mints is written back
+onto the member step 2 created. That is the key anything else uses to attribute a
+dataspace consent to a member, and it cannot be written any earlier because the
+DID does not exist until step 3 runs. A refusal there fails the step, so the
+member is never left holding no DID while the submission reads as approved.
+
 A step that does not apply — a community with no registry binding, a participant
 who gave no sharing consent — is recorded as **skipped**, not silently omitted.
 "Nothing to do" and "never ran" are different facts.

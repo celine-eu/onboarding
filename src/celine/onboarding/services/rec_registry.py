@@ -15,6 +15,12 @@ does not exist is not a state anything downstream can work around.
 Ordering matters and is not cosmetic. The registry keys a member on
 ``(community, user_id)``, so the Keycloak user has to exist first; the dataspace
 identity comes last because it is the step that can be retried.
+
+That ordering is why this module writes to the registry **twice**.
+:func:`register_member` runs at (2); :func:`set_member_did` runs after (3),
+because the DID it writes does not exist until the identity step mints it. The
+second write is what lets the rest of the platform join a dataspace consent back
+to the member who gave it.
 """
 
 from __future__ import annotations
@@ -295,3 +301,66 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
 
     logger.info("Deactivated member %s in community %s", member_key, binding.community)
     return f"deactivated registry member {member_key}"
+
+
+async def set_member_did(submission: Submission, *, member_key: str, did: str) -> str:
+    """Write the participant's dataspace DID onto their registry member.
+
+    **A second call, not a field on the create.** The DID does not exist when the
+    member is registered: it is minted one step later, by the identity registry,
+    so it can only arrive as an update to a row that already exists. Reordering
+    the steps to have it earlier was considered and rejected — the dataspace step
+    is last precisely because it is the one that can be retried, and moving it in
+    front of registration would make member registration fail closed on a
+    dataspace outage.
+
+    **Why the registry needs it at all.** The connector answers *who consents* in
+    DIDs, and the registry knows *what they hold*; nothing joined the two. This
+    column is that join, and without it the POD export has no way to read consent
+    from the running system — it is left reading the intake form, which is the
+    defect this write exists to make fixable.
+
+    Resolving the DID through the identity registry instead does not work and is
+    not a longer version of the same thing: ``Member.user_id`` holds a Keycloak
+    *username*, so the Keycloak user id that hop returns matches no row.
+
+    **A clash raises.** The registry keys ``did`` globally unique, so a ``409``
+    means another member already holds this DID — two people with one dataspace
+    identity, which would attribute one person's supply points to the other in
+    every export that follows. It is not a retry artefact and retrying will not
+    clear it, so it fails the step rather than being logged past. Re-sending a
+    member the DID it already holds is a no-op success at the registry, which is
+    what keeps the retry of this step idempotent.
+    """
+    if not settings.rec_registry_url:
+        return "no registry configured"
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(submission.rec_slug)
+    if not binding.enabled:
+        return "this community declares no rec_registry binding"
+
+    from celine.sdk.openapi.rec_registry.models import MemberPatch
+
+    # Only `did` is sent. Absent fields are left alone by the registry, so this
+    # cannot clobber anything an operator changed there since registration.
+    response = await _get_client().patch_member(binding.community, member_key, MemberPatch(did=did))
+
+    status = getattr(response, "status_code", None)
+    status_value = int(status) if status is not None else 0
+
+    if status_value >= 400:
+        body = getattr(response, "content", b"")
+        detail = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+        raise ValueError(
+            f"REC registry refused the dataspace DID for member {member_key!r} in "
+            f"community {binding.community!r} ({status_value}): {detail}"
+        )
+
+    logger.info(
+        "Member %s in community %s now holds dataspace DID %s",
+        member_key,
+        binding.community,
+        did,
+    )
+    return f"registry member {member_key} holds the dataspace DID"

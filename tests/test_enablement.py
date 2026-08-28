@@ -107,8 +107,13 @@ def happy_path(monkeypatch):
         calls.append("dataspace_share")
         sub.share_provisioned = True
 
+    async def _set_did(sub, *, member_key, did):
+        calls.append(f"set_member_did(member={member_key}, did={did})")
+        return f"registry member {member_key} holds the dataspace DID"
+
     monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _kc)
     monkeypatch.setattr(rec_registry, "register_member", _registry)
+    monkeypatch.setattr(rec_registry, "set_member_did", _set_did)
     monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
     monkeypatch.setattr(dataspace_identity, "provision_user_shares", _shares)
     # The step bodies import `settings` at call time, so patching the singleton's
@@ -133,6 +138,9 @@ class TestEnable:
             "keycloak_user",
             "rec_registry_member",
             "dataspace_identity",
+            # Not a fifth step. Step 3 writes the DID it just minted onto the
+            # member step 2 created, and this list is calls rather than steps.
+            "set_member_did",
             "dataspace_share",
         ]
         assert all(r.status == EnablementStatus.SUCCEEDED for r in rows.values())
@@ -181,6 +189,119 @@ class TestEnable:
         await enablement.enable(db, submission)
         await enablement.enable(db, submission)
         assert len(db.rows) == len(enablement.PIPELINE)
+
+
+# ---------------------------------------------------------------------------
+# The dataspace DID reaches the registry member
+# ---------------------------------------------------------------------------
+
+
+class TestTheDidReachesTheRegistry:
+    """Step 3 mints the DID; the member row is where it has to land.
+
+    The connector answers *who consents* in DIDs and the registry knows *what
+    they hold*. Nothing joins the two unless this write happens, and a member
+    without a DID is silently absent from every consent-driven export — the
+    failure reads as an empty answer rather than as an error.
+    """
+
+    async def test_the_minted_did_is_written_to_the_member(self, db, submission, happy_path):
+        await enablement.enable(db, submission)
+
+        assert "set_member_did(member=member-key-1, did=did:web:member)" in happy_path
+
+    async def test_it_runs_after_the_identity_that_mints_it(self, db, submission, happy_path):
+        """Not a field on the create at step 2: the DID does not exist then."""
+        await enablement.enable(db, submission)
+
+        names = [c.split("(")[0] for c in happy_path]
+        assert names.index("dataspace_identity") < names.index("set_member_did")
+
+    async def test_the_step_says_what_it_did(self, db, submission, happy_path):
+        rows = await enablement.enable(db, submission)
+
+        assert "holds the dataspace DID" in rows[EnablementStep.DATASPACE_IDENTITY].detail
+
+    async def test_no_member_means_nothing_to_write_to(
+        self, db, submission, monkeypatch, happy_path
+    ):
+        """A community with no registry binding skips step 2, so there is no
+        member row to carry a DID. That is a supported configuration, not a
+        failure."""
+
+        async def _registry(sub, *, keycloak_username=None):
+            happy_path.append("rec_registry_member(skipped)")
+            return None
+
+        monkeypatch.setattr(rec_registry, "register_member", _registry)
+
+        rows = await enablement.enable(db, submission)
+
+        assert not [c for c in happy_path if c.startswith("set_member_did")]
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SUCCEEDED
+
+    async def test_no_identity_means_nothing_to_write(
+        self, db, submission, monkeypatch, happy_path
+    ):
+        """A community outside the dataspace mints no DID, so step 3 skips and
+        the registry is not patched with nothing."""
+
+        async def _identity(sub, **kwargs):
+            happy_path.append("dataspace_identity(skipped)")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
+
+        rows = await enablement.enable(db, submission)
+
+        assert not [c for c in happy_path if c.startswith("set_member_did")]
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SKIPPED
+
+    async def test_a_refused_did_fails_the_step_closed(
+        self, db, submission, monkeypatch, happy_path
+    ):
+        """A member left without a DID is invisible to every consent-driven
+        export, which is the same class of failure as a member who does not
+        exist — so it blocks approval rather than being logged past."""
+
+        async def _set_did(sub, *, member_key, did):
+            raise ValueError("did 'did:web:member' already belongs to another member")
+
+        monkeypatch.setattr(rec_registry, "set_member_did", _set_did)
+
+        with pytest.raises(EnablementError) as exc:
+            await enablement.enable(db, submission)
+
+        assert exc.value.step == EnablementStep.DATASPACE_IDENTITY
+        rows = await enablement.load_steps(db, submission.id)
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.FAILED
+        assert (
+            "already belongs to another member"
+            in rows[EnablementStep.DATASPACE_IDENTITY].last_error
+        )
+
+    async def test_a_retry_of_the_step_alone_still_finds_the_member(
+        self, db, submission, monkeypatch, happy_path
+    ):
+        """The member key is read from step 2's row rather than threaded through
+        arguments, so repairing step 3 on its own does not need step 2 to run
+        again."""
+        attempts: list[str] = []
+
+        async def _set_did(sub, *, member_key, did):
+            attempts.append(member_key)
+            if len(attempts) == 1:
+                raise ValueError("registry unreachable")
+            return f"registry member {member_key} holds the dataspace DID"
+
+        monkeypatch.setattr(rec_registry, "set_member_did", _set_did)
+
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_IDENTITY)
+
+        assert attempts == ["member-key-1", "member-key-1"]
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SUCCEEDED
 
 
 # ---------------------------------------------------------------------------

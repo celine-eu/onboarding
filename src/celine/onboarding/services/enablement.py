@@ -13,6 +13,12 @@ The order is load-bearing. The registry keys a member on `(community, user_id)`,
 so the Keycloak user has to exist first; the dataspace identity is later because
 it is the step that can be retried afterwards.
 
+Step 3 does one more thing than its name says: it writes the DID it mints back
+onto the member step 2 created. That is deliberate rather than untidy — the DID
+does not exist any earlier, and it is the key anything else uses to attribute a
+dataspace consent to a member. A member without one is invisible to every
+consent-driven export, so it fails closed with the rest of the step.
+
 "Fails closed" means the submission does **not** become approved. What changed is
 that the failure is now durable: the step row records which step, why, and how
 many times, so the remedy is retrying that step rather than pressing Approve again
@@ -87,6 +93,21 @@ class RunContext:
             return row.external_ref
         return None
 
+    @property
+    def registry_member_key(self) -> str | None:
+        """The member step 2 created, for step 3 to write the DID onto.
+
+        Read from the step row for the same reason as
+        :attr:`keycloak_user_id`: a *retry of step 3 alone* has to find it, and
+        it is on the row rather than threaded through arguments. ``None`` when
+        step 2 was skipped — this community declares no registry — so there is
+        no member to write to.
+        """
+        row = self.rows.get(EnablementStep.REC_REGISTRY_MEMBER)
+        if row is not None and row.status == EnablementStatus.SUCCEEDED:
+            return row.external_ref
+        return None
+
 
 # ---------------------------------------------------------------------------
 # The steps
@@ -157,7 +178,42 @@ async def _run_dataspace_identity(ctx: RunContext) -> StepOutcome:
             EnablementStatus.SKIPPED,
             detail="this community declares no dataspace binding",
         )
-    return StepOutcome(EnablementStatus.SUCCEEDED, external_ref=ctx.submission.dataspace_vc_id)
+
+    # The DID this step just minted goes onto the registry member, which is the
+    # only place anything can join a dataspace consent back to the person who
+    # gave it: the connector answers *who consents* in DIDs, and the registry
+    # knows *what they hold*. It belongs to this step rather than to step 2
+    # because the DID does not exist until this step runs.
+    #
+    # Inside the step, not beside it, and that is deliberate. A member left
+    # without a DID is invisible to every consent-driven export — the same class
+    # of failure as a member who does not exist, which is why step 2 fails
+    # closed too. It is also why the failure must not be swallowed: the export
+    # would silently omit them and read as complete.
+    detail = await _write_member_did(ctx)
+
+    return StepOutcome(
+        EnablementStatus.SUCCEEDED,
+        external_ref=ctx.submission.dataspace_vc_id,
+        detail=detail,
+    )
+
+
+async def _write_member_did(ctx: RunContext) -> str | None:
+    """Put the minted DID on the registry member, if there is one."""
+    from celine.onboarding.services.rec_registry import set_member_did
+
+    member_key = ctx.registry_member_key
+    if member_key is None:
+        return None
+    if not ctx.submission.dataspace_did:
+        return None
+
+    return await set_member_did(
+        ctx.submission,
+        member_key=member_key,
+        did=ctx.submission.dataspace_did,
+    )
 
 
 async def _revoke_dataspace_identity(ctx: RunContext, row: SubmissionEnablementStep) -> str:

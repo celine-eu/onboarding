@@ -212,6 +212,16 @@ Registry registration **fails closed**, so a dataspace identity is never issued
 to somebody who is not a community member. See `AGENTS.md` for what is derived
 from the wizard's answers and what is deliberately not.
 
+The traffic goes the other way once, too. After the dataspace identity step
+succeeds, onboarding writes the minted DID back onto the registry member with
+`PATCH /communities/{community}/members/{key}`, sending `did` and nothing else.
+This is what lets the rest of the platform join a dataspace consent — which the
+connector answers in DIDs — to the member who holds the supply points. It is a
+second call rather than a field on the create because the DID does not exist when
+the member is registered, and it fails the step when the registry refuses: `did`
+is globally unique there, so a `409` means another member already holds it, and
+retrying will not clear that.
+
 The member carries two identifiers and they are not interchangeable. `key` is the
 registry's own handle on the member and is the submission reference. `user_id` is
 **the Keycloak username** — read back from provisioning, falling back to the
