@@ -99,7 +99,10 @@ def happy_path(monkeypatch):
         return "member-key-1"
 
     async def _identity(sub, **kwargs):
-        calls.append(f"dataspace_identity(kc={kwargs.get('keycloak_user_id')})")
+        calls.append(
+            f"dataspace_identity(kc={kwargs.get('keycloak_user_id')}, "
+            f"username={kwargs.get('keycloak_username')})"
+        )
         sub.dataspace_vc_id = "cred-1"
         sub.dataspace_did = "did:web:member"
 
@@ -155,7 +158,7 @@ class TestEnable:
     async def test_keycloak_user_id_reaches_later_steps(self, db, submission, happy_path):
         """The dataspace sync maps a DID onto the Keycloak user, so the id has to flow."""
         await enablement.enable(db, submission)
-        assert "dataspace_identity(kc=kc-123)" in happy_path
+        assert any(c.startswith("dataspace_identity(kc=kc-123,") for c in happy_path)
 
     async def test_the_keycloak_username_reaches_the_registry(self, db, submission, happy_path):
         """Not the user id: the registry resolves a self-service caller by
@@ -194,6 +197,37 @@ class TestEnable:
 # ---------------------------------------------------------------------------
 # The dataspace DID reaches the registry member
 # ---------------------------------------------------------------------------
+
+
+class TestTheUsernameReachesTheIdentityRegistry:
+    """One person, named the same way by every system that has to agree.
+
+    Step 2 writes the Keycloak username into `Member.user_id`; step 3 must send
+    the *same* value to the identity registry, because the connector reads it
+    back to name a consenting subject to the data plane and `dataset-api`
+    resolves that against `Member.user_id`. Taking it from one provisioning
+    result is what stops the two ends drifting apart.
+    """
+
+    async def test_the_username_is_passed_to_the_identity_step(self, db, submission, happy_path):
+        await enablement.enable(db, submission)
+
+        assert any("username=member@example.org" in c for c in happy_path)
+
+    async def test_it_is_the_same_value_the_member_row_got(self, db, submission, happy_path):
+        """Not the email re-derived a second time: one read, two destinations.
+
+        A user this service adopted has a username that is not their email, and
+        deriving it separately in each place is how the registry member and the
+        dataspace mapping come to disagree about who somebody is.
+        """
+        await enablement.enable(db, submission)
+
+        member = next(c for c in happy_path if c.startswith("rec_registry_member"))
+        identity = next(c for c in happy_path if c.startswith("dataspace_identity"))
+        written = member.split("user=")[1].rstrip(")")
+
+        assert f"username={written}" in identity
 
 
 class TestTheDidReachesTheRegistry:

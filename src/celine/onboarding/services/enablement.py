@@ -169,6 +169,11 @@ async def _run_dataspace_identity(ctx: RunContext) -> StepOutcome:
         ctx.submission,
         keycloak_user_id=ctx.keycloak_user_id,
         keycloak_realm=(settings.dataspace_keycloak_realm if ctx.keycloak_user_id else None),
+        # The same value step 2 wrote into `Member.user_id`. The identity
+        # registry stores it beside the DID, and the connector reads it back to
+        # name this person to the data plane — so the two systems that have to
+        # agree are given one value from one source.
+        keycloak_username=ctx.keycloak_username,
         # The consent share is step 4, with its own row and its own retry. Fusing
         # them meant a soft failure was invisible inside a hard one.
         provision_shares=False,

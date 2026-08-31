@@ -422,8 +422,18 @@ async def provision_user_identity(
     *,
     keycloak_user_id: str | None = None,
     keycloak_realm: str | None = None,
+    keycloak_username: str | None = None,
     provision_shares: bool = True,
 ) -> None:
+    """Mint the participant's dataspace identity, and tell Keycloak who they are.
+
+    ``keycloak_username`` is what provisioning read back from Keycloak. It is the
+    same value that becomes ``Member.user_id`` in the REC registry, and passing
+    it here is what lets the data plane join the two — see :func:`_sync_keycloak`.
+    Optional, because a retry of this step alone has no provisioning result to
+    read it from; the registry then falls back to the email, which is right for
+    every user this service created and wrong only for one it adopted.
+    """
     if not settings.dataspace_enabled:
         return
     if submission.dataspace_vc_id:
@@ -516,6 +526,7 @@ async def provision_user_identity(
             keycloak_user_id=keycloak_user_id,
             keycloak_realm=keycloak_realm,
             email=submission.email,
+            username=keycloak_username,
             credential_id=cred_id,
             organization_alias=org_alias,
         )
@@ -800,9 +811,31 @@ async def _sync_keycloak(
     keycloak_user_id: str,
     keycloak_realm: str,
     email: str | None,
+    username: str | None = None,
     credential_id: str,
     organization_alias: str = "",
 ) -> None:
+    """Put the DID on the Keycloak user, and the username beside it.
+
+    Fixes [#2](https://github.com/celine-eu/onboarding/issues/2).
+
+    **The username is what the data plane joins on.** A dataspace decision names
+    people by DID; the systems holding their data do not. The connector
+    translates one to the other through this registry
+    (`POST /users/identities` → `KeycloakMapping.username or .email`) and hands
+    the answer to the celine `dataset-api`, which resolves it against
+    `Member.user_id` — the value :func:`rec_registry.member_user_id` writes from
+    the same provisioning result this argument comes from. Sending the username
+    is what keeps both ends naming a person the same way.
+
+    **Email is the registry's fallback, not a substitute.** Omitting the username
+    leaves the connector resolving subjects by email, which is right only while
+    username == email. That is this service's own convention for users it
+    creates and explicitly not the platform's: `_find_user` also adopts a user
+    whose username is something else, and for them the two ends would disagree —
+    the row filter resolves nobody, the handler denies, and a person who
+    consented silently gets no rows.
+    """
     sync_body = {
         "did": did,
         "keycloak_realm": keycloak_realm,
@@ -810,6 +843,8 @@ async def _sync_keycloak(
     }
     if email:
         sync_body["email"] = email
+    if username:
+        sync_body["username"] = username
 
     last_error: Exception | None = None
     for attempt in range(1, _KC_SYNC_MAX_RETRIES + 1):

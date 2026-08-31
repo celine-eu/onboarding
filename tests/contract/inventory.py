@@ -66,8 +66,12 @@ CALLS: tuple[Call, ...] = (
         "ir",
         "post",
         "/admin/keycloak/sync",
-        sends=frozenset({"did", "keycloak_realm", "keycloak_user_id", "email"}),
-        why="Put the dataspace DID on the Keycloak user.",
+        sends=frozenset({"did", "keycloak_realm", "keycloak_user_id", "email", "username"}),
+        why=(
+            "Put the dataspace DID on the Keycloak user, and the username beside "
+            "it — the connector reads that back to name a consenting subject to "
+            "the data plane, which joins it against the registry's Member.user_id."
+        ),
     ),
     Call("ir", "get", "/admin/credentials/{cred_id}", why="Read a credential back when revoking."),
     Call("ir", "delete", "/admin/credentials/{cred_id}", why="Revoke the credential on removal."),

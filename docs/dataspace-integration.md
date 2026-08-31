@@ -50,7 +50,7 @@ sequenceDiagram
     Onboarding->>IdRegistry: POST /admin/memberships<br/>{user_did, organization_alias, role}
     IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
 
-    Onboarding->>IdRegistry: POST /admin/keycloak/sync<br/>{subjectDid, userId, realm}
+    Onboarding->>IdRegistry: POST /admin/keycloak/sync<br/>{subjectDid, userId, realm, username}
     IdRegistry->>KC: Set dataspace_did attribute
     IdRegistry-->>Onboarding: 200 OK
 
@@ -84,6 +84,8 @@ sequenceDiagram
 4. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization with the manifest's `dataspace.membership_role`. A `409 Conflict` is treated as success; a `404` means the organization does not exist. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
 
 5. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
+
+    It also sends the **username** Keycloak returned at step 1 -- the same value step 2 wrote into `Member.user_id`. That is what lets a dataspace decision be applied to rows: the connector translates consenting subject DIDs into usernames through this registry (`POST /users/identities`, which reads `KeycloakMapping.username` and falls back to `email`) and hands them to the celine `dataset-api`, which resolves them against `Member.user_id`. Sending it keeps both ends naming one person the same way. Omitting it leaves the email fallback standing, which is correct only while username == email -- this service's own convention for users it creates, and **not** the platform's: `_find_user` also adopts a Keycloak user whose username is something else, and for them the row filter would resolve nobody and the data plane would deny rows a person had consented to. The value is optional because a retry of step 3 alone has no provisioning result to read it from; the key is then omitted rather than sent as null, so a good value already in the registry is never overwritten with nothing.
 
 6. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping.
 

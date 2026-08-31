@@ -401,6 +401,108 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
     assert "keycloak/sync" in calls[3]
 
 
+async def test_kc_sync_carries_the_username_the_data_plane_joins_on(
+    monkeypatch, submission, _enable_vc
+):
+    """The identity registry is told what this person is called, not just who.
+
+    A dataspace decision names people by DID and the systems holding their data
+    do not. The connector translates one to the other through this registry and
+    hands the answer to `dataset-api`, which resolves it against the REC
+    registry's `Member.user_id` — the same value provisioning wrote there. Both
+    ends therefore have to be given one value from one source, and this call is
+    where it crosses.
+    """
+    di._token_provider = _mock_token_provider()
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "keycloak/sync" in url:
+            bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"status": "synced"})
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(
+        submission,
+        keycloak_user_id="kc-user-123",
+        keycloak_realm="dataspaces",
+        keycloak_username="alice.adopted",
+    )
+
+    assert bodies[0]["username"] == "alice.adopted"
+
+
+async def test_kc_sync_sends_the_username_even_when_it_differs_from_the_email(
+    monkeypatch, submission, _enable_vc
+):
+    """The case the email fallback gets wrong, and the reason to send both.
+
+    `_find_user` adopts a Keycloak user whose username is not their email, and
+    the registry member then holds that username. Leaving the registry to fall
+    back to the email would have the connector name a subject the data plane
+    cannot resolve — the row filter matches nobody, the handler denies, and
+    somebody who consented silently receives no rows.
+    """
+    di._token_provider = _mock_token_provider()
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "keycloak/sync" in url:
+            bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"status": "synced"})
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(
+        submission,
+        keycloak_user_id="kc-user-123",
+        keycloak_realm="dataspaces",
+        keycloak_username="adopted-handle",
+    )
+
+    assert bodies[0]["username"] == "adopted-handle"
+    assert bodies[0]["email"] == "user@example.com"
+
+
+async def test_kc_sync_omits_the_username_when_there_is_none(monkeypatch, submission, _enable_vc):
+    """A retry of this step alone has no provisioning result to read it from.
+
+    Sending `username: null` would overwrite a good value in the registry with
+    nothing; omitting the key leaves whatever is already there and lets the
+    email fallback stand, which is right for every user this service created.
+    """
+    di._token_provider = _mock_token_provider()
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "keycloak/sync" in url:
+            bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"status": "synced"})
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(
+        submission,
+        keycloak_user_id="kc-user-123",
+        keycloak_realm="dataspaces",
+    )
+
+    assert "username" not in bodies[0]
+
+
 async def test_kc_sync_partial_is_accepted_and_warned(monkeypatch, submission, _enable_vc, caplog):
     """A 200 'partial' sync must succeed (no rollback) but log a warning."""
     di._token_provider = _mock_token_provider()
