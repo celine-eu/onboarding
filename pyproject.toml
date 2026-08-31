@@ -25,7 +25,11 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "boto3>=1.35",
-    "celine-sdk>=1.15.0",
+    # 1.16.0 is the first release carrying `MemberPatch.did`,
+    # `lookup_members_by_dids` and `RecRegistryApiError` — the DID write and the
+    # supply-point read the POD export is built on. 1.15.0 resolves and then
+    # fails at the call, which is what a floor exists to prevent.
+    "celine-sdk>=1.16.0",
     "phonenumbers>=8.13",
 ]
 
