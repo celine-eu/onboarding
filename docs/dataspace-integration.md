@@ -107,6 +107,8 @@ The `httpx.AsyncClient` is configured with the auth provider, so all outgoing re
 
 `connector.consent.audience` is separate from `.provision` deliberately: provisioning is part of ds's `ds-participant-admin` bundle, and a write grant must not carry bulk subject enumeration with it. It is what `GET /consent/admin/shares` requires, and the POD export is its only caller here.
 
+The same token carries **`rec-registry.lookup`** for the other half of that export: the DIDs the connector returns are resolved to supply points through `POST /admin/lookup/members-by-dids` on the rec-registry, which is also where `set_member_did` wrote the DID at step 6. One grant covers both lookup actions -- `rec_registry/access.rego` grants `lookup` and `assets.lookup` from it -- so there is no `rec-registry.assets.lookup` to declare. It is granted in `celine-policies/clients.ds-host.yaml`, the host overlay, because `rec-registry.*` is celine's vocabulary added on top of a client ds declares.
+
 ## Configuration
 
 ### Identity provisioning settings
@@ -249,4 +251,4 @@ The integration follows a **fail-closed** strategy:
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
 - **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`
-- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions, including `connector.consent.provision` for share provisioning, `connector.consent.audience` for the POD export's consent read, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience
+- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions, including `connector.consent.provision` for share provisioning, `connector.consent.audience` for the POD export's consent read, `rec-registry.lookup` for its supply-point read, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience

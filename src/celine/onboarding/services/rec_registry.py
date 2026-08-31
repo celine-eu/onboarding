@@ -21,6 +21,12 @@ That ordering is why this module writes to the registry **twice**.
 because the DID it writes does not exist until the identity step mints it. The
 second write is what lets the rest of the platform join a dataspace consent back
 to the member who gave it.
+
+It also **reads**, outside enablement entirely. :func:`supply_points_by_did` is
+the other half of that join: the POD export asks the connector who consents, in
+DIDs, and asks here what they hold. That is why the export no longer reads the
+submission it was once written from — the form is what somebody typed once, and
+the registry is what the community says now.
 """
 
 from __future__ import annotations
@@ -46,10 +52,12 @@ def _get_client():
     (``celine``) — the registry validates against it just as the dataspace
     services do.
 
-    The client needs ``rec-registry.members.write`` and nothing else: not
-    ``assets.write``, since onboarding registers no assets, and certainly not
-    ``rec-registry.admin``, which would also grant importing, exporting and
-    purging. It also needs the registry in its audience.
+    The client needs ``rec-registry.members.write`` to register a member and
+    ``rec-registry.lookup`` to read supply points back — one grant for both
+    lookup actions, which is why there is no ``rec-registry.assets.lookup`` to
+    declare. Not ``assets.write``, since onboarding registers no assets, and
+    certainly not ``rec-registry.admin``, which would also grant importing,
+    exporting and purging. It also needs the registry in its audience.
     """
     global _client
     if _client is None:
@@ -364,3 +372,106 @@ async def set_member_did(submission: Submission, *, member_key: str, did: str) -
         did,
     )
     return f"registry member {member_key} holds the dataspace DID"
+
+
+async def supply_points_by_did(dids: list[str], *, rec_slug: str) -> dict[str, list[str]] | None:
+    """What the registry says each of these dataspace DIDs holds, as supply points.
+
+    The second half of the join :func:`set_member_did` wrote. The connector
+    answers *who consents*, in DIDs; this answers *what they hold*, and the POD
+    export is the two put together — so it reads the running system twice and
+    the intake form not at all.
+
+    Returns ``None`` when there is no registry to ask: no ``REC_REGISTRY_URL``,
+    or a community whose manifest declares no ``rec_registry`` block. Both are
+    supported configurations, and the caller falls back to what it collected at
+    intake rather than exporting nothing. ``{}`` is a different answer — the
+    registry was asked and matched nobody — and must not be confused with it.
+
+    **Only this community's members.** ``did`` is globally unique in the
+    registry and the lookup is deliberately cross-community, so a DID can come
+    back on a member of somewhere else. Their consent to the offer is real and
+    their supply point is still not this community's to disclose, so the row is
+    dropped here rather than at the registry.
+
+    **Only active members.** ``pending``, ``suspended`` and ``inactive`` are all
+    states in which the REC has said this person is not participating, and a
+    disclosure of their supply point would contradict that. It also closes the
+    gap left by revocation: ``delete_member`` deactivates the member but the DID
+    stays on the row — nothing can unset it through ``PATCH`` — so status is the
+    only thing that takes a revoked participant back out of the export.
+
+    **Declared and commissioned supply points are unioned, not ranked.**
+    ``Member.delivery_points`` carries the POD this service wrote at onboarding,
+    before any meter exists; a commissioned meter carries its own in
+    ``properties.pod`` and is reachable only through ``assets-by-user-ids`` and
+    the ``user_id`` in the member row. They are two records of one fact and
+    normally agree — but a member the REC manager imported may have either one
+    alone, and dropping a supply point because the community recorded it in the
+    other place would exclude somebody who consented.
+
+    Requires ``rec-registry.lookup``, which grants both lookup actions. A refused
+    request raises rather than answering an empty list: an empty list here means
+    "these people hold nothing", and a denial that read as one would quietly
+    export fewer supply points than were authorised.
+    """
+    if not settings.rec_registry_url:
+        return None
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(rec_slug)
+    if not binding.enabled:
+        logger.debug("REC %r declares no rec_registry binding; not reading supply points", rec_slug)
+        return None
+
+    wanted = [did.strip() for did in dict.fromkeys(dids) if did and did.strip()]
+    if not wanted:
+        return {}
+
+    client = _get_client()
+    members = await client.lookup_members_by_dids(wanted)
+
+    found: dict[str, list[str]] = {}
+    did_by_user_id: dict[str, str] = {}
+
+    for member in members:
+        did = (getattr(member, "did", None) or "").strip()
+        if not did:
+            continue
+        if member.community_key != binding.community:
+            logger.info(
+                "DID %s belongs to member %s of community %s, not %s; not in this export",
+                did,
+                member.key,
+                member.community_key,
+                binding.community,
+            )
+            continue
+        if (member.status or "").strip().lower() != "active":
+            logger.info(
+                "Member %s in community %s is %s, so their supply points are not disclosed",
+                member.key,
+                binding.community,
+                member.status,
+            )
+            continue
+
+        pods = [
+            dp.id.strip()
+            for dp in (member.delivery_points or [])
+            if dp.id and dp.id.strip() and dp.active is not False
+        ]
+        found[did] = list(dict.fromkeys(pods))
+        if member.user_id:
+            did_by_user_id.setdefault(member.user_id, did)
+
+    if did_by_user_id:
+        for asset in await client.lookup_assets_by_user_ids(list(did_by_user_id)):
+            if asset.asset_type != "meter" or asset.community_key != binding.community:
+                continue
+            pod = str((asset.properties or {}).get("pod") or "").strip()
+            did = did_by_user_id.get(asset.owner_user_id, "")
+            if pod and did and pod not in found.get(did, []):
+                found[did].append(pod)
+
+    return found

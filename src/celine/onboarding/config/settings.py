@@ -133,7 +133,20 @@ class Settings(BaseSettings):
     dataspace_keycloak_temporary_password: bool = False
     dataspace_keycloak_update_existing: bool = True
 
-    model_config = {"env_file": str(REPO_ROOT / ".env"), "env_file_encoding": "utf-8"}
+    # `.env` then `.env.local`, and the second wins. `.env` is the deployment's
+    # configuration — the file that is written once and shared; `.env.local` is
+    # this machine's overrides and is gitignored, which is what makes it the
+    # right home for a value that is true here and nowhere else: a developer's
+    # own service URLs, and the dev secrets that must not travel. Same split as
+    # `celine-policies/taskfile.local.yaml`, for the same reason.
+    #
+    # Neither file has to exist. A deployment that configures the process
+    # through real environment variables is unaffected: those still win over
+    # both, because pydantic-settings reads the environment first.
+    model_config = {
+        "env_file": (str(REPO_ROOT / ".env"), str(REPO_ROOT / ".env.local")),
+        "env_file_encoding": "utf-8",
+    }
 
     def resolve_path(self, value: str) -> Path:
         p = Path(value)

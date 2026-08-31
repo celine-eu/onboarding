@@ -1,6 +1,6 @@
 import csv
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
-from celine.onboarding.services import dataspace_identity, template_service
+from celine.onboarding.services import dataspace_identity, rec_registry, template_service
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,17 @@ class _Audience:
 
     source: str
     """``connector`` or ``submission`` — named in the file's own header."""
+
+    pod_source: str = "submission"
+    """``registry`` or ``submission``: which system the supply points came from.
+
+    Independent of :attr:`source`, and named separately in the header for that
+    reason. The two questions have different owners — the connector holds the
+    consent, the registry holds the supply points — and a deployment can be
+    configured to answer one from the running system and the other from what
+    intake recorded. A header that named only the first would let a reader
+    assume the second.
+    """
 
     dataset_id: str | None = None
     consumer_did: str | None = None
@@ -172,54 +183,26 @@ def _offer_terms(offer: dict | None) -> list[str]:
     return lines
 
 
-async def export_pod_list(
+async def _submitted_pods(
     db: AsyncSession,
-    output_path: str | Path,
     *,
     rec_slug: str,
     offer_id: str,
-    recipient_ref: str,
-    generated_at: datetime,
-    purpose: list[str] | None = None,
-    agreement_ref: str | None = None,
-) -> int:
-    """Write the list of supply points whose owners agreed, and nothing else.
+    subject_ids: frozenset[str] | None,
+) -> list[str]:
+    """The supply points as intake recorded them — the fallback, not the source.
 
-    The distributor needs the PODs it may hand over. It does not need names,
-    hashes, DIDs or evidence bundles — that material belongs in the dataspace,
-    where it is verifiable and revocable, and copying it into a second store is
-    how two records of the same consent start to disagree. So minimisation is the
-    shape of this command rather than a step in a runbook someone skips.
+    Reached in two configurations, and in both because there is nothing better to
+    read. With no connector there is no record of a consent decision but this
+    one; with no registry — or a community that declares no ``rec_registry``
+    block — there is nowhere to ask what a member holds. Both are supported
+    deployments, and the file's header says which of the two wrote it rather than
+    letting a reader assume the running system was consulted.
 
-    **The connector decides who is in the list, not the intake form.** A
-    ``Submission`` records what somebody agreed to on one afternoon; it is not
-    the state of the running system and stops being true the moment anything
-    else changes it. The participant webapp owns the ongoing decision and writes
-    it to the connector, and nothing writes back here — so reading the three
-    local columns left a person who granted afterwards **out** of the export, and
-    a person who withdrew afterwards **in**. The second is a disclosure against a
-    withdrawn consent.
-
-    Filtered on a consent for *this offer*: consent is purpose-scoped, so someone
-    who agreed to a different offer has not agreed to this handover. The
-    connector enforces that server-side by keying its answer on the offer.
-
-    **Where there is no connector, the local columns still decide.** A deployment
-    without a dataspace has no running system to ask, and the intake form is then
-    the only record a consent decision has. The header says which of the two
-    wrote the file, because a reader cannot otherwise tell and the two carry
-    different guarantees.
-
-    **The file is a snapshot, and the re-export cadence is the revocation
-    latency.** Somebody who withdraws stays on the recipient's copy until the next
-    run, so the file says when it was made and that it goes stale. That promise is
-    only true when the list comes from the connector — a re-export against the
-    local columns reproduces the same staleness every time, because the staleness
-    is in the source rather than in the snapshot — so the header says so only
-    when it holds.
+    ``subject_ids`` still decides *who* when the connector answered, so a
+    deployment with a connector and no registry keeps the consent fix and loses
+    only the supply-point half.
     """
-    audience, offer, subject_ids = await _resolve_audience(rec_slug, offer_id)
-
     query = (
         select(Submission)
         .where(Submission.rec_slug == rec_slug)
@@ -253,6 +236,98 @@ async def export_pod_list(
             if sub.dataspace_did and sub.dataspace_did in subject_ids and sub.pod_code
         ]
 
+    return [str(sub.pod_code) for sub in rows]
+
+
+async def export_pod_list(
+    db: AsyncSession,
+    output_path: str | Path,
+    *,
+    rec_slug: str,
+    offer_id: str,
+    recipient_ref: str,
+    generated_at: datetime,
+    purpose: list[str] | None = None,
+    agreement_ref: str | None = None,
+) -> int:
+    """Write the list of supply points whose owners agreed, and nothing else.
+
+    The distributor needs the PODs it may hand over. It does not need names,
+    hashes, DIDs or evidence bundles — that material belongs in the dataspace,
+    where it is verifiable and revocable, and copying it into a second store is
+    how two records of the same consent start to disagree. So minimisation is the
+    shape of this command rather than a step in a runbook someone skips.
+
+    **The running system decides what goes in it, not the intake form.** Two
+    questions, two owners, and a ``Submission`` answers neither: the connector
+    holds who currently consents, and the registry holds which supply points they
+    hold. A submission records what somebody agreed to on one afternoon, and
+    stops being true the moment anything else changes it.
+
+    *Who* — the participant webapp owns the ongoing decision and writes it to the
+    connector, and nothing writes back here, so reading the three local columns
+    left a person who granted afterwards **out** of the export and a person who
+    withdrew afterwards **in**. The second is a disclosure against a withdrawn
+    consent.
+
+    *What they hold* — ``Member.delivery_points`` is what the community records
+    now, and a POD an operator corrected there has never reached this database.
+    Reading the registry also answers for a participant this service never
+    registered: an imported member consents through the same offer and was
+    silently absent from every export.
+
+    Filtered on a consent for *this offer*: consent is purpose-scoped, so someone
+    who agreed to a different offer has not agreed to this handover. The
+    connector enforces that server-side by keying its answer on the offer.
+
+    **Where there is nothing to ask, the local record still decides.** A
+    deployment without a dataspace has no connector holding a consent decision,
+    and one without a registry — or a community declaring no ``rec_registry``
+    block — has nowhere to ask what a member holds. Both are supported
+    configurations, and they are independent: the file names its source for each
+    of the two questions, because a reader cannot otherwise tell and the answers
+    carry different guarantees.
+
+    **The file is a snapshot, and the re-export cadence is the revocation
+    latency.** Somebody who withdraws stays on the recipient's copy until the next
+    run, so the file says when it was made and that it goes stale. That promise is
+    only true when the list comes from the connector — a re-export against the
+    local columns reproduces the same staleness every time, because the staleness
+    is in the source rather than in the snapshot — so the header says so only
+    when it holds.
+    """
+    audience, offer, subject_ids = await _resolve_audience(rec_slug, offer_id)
+
+    # **The registry says what they hold.** `Submission.pod_code` is what one
+    # person typed into a form on one afternoon; `Member.delivery_points` is what
+    # the community records now, and the two stop agreeing the moment a REC
+    # manager corrects one of them. The registry is also the only source that can
+    # answer for a participant this service never registered — somebody imported
+    # by the REC manager consents through the same offer and was silently absent
+    # from every export, which is the same defect as reading the form, one step
+    # further along.
+    #
+    # Keyed on the DID, so it can only be asked where the connector answered.
+    # A deployment with no dataspace mints no DIDs, and there is no other join:
+    # `Member.user_id` is a Keycloak username and `assets-by-user-ids` answers
+    # assets, which is empty for every participant whose meter is not yet
+    # installed.
+    held = None
+    if subject_ids is not None:
+        held = await rec_registry.supply_points_by_did(sorted(subject_ids), rec_slug=rec_slug)
+
+    if held is not None:
+        audience = replace(audience, pod_source="registry")
+        # Deduplicated across members and sorted. `subject_ids` is a frozenset,
+        # so neither the request nor the response has a stable order between
+        # runs; a list of supply points has no meaningful order of its own, and
+        # a stable one is what lets a recipient diff two exports.
+        pods = sorted({pod for points in held.values() for pod in points})
+    else:
+        pods = await _submitted_pods(
+            db, rec_slug=rec_slug, offer_id=offer_id, subject_ids=subject_ids
+        )
+
     # The offer is the authority on its own purpose, the same way it is on its
     # controller — an explicit argument still wins, so a caller recording a
     # narrower purpose than the offer declares is not overruled.
@@ -275,7 +350,7 @@ async def export_pod_list(
         # `subject_count` on a `DataDisclosed` describes the handover, and a
         # subject who consents but holds no POD in this community is in the
         # audience and not in the export.
-        subject_count=len(rows),
+        subject_count=len(pods),
         source_ref=rec_slug,
         agreement_ref=agreement_ref,
         # Stable across retries of *this* export, so a retry after a partial
@@ -308,10 +383,21 @@ async def export_pod_list(
                 "connector is configured, so a decision changed after intake is "
                 "not reflected here and re-exporting will not pick it up.\n"
             )
+        if audience.pod_source == "registry":
+            f.write(
+                "# Supply points: this community's registry record, as of the "
+                "generation time above.\n"
+            )
+        else:
+            f.write(
+                "# Supply points: as declared at onboarding. They have not been "
+                "read back from the registry, so a supply point corrected or "
+                "retired since is not reflected here.\n"
+            )
         writer = csv.DictWriter(f, fieldnames=["pod_code"])
         writer.writeheader()
-        for sub in rows:
-            writer.writerow({"pod_code": _fmt(sub.pod_code)})
+        for pod in pods:
+            writer.writerow({"pod_code": pod})
 
     for entry in disclosures:
         logger.info(
@@ -322,7 +408,7 @@ async def export_pod_list(
             entry.get("granted_party_count"),
         )
 
-    return len(rows)
+    return len(pods)
 
 
 async def export_submissions_csv(

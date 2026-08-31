@@ -122,6 +122,10 @@ def connector(monkeypatch):
     from celine.onboarding.services import template_service
 
     monkeypatch.setattr(csv_export.settings, "ds_connector_url", "http://connector")
+    # A connector and no registry: a supported deployment, and the one where the
+    # supply points still come from what intake recorded. The `registry` fixture
+    # layers the other half on top.
+    monkeypatch.setattr(csv_export.settings, "rec_registry_url", "")
 
     state: dict = {"subject_ids": set(), "dataset_id": DATASET, "offer": OFFER_RECORD}
 
@@ -157,6 +161,38 @@ def connector(monkeypatch):
 def no_connector(monkeypatch):
     """A deployment with no dataspace, where the intake form is the only record."""
     monkeypatch.setattr(csv_export.settings, "ds_connector_url", "")
+    monkeypatch.setattr(csv_export.settings, "rec_registry_url", "")
+
+
+@pytest.fixture()
+def registry(monkeypatch):
+    """The registry seam, stubbed at the one call the export makes.
+
+    Returns a setter for what the registry holds, keyed by DID, so a test can
+    say what the running system records without describing two lookup responses.
+    The lookup's own behaviour — the community and status filters, the meter
+    follow-on, the refusal — is asserted in `test_rec_registry.py`; this fixture
+    is about what the export does with the answer.
+    """
+    from celine.onboarding.services import rec_registry as rr
+
+    state: dict = {"held": {}, "asked": None}
+
+    async def _supply_points(dids, *, rec_slug):
+        state["asked"] = list(dids)
+        assert rec_slug == "example"
+        # Answers only what it was asked about, as the real lookup does: it
+        # queries on the DIDs it is given, so a member it holds a supply point
+        # for and was not asked about is not in the answer.
+        return {did: pods for did, pods in state["held"].items() if did in dids}
+
+    monkeypatch.setattr(rr, "supply_points_by_did", _supply_points)
+
+    def _holds(mapping: dict):
+        state["held"] = mapping
+
+    _holds.state = state
+    return _holds
 
 
 async def _export(tmp_path, rows, **kw):
@@ -307,6 +343,175 @@ async def test_header_names_the_connector_and_keeps_the_staleness_promise(tmp_pa
     assert CONSUMER_DID in text
     assert "snapshot" in text
     assert "withdrawn" in text
+
+
+# ── the registry says what they hold ──────────────────────────────
+
+
+async def test_the_supply_points_come_from_the_registry(tmp_path, connector, registry):
+    """A POD corrected in the registry has never reached this database.
+
+    `Submission.pod_code` is what one person typed at intake;
+    `Member.delivery_points` is what the community records now. When they
+    disagree the running system is the one the distributor is owed.
+    """
+    sub = _sub(pod_code="IT001E00000001")
+    connector(sub.dataspace_did)
+    registry({sub.dataspace_did: ["IT001E00000002"]})
+
+    count, text = await _export(tmp_path, [sub])
+
+    assert count == 1
+    assert "IT001E00000002" in text
+    assert "IT001E00000001" not in text
+
+
+async def test_a_participant_this_service_never_registered_is_exported(
+    tmp_path, connector, registry
+):
+    """The same defect as reading the form, one step further along.
+
+    A member the REC manager imported consents through the same offer and holds
+    a supply point in the same community. Nothing about them was ever in this
+    database, so every export silently left them out.
+    """
+    connector("did:web:users.example:imported")
+    registry({"did:web:users.example:imported": ["IT001E00000003"]})
+
+    count, text = await _export(tmp_path, [])
+
+    assert count == 1
+    assert "IT001E00000003" in text
+
+
+async def test_only_the_authorised_dids_are_asked_about(tmp_path, connector, registry):
+    """The registry is asked what *these* people hold, never who holds anything.
+
+    Consent decides the question, so a DID the connector did not return is not
+    something to look up — asking more widely would build a list the offer does
+    not authorise and then filter it here.
+    """
+    connector("did:web:users.example:alice", "did:web:users.example:bob")
+    registry({})
+
+    await _export(tmp_path, [_sub()])
+
+    assert registry.state["asked"] == [
+        "did:web:users.example:alice",
+        "did:web:users.example:bob",
+    ]
+
+
+async def test_a_withdrawal_is_honoured_before_the_registry_is_asked(tmp_path, connector, registry):
+    """Nobody consents, so there is nothing to ask about and no file content.
+
+    The consent gate is upstream of the supply-point read on this path too: the
+    registry holding a POD for somebody is never a reason to export it.
+    """
+    sub = _sub()
+    connector()
+    registry({sub.dataspace_did: ["IT001E00000001"]})
+
+    count, text = await _export(tmp_path, [sub])
+
+    assert count == 0
+    assert registry.state["asked"] == []
+    assert "IT001E00000001" not in text
+
+
+async def test_a_subject_holding_no_supply_point_writes_no_row(
+    tmp_path, monkeypatch, connector, registry
+):
+    """In the audience and not in the export, and the event says so.
+
+    Somebody can consent to the offer and hold no supply point in this
+    community. `subject_count` describes the handover, so it counts what went
+    into the file rather than what the connector authorised.
+    """
+    import celine.onboarding.services.dataspace_identity as di
+
+    captured: dict = {}
+
+    async def _capture(**kw):
+        captured.update(kw)
+        return [{"dataset_id": DATASET, "consent_snapshot_hash": "a" * 64}]
+
+    monkeypatch.setattr(di, "record_disclosure", _capture)
+
+    connector("did:web:users.example:alice", "did:web:users.example:bob")
+    registry(
+        {
+            "did:web:users.example:alice": ["IT001E00000001"],
+            "did:web:users.example:bob": [],
+        }
+    )
+
+    count, _ = await _export(tmp_path, [])
+
+    assert count == 1
+    assert captured["subject_count"] == 1
+
+
+async def test_the_file_is_sorted_and_carries_each_pod_once(tmp_path, connector, registry):
+    """`subject_ids` is a frozenset, so nothing upstream has a stable order.
+
+    A list of supply points has no meaningful order of its own, and a stable one
+    is what lets a recipient diff one export against the last. Two members
+    sharing a supply point — a household, a shared meter — is one row, because
+    the file says which PODs may be released and not how many people said so.
+    """
+    connector("did:web:users.example:alice", "did:web:users.example:bob")
+    registry(
+        {
+            "did:web:users.example:alice": ["IT001E00000009", "IT001E00000002"],
+            "did:web:users.example:bob": ["IT001E00000002"],
+        }
+    )
+
+    count, text = await _export(tmp_path, [])
+
+    data_lines = [ln for ln in text.splitlines() if not ln.startswith("#")]
+    assert count == 2
+    assert data_lines == ["pod_code", "IT001E00000002", "IT001E00000009"]
+
+
+async def test_the_header_names_the_registry(tmp_path, connector, registry):
+    """Two questions, two sources, and the file names both.
+
+    A reader who is told only that the consent came from the connector cannot
+    tell whether the supply points were read back or copied from a form.
+    """
+    connector("did:web:users.example:alice")
+    registry({"did:web:users.example:alice": ["IT001E00000001"]})
+
+    _, text = await _export(tmp_path, [])
+
+    assert "# Supply points: this community's registry record" in text
+    assert "declared at onboarding" not in text
+
+
+async def test_the_registry_path_leaks_nothing_it_reads(tmp_path, connector, registry):
+    """The lookup answers with names, roles, areas and DIDs. None of it is the
+    recipient's, and the file carries one column for that reason."""
+    sub = _sub()
+    connector(sub.dataspace_did)
+    registry({sub.dataspace_did: ["IT001E00000001"]})
+
+    _, text = await _export(tmp_path, [sub])
+
+    assert sub.dataspace_did not in text
+
+
+async def test_without_a_registry_the_header_says_the_pods_are_as_declared(tmp_path, connector):
+    """A connector and no registry keeps the consent fix and loses the other
+    half, so the header must not claim the supply points were read back."""
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    _, text = await _export(tmp_path, [sub])
+
+    assert "# Supply points: as declared at onboarding" in text
+    assert "IT001E00000001" in text
 
 
 # ── no connector: the intake form is the only record ──────────────

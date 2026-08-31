@@ -101,6 +101,11 @@ cp .env.example .env
 # Edit .env — required: DATABASE_URL, OPENAI_API_KEY, ENCRYPTION_KEY
 # For dev without encryption: set REQUIRE_ENCRYPTION=false
 
+# Optional: .env.local for anything true on your machine only — your own
+# service URLs, dev secrets. It is read after .env and wins, and it is
+# gitignored, so it never reaches a deployment. Real environment variables
+# still win over both.
+
 # Backend
 cd src && uv sync && cd ..
 

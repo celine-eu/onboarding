@@ -456,3 +456,232 @@ class TestSetMemberDid:
 
         with pytest.raises(ValueError, match="REC registry refused the dataspace DID"):
             await rr.set_member_did(_sub(), member_key="nobody", did="did:web:alice")
+
+
+# ── reading supply points back ────────────────────────────────────────────────
+
+
+def _dp(pod: str, *, active: bool | None = True):
+    return SimpleNamespace(id=pod, type="pod", active=active)
+
+
+def _member(**overrides):
+    base = dict(
+        key="20260727-abcd",
+        did="did:web:users.example:alice",
+        user_id="alice.rossi@example.org",
+        status="active",
+        community_key="test-community",
+        delivery_points=[_dp("IT001E00000001")],
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _meter(pod: str, *, owner_user_id: str = "alice.rossi@example.org", **overrides):
+    base = dict(
+        asset_type="meter",
+        community_key="test-community",
+        owner_user_id=owner_user_id,
+        properties={"pod": pod},
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _stub_lookup(monkeypatch, members: list, assets: list | None = None):
+    """The two lookup calls, with what each was asked for."""
+    calls: dict = {"dids": None, "user_ids": None}
+
+    class _Client:
+        async def lookup_members_by_dids(self, dids):
+            calls["dids"] = list(dids)
+            return members
+
+        async def lookup_assets_by_user_ids(self, user_ids):
+            calls["user_ids"] = list(user_ids)
+            return assets or []
+
+    monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+    return calls
+
+
+class TestSupplyPointsByDid:
+    """What the registry says these DIDs hold — the other half of the join.
+
+    `set_member_did` wrote the column; this reads it back. Together they let the
+    POD export ask the connector *who consents* and the registry *what they
+    hold*, which is what takes the intake form out of a disclosure decision.
+    """
+
+    async def test_no_registry_is_not_an_empty_answer(self, monkeypatch, bind_rec):
+        """`None` and `{}` mean different things and the caller acts on both.
+
+        `None` is "there was nothing to ask", and the export falls back to what
+        intake recorded. `{}` is "the registry was asked and matched nobody",
+        which is an empty file.
+        """
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "")
+
+        assert await rr.supply_points_by_did(["did:web:x"], rec_slug="example") is None
+
+    async def test_no_binding_is_not_an_empty_answer(self, monkeypatch, bind_rec):
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "http://registry:8004")
+
+        assert await rr.supply_points_by_did(["did:web:x"], rec_slug="example") is None
+
+    async def test_no_dids_asks_nothing(self, monkeypatch, _configured):
+        """Nobody consented, so there is nothing to ask about — and asking with
+        an empty batch is a request whose answer is already known."""
+        calls = _stub_lookup(monkeypatch, [_member()])
+
+        assert await rr.supply_points_by_did([], rec_slug="example") == {}
+        assert calls["dids"] is None
+
+    async def test_the_delivery_points_come_back_keyed_by_did(self, monkeypatch, _configured):
+        _stub_lookup(monkeypatch, [_member()])
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": ["IT001E00000001"]}
+
+    async def test_a_member_holding_nothing_is_still_an_answer(self, monkeypatch, _configured):
+        """Present, with no supply points — not absent. The export writes no row
+        either way, but the two are different facts and only one of them is a
+        person the registry has never heard of."""
+        _stub_lookup(monkeypatch, [_member(delivery_points=[])])
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": []}
+
+    async def test_blank_and_duplicate_dids_are_not_sent(self, monkeypatch, _configured):
+        calls = _stub_lookup(monkeypatch, [_member()])
+
+        await rr.supply_points_by_did(
+            ["did:web:users.example:alice", "", "  ", "did:web:users.example:alice"],
+            rec_slug="example",
+        )
+
+        assert calls["dids"] == ["did:web:users.example:alice"]
+
+    async def test_a_member_of_another_community_is_dropped(self, monkeypatch, _configured):
+        """`did` is globally unique and the lookup is cross-community, so this
+        row is reachable. Their consent to the offer is real; their supply point
+        belongs to a community that is not the one exporting."""
+        _stub_lookup(monkeypatch, [_member(community_key="somewhere-else")])
+
+        assert (
+            await rr.supply_points_by_did(["did:web:users.example:alice"], rec_slug="example") == {}
+        )
+
+    @pytest.mark.parametrize("status", ["pending", "suspended", "inactive"])
+    async def test_only_active_members_are_disclosed(self, monkeypatch, _configured, status):
+        """The REC has said this person is not participating, and a disclosure of
+        their supply point would contradict it.
+
+        It is also what takes a revoked participant back out: `delete_member`
+        deactivates the member and the DID stays on the row — `PATCH` cannot
+        unset it — so status is the only thing left that can.
+        """
+        _stub_lookup(monkeypatch, [_member(status=status)])
+
+        assert (
+            await rr.supply_points_by_did(["did:web:users.example:alice"], rec_slug="example") == {}
+        )
+
+    async def test_a_retired_delivery_point_is_dropped(self, monkeypatch, _configured):
+        """`active: false` is a supply point no longer in service. Handing it to
+        the distributor asks them to release data against a dead POD."""
+        _stub_lookup(
+            monkeypatch,
+            [_member(delivery_points=[_dp("IT001E00000001", active=False), _dp("IT001E00000002")])],
+        )
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": ["IT001E00000002"]}
+
+    async def test_a_commissioned_meter_adds_its_pod(self, monkeypatch, _configured):
+        """The two sources are unioned, not ranked.
+
+        `delivery_points` is what onboarding declared before any meter existed; a
+        commissioned meter carries its own POD and is reachable only through the
+        `user_id` in the member row. A member the REC manager imported may hold
+        either one alone, and dropping the supply point because the community
+        recorded it in the other place would exclude somebody who consented.
+        """
+        calls = _stub_lookup(monkeypatch, [_member(delivery_points=[])], [_meter("IT001E00000009")])
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": ["IT001E00000009"]}
+        assert calls["user_ids"] == ["alice.rossi@example.org"]
+
+    async def test_the_same_pod_twice_is_written_once(self, monkeypatch, _configured):
+        """The normal case: the meter was commissioned against the POD declared
+        at onboarding, so both sources say the same thing."""
+        _stub_lookup(monkeypatch, [_member()], [_meter("IT001E00000001")])
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": ["IT001E00000001"]}
+
+    async def test_other_assets_and_other_communities_contribute_no_pod(
+        self, monkeypatch, _configured
+    ):
+        """A PV system is not a supply point, and a meter of another community is
+        not this export's to disclose. `assets-by-user-ids` is cross-community
+        for the same reason the member lookup is."""
+        _stub_lookup(
+            monkeypatch,
+            [_member(delivery_points=[])],
+            [
+                _meter("IT001E00000007", asset_type="pv"),
+                _meter("IT001E00000008", community_key="somewhere-else"),
+            ],
+        )
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": []}
+
+    async def test_a_meter_owned_by_nobody_asked_about_is_ignored(self, monkeypatch, _configured):
+        """The asset call is keyed on `user_id`, which is not what the answer is
+        keyed by here — a row that maps back to no DID has nowhere to go."""
+        _stub_lookup(
+            monkeypatch,
+            [_member(delivery_points=[])],
+            [_meter("IT001E00000009", owner_user_id="somebody.else@example.org")],
+        )
+
+        assert await rr.supply_points_by_did(
+            ["did:web:users.example:alice"], rec_slug="example"
+        ) == {"did:web:users.example:alice": []}
+
+    async def test_no_asset_call_when_no_member_matched(self, monkeypatch, _configured):
+        """Nothing to ask about, and the second round trip is not free."""
+        calls = _stub_lookup(monkeypatch, [], [_meter("IT001E00000009")])
+
+        assert (
+            await rr.supply_points_by_did(["did:web:users.example:alice"], rec_slug="example") == {}
+        )
+        assert calls["user_ids"] is None
+
+    async def test_a_refused_lookup_raises(self, monkeypatch, _configured):
+        """A denial must not read as "these people hold nothing". The SDK raises
+        rather than answering `[]` for exactly that reason, and nothing here may
+        turn it back into an empty answer — the export would silently hand over
+        fewer supply points than were authorised."""
+        from celine.sdk.rec_registry.errors import RecRegistryApiError
+
+        class _Refusing:
+            async def lookup_members_by_dids(self, dids):
+                raise RecRegistryApiError("members-by-dids refused a batch of 1 ids (status=403)")
+
+        monkeypatch.setattr(rr, "_get_client", lambda: _Refusing())
+
+        with pytest.raises(RecRegistryApiError, match="403"):
+            await rr.supply_points_by_did(["did:web:users.example:alice"], rec_slug="example")

@@ -121,6 +121,14 @@ task export-pod-list -- --rec my-rec \
   keyed by. Nothing else names the recipient — the person consented to
   disclosure to the controller *that offer* names, so a manifest binding or the
   community's grid operator must not stand in for it.
+- **The registry says which supply points they hold.** The DIDs the connector
+  returned go to `POST /admin/lookup/members-by-dids` on the rec-registry, and
+  the PODs come from `Member.delivery_points` plus any commissioned meter's
+  `properties.pod` — the two are unioned, because an imported member may hold
+  either one alone. Only **active** members of **this** community are disclosed:
+  `did` is globally unique and the lookup is cross-community, and `pending`,
+  `suspended` and `inactive` are all states in which the REC has said this person
+  is not participating. Requires the `rec-registry.lookup` scope.
 - The file carries one column. No names, no hashes, no DIDs, no evidence bundle —
   that material lives in the dataspace, where it is verifiable and revocable, and
   a second copy is how two records of the same consent start to disagree.
@@ -132,12 +140,20 @@ task export-pod-list -- --rec my-rec \
   refusal means no file.
 
 **Why not the intake form.** A submission records what somebody agreed to on one
-afternoon. The participant webapp owns the ongoing decision and writes it to the
-connector, and nothing writes back here — so reading the local columns left a
-person who granted afterwards **out** of the export, and a person who withdrew
+afternoon, and the export asks two questions of which it answers neither well.
+
+*Who consents* — the participant webapp owns the ongoing decision and writes it
+to the connector, and nothing writes back here, so reading the local columns left
+a person who granted afterwards **out** of the export and a person who withdrew
 afterwards **in**. The second is a disclosure of personal data against a
-withdrawn consent, and no re-export cadence fixes it, because the staleness is
-in the source rather than in the snapshot.
+withdrawn consent, and no re-export cadence fixes it, because the staleness is in
+the source rather than in the snapshot.
+
+*What they hold* — `Member.delivery_points` is what the community records now, so
+a POD an operator corrected or retired in the registry never reached
+`submissions.pod_code`. Reading the registry also answers for a participant this
+service never registered: a member the REC manager imported consents through the
+same offer and was silently absent from every export.
 
 **The file is a snapshot, so the re-export cadence is the revocation latency.**
 Somebody who withdraws stays on the recipient's copy until the next run. The
@@ -145,11 +161,15 @@ header states when it was generated and that it goes stale; agree a cadence, tel
 members what it is, and hold to it. This is inherent to an offline handover — it
 disappears if the distributor ever reads consent directly.
 
-**Without a connector the local columns still decide.** A deployment with no
-dataspace has no running system to ask, and the intake form is then the only
-record a consent decision has. The header says which of the two wrote the file
-and, in that case, does not promise that re-exporting picks up a later change —
-because it does not.
+**Where there is nothing to ask, the local record still decides.** A deployment
+with no dataspace has no connector holding a consent decision; one with no
+`REC_REGISTRY_URL`, or a community whose manifest declares no `rec_registry`
+block, has nowhere to ask what a member holds. The two are independent, and the
+header names a source for each — so a reader can tell a file whose supply points
+were read back from the running system from one that repeats what was declared at
+onboarding. Without a connector the header also drops the promise that
+re-exporting picks up a later change, because against the local columns it does
+not.
 
 **What the export refuses, and why each refusal is safe.** All of these leave no
 file:
@@ -161,7 +181,8 @@ file:
 | the controller is unknown to the registry | register the owner first |
 | the controller holds no DID | registered but not onboarded into the dataspace — the consent plane has no key for it |
 | the offer resolves to more than one dataset | one file cannot honestly carry two audiences |
-| the connector or registry is unreachable | who consents is unknown, which is not the same as nobody consenting |
+| the connector or identity registry is unreachable | who consents is unknown, which is not the same as nobody consenting |
+| the rec-registry refuses the supply-point lookup | a denial is not "these people hold nothing"; treating it as one exports fewer supply points than were authorised, and says nothing about it |
 
 ## Phase B — Governed sharing via the dataspace
 
