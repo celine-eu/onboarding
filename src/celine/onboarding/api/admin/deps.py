@@ -4,6 +4,13 @@ Every endpoint under `/api/admin` names the capability it needs, and the
 capability is checked against the *community in the path* — so the same operator
 is allowed on their own REC and refused on somebody else's. See
 `policies/celine/onboarding/access.rego` for what grants what.
+
+**`get_current_user` is the exception, and is shared.** It verifies a token and
+returns who it belongs to; it authorises nothing. `api/me.py` — the member's own
+self-service surface — uses it and deliberately uses none of the capability
+machinery below, because there is no operator on that surface and a capability
+that let one decide on a member's behalf would make the consent record
+worthless. Keep authentication and authorisation separable here for that reason.
 """
 
 from __future__ import annotations

@@ -20,6 +20,41 @@
 | `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |
 | `GET` | `/api/downloads/{token}` | token | Time-limited document download |
 
+**The member's own surface (`/api/me/**`, Keycloak identity, no capability):**
+
+The only self-service surface in this service, and the only authenticated one
+that names no `Capability`. The member's token is the whole authority and the
+credential presented to the dataspace is the member's own — a route that let an
+operator decide on somebody's behalf would defeat the point of recording consent.
+Mounted **before** the `/api/{rec}` routers, because `{rec}` would otherwise
+match `me`.
+
+The REC is not in the path: a member does not choose which community they are in,
+their token says, and accepting it from the caller would let anyone ask about any
+community's offers.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/me/data-sharing` | Every offer this member's community publishes, with their decision on it. `state` says why `has_identity` is false — see below |
+| `POST` | `/api/me/data-sharing/{offer_id}` | Grant or withdraw one offer. `409` when the offer is not consent-based, not published by this REC, or the member is in a state with nothing to decide |
+| `GET` | `/api/me/data-sharing/history` | The member's own provenance record. Empty when `DS_PROVENANCE_URL` is unset |
+
+`state` is one of:
+
+| Value | Meaning |
+|---|---|
+| `ok` | Offers listed, decisions merged, controls live |
+| `no_dataspace` | This member's community does not take part, so there is nothing to decide and nothing to provision |
+| `no_identity` | The community takes part; this member holds no credential yet |
+| `identity_conflict` | The identity registry answered `409`. Terminal for the member — retrying cannot clear it — and logged for an operator, who is the only one who can |
+| `ambiguous_community` | The member is in more than one participating community, so "their offers" has no single answer. Refused rather than guessed |
+
+`has_identity` is kept beside `state` because `../celine-webapp` and the page
+built on it already read it. `state` is the additive half that says *why*.
+
+**No response here ever carries a credential.** Not `vc_jws`, which authenticates
+as the member, and not in any field added later.
+
 **Admin console (`/api/admin/**`, Keycloak identity, capability-gated, audit-logged):**
 
 Authorization is by organization + group for operators and by scope for service

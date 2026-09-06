@@ -534,6 +534,24 @@ async def resolve_subject(
         params["realm"] = keycloak_realm
         params["user_id"] = keycloak_user_id
 
+    body = await _resolve_raw_with_params(access, params)
+    return ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
+
+
+async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any]:
+    """:func:`resolve_subject`'s call, returning the body rather than a summary.
+
+    Separate because :func:`resolve_subject_credential` needs the ``credentials``
+    list, and :func:`resolve_subject` deliberately does not read it — an
+    identification function that lifted a live credential out of the response
+    would be exactly what moving this away from the BFF was meant to stop.
+    """
+    return await _resolve_raw_with_params(access, {"email": email, "derive": "true"})
+
+
+async def _resolve_raw_with_params(
+    access: RegistryAccess, params: dict[str, str]
+) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             f"{access.base_url}/users/resolve", params=params, headers=access.headers
@@ -544,10 +562,8 @@ async def resolve_subject(
         # member gets a terminal explanation and no retry; this line is the only
         # thing that tells an operator there is something to decide.
         logger.error(
-            "Identity conflict resolving subject (email=%r realm=%r user_id=%r): %s",
-            email,
-            keycloak_realm,
-            keycloak_user_id,
+            "Identity conflict resolving subject (%s): %s",
+            ", ".join(f"{k}={v!r}" for k, v in params.items() if k != "derive"),
             resp.text,
         )
         raise SubjectIdentifierConflictError(
@@ -558,11 +574,78 @@ async def resolve_subject(
 
     if resp.status_code == 200:
         body = resp.json()
-        subject_id = body.get("subject_id")
-        if subject_id:
-            return ResolvedSubject(subject_id=subject_id, did=body.get("did") or None)
+        if body.get("subject_id"):
+            return body
 
     raise ValueError(f"Subject id derivation failed: identity registry returned {resp.status_code}")
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectCredential:
+    """What a member needs in order to act on their own consent.
+
+    The connector authenticates a data subject **by verifiable credential**
+    (`X-Subject-Id` + `X-User-VC`), never by a service token — a service account
+    that could grant consent on somebody's behalf would defeat the point of
+    recording it. So the only thing done for the member is *resolving* which
+    credential is theirs; every decision is then presented with it.
+
+    **Never put one of these in a response, and never cache one across
+    requests.** It authenticates as that person.
+    """
+
+    subject_id: str
+    vc_jws: str
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {"X-Subject-Id": self.subject_id, "X-User-VC": self.vc_jws}
+
+    def __repr__(self) -> str:
+        """Never render the credential.
+
+        A dataclass repr would print `vc_jws` in full, and this object reaches
+        exception messages, log records and test failure output. One of those
+        eventually gets shipped somewhere.
+        """
+        return f"SubjectCredential(subject_id={self.subject_id!r}, vc_jws=<redacted>)"
+
+
+async def resolve_subject_credential(
+    access: RegistryAccess,
+    *,
+    email: str,
+) -> SubjectCredential | None:
+    """The member's own ``DataSubjectCredential``, or ``None`` if they hold none.
+
+    ``None`` is an ordinary answer, not an error: a participant enabled before
+    the dataspace existed has no credential, and neither does anyone whose
+    community does not take part.
+
+    **Selected by role, not by recency.** One human legitimately holds several
+    credentials — a data subject about their own consumption, a consumer user
+    acting for somebody else — and `/users/resolve` returns them all. The
+    singular ``role`` / ``vc_jws`` fields are the most recently issued one, which
+    for such a person is the wrong credential; presenting it to the consent API
+    would authenticate them in a capacity they are not acting in. The singular
+    fields are used only as a fallback, and only when they name the right role.
+
+    Raises :class:`SubjectIdentifierConflictError` on a 409, which a member-facing
+    caller must not present as a retryable failure.
+    """
+    resolved_raw = await _resolve_raw(access, email=email)
+    subject_id = resolved_raw.get("did") or resolved_raw.get("subject_did")
+    if not subject_id:
+        return None
+
+    for credential in resolved_raw.get("credentials") or []:
+        if credential.get("role") == settings.dataspace_user_role and credential.get("vc_jws"):
+            return SubjectCredential(subject_id=subject_id, vc_jws=credential["vc_jws"])
+
+    if resolved_raw.get("role") == settings.dataspace_user_role and resolved_raw.get("vc_jws"):
+        return SubjectCredential(subject_id=subject_id, vc_jws=resolved_raw["vc_jws"])
+
+    return None
 
 
 async def holds_data_subject_credential(access: RegistryAccess, did: str) -> bool:

@@ -352,6 +352,7 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.eligibility import router as eligibility_router
     from celine.onboarding.api.extractions import router as extractions_router
     from celine.onboarding.api.health import router as health_router
+    from celine.onboarding.api.me import router as me_router
     from celine.onboarding.api.phone_verify import router as phone_verify_router
     from celine.onboarding.api.recs import router as recs_router
     from celine.onboarding.api.submissions import router as submissions_router
@@ -359,6 +360,12 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(recs_router, prefix="/api")
     app.include_router(downloads_router, prefix="/api")
+    # Before the `{rec_slug}` block, not after: `/api/me/...` is a literal path
+    # and `{rec_slug}` would match `me`. The admin router gets the opposite
+    # treatment — last — because its own prefix is `/api/admin`, which no
+    # `{rec_slug}` route can reach. `RESERVED_SLUGS` refuses a REC named `me` at
+    # startup, so the collision cannot arrive from a manifest either.
+    app.include_router(me_router, prefix="/api")
 
     app.include_router(config_router, prefix="/api/{rec_slug}")
     app.include_router(submissions_router, prefix="/api/{rec_slug}")

@@ -99,6 +99,17 @@ class Settings(BaseSettings):
     ds_connector_url: str = ""
     ds_ns_url: str = ""
 
+    # Provenance, for `GET /api/me/data-sharing/history` and **nothing else**.
+    #
+    # This setting was removed when `DataDisclosed` moved to the connector's
+    # `POST /admin/disclosure`, which computes the consent-snapshot hash a
+    # disclosure record requires and which posting the event directly cannot.
+    # None of that is reverted: this is a member's Art. 15 read of events already
+    # recorded, under their own credential, and no disclosure is ever written
+    # through it. Empty returns an empty history rather than failing — the
+    # decisions stand without it.
+    ds_provenance_url: str = ""
+
     sms_provider: str = "log"
     brevo_api_key: str = ""
     brevo_sms_sender: str = ""

@@ -240,6 +240,40 @@ failed share never rolls back the identity or the approval — it just leaves
 Onboarding authenticates to the connector with its `svc-ds-onboarding` service
 token (scope `connector.consent.provision`, audience `svc-ds-connector`).
 
-Remaining future work: a portal redirect for the participant to manage
-preferences over time, and consumer/policy registration in ds. Until that is in
-place, Phase A remains available for ad-hoc, DPA-governed disclosures.
+### Changing the decision afterwards
+
+The wizard can only *grant*. GDPR Art. 7(3) requires withdrawal to be as easy as
+giving, which for a while nothing provided: onboarding holds no session once
+somebody is approved, and the participant webapp had no credential to act with.
+
+`/api/me/data-sharing` is that surface — see
+[api-reference.md](api-reference.md) for the routes and the `state` vocabulary.
+Three things about it are load-bearing:
+
+- **The member acts as themselves.** The connector authenticates a data subject
+  by verifiable credential (`X-Subject-Id` + `X-User-VC`), never by a service
+  token. This service resolves *which* credential is theirs and presents it; it
+  never returns one, never caches one across requests, and holds no capability
+  that would let an operator decide on somebody's behalf. That last part is the
+  point: a consent an administrator could give is not a consent.
+- **Offers come through the same allow-list the wizard uses.** Resolved with
+  `template_service.get_sharing_offers`, so a member is shown exactly what their
+  community publishes. `../celine-webapp` previously read
+  `/ns/sharing-offers` directly and rendered the whole vocabulary, which meant a
+  member could be shown — and could grant — an offer their REC does not publish.
+- **A contract-based offer is disclosed, not toggled.** `can_decide` is false for
+  it and the write route refuses it by name. Presenting a choice that does not
+  exist is what invalidates the consent beside it.
+
+`GET /api/me/data-sharing/history` reads the member's own provenance record
+(`GET {DS_PROVENANCE_URL}/prov/my/events`) under the same credential. That
+setting is **read-only and for this route alone**: disclosures are written
+through the connector's `POST /admin/disclosure`, which computes the
+consent-snapshot hash a disclosure record requires. Unset returns an empty list —
+the decisions stand without their history.
+
+Remaining future work: **provisioning on demand**, so a preregistered member who
+holds no credential can obtain one from this surface rather than being told they
+have no dataspace identity; and consumer/policy registration in ds. Until the
+first is in place, such a member gets `state: no_identity` and an explanation.
+Phase A remains available for ad-hoc, DPA-governed disclosures.
