@@ -884,3 +884,241 @@ async def test_an_empty_dataset_list_is_not_read_as_nobody(monkeypatch, _consent
 
     with pytest.raises(RuntimeError, match="no dataset"):
         await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+
+
+# ── Phase 1: provisioning is a function ───────────────────────────
+#
+# `the-wizard-is-where-a-member-becomes-a-subject`. The wizard's door does not
+# exist yet; what these cover is the surface it will call, and the one thing the
+# lift changed about the funnel — the credential now records how the person was
+# checked.
+
+
+def _access() -> di.RegistryAccess:
+    return di.RegistryAccess(base_url="http://ir:30005", headers={"authorization": "Bearer t"})
+
+
+class TestResolveSubject:
+    async def test_a_new_person_gets_a_derived_id_and_no_did(self, monkeypatch):
+        """The ordinary first-time answer. Not an error, and not a 404."""
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=DERIVE_RESPONSE))
+
+        resolved = await di.resolve_subject(_access(), email="a@example.org")
+
+        assert resolved.subject_id == DERIVE_RESPONSE["subject_id"]
+        assert resolved.did is None
+
+    async def test_a_known_person_comes_back_with_their_did(self, monkeypatch):
+        """The DID is what lets the caller ask whether to issue at all."""
+        _patch_httpx(
+            monkeypatch,
+            lambda req: httpx.Response(
+                200, json={"subject_id": "sub-1", "did": "did:web:users.example:sub-1"}
+            ),
+        )
+
+        resolved = await di.resolve_subject(_access(), email="a@example.org")
+
+        assert resolved.did == "did:web:users.example:sub-1"
+
+    async def test_derive_is_always_requested_and_the_email_is_sent(self, monkeypatch):
+        """`derive=true` without an email is a 422 at the registry, so both go together."""
+        seen: list[httpx.URL] = []
+
+        def handler(req):
+            seen.append(req.url)
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.resolve_subject(_access(), email="a@example.org")
+
+        assert seen[0].params["derive"] == "true"
+        assert seen[0].params["email"] == "a@example.org"
+
+    async def test_the_keycloak_pair_is_sent_together_or_not_at_all(self, monkeypatch):
+        """`realm` alone identifies nobody; the registry wants both or neither."""
+        seen: list[httpx.URL] = []
+
+        def handler(req):
+            seen.append(req.url)
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.resolve_subject(_access(), email="a@example.org", keycloak_realm="celine")
+
+        assert "realm" not in seen[0].params
+
+        await di.resolve_subject(
+            _access(), email="a@example.org", keycloak_realm="celine", keycloak_user_id="kc-1"
+        )
+        assert seen[1].params["realm"] == "celine"
+        assert seen[1].params["user_id"] == "kc-1"
+
+    async def test_a_409_is_its_own_error_and_is_logged_for_an_operator(self, monkeypatch, caplog):
+        """A member cannot act on this and must not be told to retry.
+
+        ds quarantines the conflict rather than reconciling it, so the only thing
+        that moves it forward is an operator noticing — which is what the error
+        log is for.
+        """
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(409, text="identifier email: ..."))
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(di.SubjectIdentifierConflictError):
+                await di.resolve_subject(_access(), email="a@example.org")
+
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+
+    async def test_a_conflict_is_not_an_unavailable_registry(self, monkeypatch):
+        """The distinction this type exists to make: 409 and 503 are different answers."""
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(503))
+
+        with pytest.raises(ValueError) as exc:
+            await di.resolve_subject(_access(), email="a@example.org")
+
+        assert not isinstance(exc.value, di.SubjectIdentifierConflictError)
+
+    async def test_a_200_with_no_subject_id_is_a_failure(self, monkeypatch):
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json={}))
+
+        with pytest.raises(ValueError):
+            await di.resolve_subject(_access(), email="a@example.org")
+
+
+class TestHoldsDataSubjectCredential:
+    async def test_it_asks_the_registry_the_exact_question(self, monkeypatch):
+        seen: list[httpx.URL] = []
+
+        def handler(req):
+            seen.append(req.url)
+            return httpx.Response(200, json={"holds": True})
+
+        _patch_httpx(monkeypatch, handler)
+
+        assert await di.holds_data_subject_credential(_access(), "did:web:x") is True
+        assert seen[0].path == "/credentials/check"
+        assert seen[0].params["subject_did"] == "did:web:x"
+        assert seen[0].params["type"] == "DataSubjectCredential"
+
+    async def test_no_credential_is_false(self, monkeypatch):
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json={"holds": False}))
+
+        assert await di.holds_data_subject_credential(_access(), "did:web:x") is False
+
+    async def test_a_refused_check_fails_towards_issuing(self, monkeypatch):
+        """Fail open, deliberately.
+
+        A refused check is not evidence of absence, but reading it as "already
+        held" would leave a member with no credential and no error. A second
+        credential is visible, repairable and revocable; silence is not.
+        """
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(403))
+
+        assert await di.holds_data_subject_credential(_access(), "did:web:x") is False
+
+
+class TestTheCredentialSaysHowThePersonWasChecked:
+    async def test_the_funnel_records_the_rec_and_the_review(
+        self, monkeypatch, submission, _enable_vc, bind_rec
+    ):
+        """`verified_by` / `verification_method`, which this service never sent.
+
+        ds does no KYC by design and defaults both to ``None`` *"because callers
+        written before it existed do not send it"* — this caller. A credential
+        that says nothing implies no assurance level, which was safe and useless.
+        """
+        bind_rec(
+            "default",
+            organization="rec-example",
+            organization_did="did:web:rec.example",
+            linked_participant_did="did:web:rec.example",
+        )
+        di._token_provider = _mock_token_provider()
+        bodies: list[dict] = []
+
+        def handler(req):
+            if "users/resolve" in str(req.url):
+                return httpx.Response(200, json=DERIVE_RESPONSE)
+            bodies.append(json.loads(req.content))
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.provision_user_identity(submission)
+
+        assert bodies[0]["verified_by"] == "did:web:rec.example"
+        assert bodies[0]["verification_method"] == "submission-review"
+
+    async def test_both_doors_record_the_same_method(self):
+        """The operator's answer, asserted so a later reader cannot re-split it.
+
+        The two entrypoints are the same check performed in different places —
+        so the credential records the assurance and not the door. A constant
+        rather than a setting for the same reason.
+        """
+        assert di.VERIFICATION_METHOD == "submission-review"
+
+    async def test_a_rec_with_no_organization_did_sends_no_authority(
+        self, monkeypatch, submission, _enable_vc
+    ):
+        """Better to claim nothing than to name an authority that does not exist.
+
+        `_enable_vc` binds `organization` without `organization_did`, which is a
+        legal manifest. Sending an empty `verified_by` would be a credential
+        asserting it was verified by nobody.
+        """
+        di._token_provider = _mock_token_provider()
+        bodies: list[dict] = []
+
+        def handler(req):
+            if "users/resolve" in str(req.url):
+                return httpx.Response(200, json=DERIVE_RESPONSE)
+            bodies.append(json.loads(req.content))
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.provision_user_identity(submission)
+
+        assert "verified_by" not in bodies[0]
+        assert bodies[0]["verification_method"] == "submission-review"
+
+
+class TestTheFunnelDoesNotGuardIssuance:
+    async def test_it_never_asks_whether_a_credential_is_already_held(
+        self, monkeypatch, submission, _enable_vc
+    ):
+        """The guard is the wizard's, not the funnel's.
+
+        A manager has just approved *this* submission and the row needs a
+        `dataspace_vc_id` of its own to be revocable. ds returns no credential id
+        for one it did not just issue, so a reused credential could not be
+        recorded and this submission's enablement could never be undone.
+        """
+        di._token_provider = _mock_token_provider()
+        paths: list[str] = []
+
+        def handler(req):
+            paths.append(req.url.path)
+            if "users/resolve" in str(req.url):
+                return httpx.Response(
+                    200, json={"subject_id": "sub-1", "did": "did:web:users.example:sub-1"}
+                )
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.provision_user_identity(submission)
+
+        assert "/credentials/check" not in paths
+        assert submission.dataspace_vc_id == CREDENTIAL_RESPONSE["credentialId"]
+
+    async def test_one_token_for_the_whole_flow(self, monkeypatch, submission, _enable_vc):
+        """Resolve and issue share a `RegistryAccess`, so they share a token.
+
+        Lifting the function briefly made each call fetch its own, which is both
+        wasteful and the door to two calls in one flow addressing two registries.
+        """
+        di._token_provider = _mock_token_provider()
+        _patch_httpx(monkeypatch, _default_handler)
+
+        await di.provision_user_identity(submission)
+
+        di._token_provider.get_token.assert_awaited_once()

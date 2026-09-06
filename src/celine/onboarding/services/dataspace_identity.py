@@ -392,29 +392,303 @@ async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
     )
 
 
-async def _resolve_or_derive_subject(
-    base_url: str,
-    headers: dict[str, str],
-    email: str,
-) -> str:
-    """Resolve or derive a subject_id via the identity-registry.
+# **How the person was checked, and by whom.** Both doors — the onboarding funnel
+# and the participant wizard — record the same value, because the operator's answer
+# on 2026-09-06 was that they *are* the same check: "same checks, but one outside
+# onboarding, the other is the user doing it in onboarding." The pair records the
+# assurance, not the entrypoint. Where the check happened is not a property of the
+# person's identity and does not belong in their credential.
+#
+# A constant rather than a setting, deliberately. A deployment that could edit this
+# could make the credential claim an assurance level nobody established, which is
+# the exact failure `verified_by` exists to prevent (ds `D-53`).
+VERIFICATION_METHOD = "submission-review"
 
-    The IR is the sole authority on email→subject_id mapping: it either
-    returns an existing one or derives a new one keyed by its own secret.
-    A failure here is fatal — the credential issuance that follows requires
-    the same service, so swallowing the error would only delay it.
+#: The credential type `GET /credentials/check` is asked about. ds writes this
+#: string into `Credential.credential_type` from the VC's own second type entry
+#: (`services/vc.py`), so it is the registry's spelling and not ours.
+DATA_SUBJECT_CREDENTIAL = "DataSubjectCredential"
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryAccess:
+    """One registry, one token, for a whole provisioning flow.
+
+    Resolve, check and issue are three calls against the same instance, and
+    before this they each fetched their own token and re-derived the same base
+    URL. One handle means one token fetch per flow and makes it impossible for
+    two calls in one flow to address different registries — which after
+    `D-49`/`DID-11` is a mistake the topology now permits.
+
+    Every route this service calls is served by the **anchor**: ds's
+    `identity_registry/roles.py` marks `/credentials/check`, `/admin/*` and
+    `/memberships` `ANCHOR_ONLY`, and `/users/*` `BOTH`. The holder-side routes
+    (`/credentials/{did}/presentations/query`, `/sts`) are not called from here.
+    So one URL is correct, and this type is where that stops being an accident.
+    """
+
+    base_url: str
+    headers: dict[str, str]
+
+
+async def registry_access() -> RegistryAccess:
+    """The anchor identity-registry, authenticated as this service."""
+    if not settings.identity_registry_url:
+        raise ValueError("IDENTITY_REGISTRY_URL is required when dataspace VC is enabled")
+    return RegistryAccess(
+        base_url=settings.identity_registry_url.rstrip("/"),
+        headers=await _auth_headers(),
+    )
+
+
+class SubjectIdentifierConflictError(ValueError):
+    """`/users/resolve` answered 409: the identifier matches somebody else's row.
+
+    ds quarantines rather than reconciles, because "account re-created" and
+    "address recycled to a different human" are indistinguishable from there —
+    so this is an operator's decision and a member cannot act on it. Raised as
+    its own type precisely so a member-facing caller can say *"we cannot confirm
+    your dataspace identity; your REC manager has been notified"* and offer no
+    retry, instead of the "registry unavailable, try later" that every non-200
+    used to read as and that a member could retry forever without the state
+    changing.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSubject:
+    """What the registry knows about a person before anything is issued.
+
+    ``did`` is ``None`` when no mapping exists yet — which with ``derive=true`` is
+    not an error but the ordinary first-time answer, carrying a freshly derived
+    ``subject_id`` and nothing else.
+    """
+
+    subject_id: str
+    did: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectFacts:
+    """Who is becoming a dataspace subject, and on whose authority.
+
+    The argument that replaced ``Submission`` on this path. Provisioning is a
+    **function, not a stage**: a preregistered member — screened offline, meter
+    installed on signature — has no submission and never will, and keying it on
+    one made the funnel the only door. Whoever holds an authenticated member with
+    no dataspace identity fills these in.
+    """
+
+    subject_id: str
+    role: str
+    email: str | None = None
+    keycloak_user_id: str | None = None
+    keycloak_realm: str | None = None
+    keycloak_username: str | None = None
+    verified_by: str | None = None
+    verification_method: str | None = None
+    allowed_actions: tuple[str, ...] = ()
+    ttl_days: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectIdentity:
+    """The dataspace identity a person holds once this function returns."""
+
+    did: str
+    credential_id: str
+    issued_at: datetime
+
+
+async def resolve_subject(
+    access: RegistryAccess,
+    *,
+    email: str | None = None,
+    keycloak_realm: str | None = None,
+    keycloak_user_id: str | None = None,
+    username: str | None = None,
+) -> ResolvedSubject:
+    """Ask the registry who this person is, deriving an id if they are new.
+
+    The IR is the sole authority on the email→``subject_id`` mapping: it either
+    returns an existing one or derives a new one keyed by its own secret. A
+    failure here is fatal — the credential issuance that follows requires the
+    same service, so swallowing the error would only delay it.
+
+    ``derive=true`` **requires an email** (422 otherwise), because the derivation
+    is seeded by the email and nothing else; deriving from a username would mint
+    a second identity for somebody who may already have one.
+
+    Returns the DID too when a mapping exists, which is what lets the caller ask
+    :func:`holds_data_subject_credential` before issuing. The response also
+    carries the person's ``vc_jws``; it is deliberately **not** read here. This
+    function's job is identification, and a credential that is never lifted out
+    of the response cannot leak from a caller that did not need it.
+    """
+    params: dict[str, str] = {"derive": "true"}
+    if email:
+        params["email"] = email
+    if username:
+        params["username"] = username
+    if keycloak_realm and keycloak_user_id:
+        params["realm"] = keycloak_realm
+        params["user_id"] = keycloak_user_id
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{access.base_url}/users/resolve", params=params, headers=access.headers
+        )
+
+    if resp.status_code == 409:
+        # Loud, and with the identifiers, because nobody else will look. The
+        # member gets a terminal explanation and no retry; this line is the only
+        # thing that tells an operator there is something to decide.
+        logger.error(
+            "Identity conflict resolving subject (email=%r realm=%r user_id=%r): %s",
+            email,
+            keycloak_realm,
+            keycloak_user_id,
+            resp.text,
+        )
+        raise SubjectIdentifierConflictError(
+            "The identity registry holds a mapping for this identifier under a "
+            "different Keycloak user. Only an operator can resolve it; retrying "
+            "will not."
+        )
+
+    if resp.status_code == 200:
+        body = resp.json()
+        subject_id = body.get("subject_id")
+        if subject_id:
+            return ResolvedSubject(subject_id=subject_id, did=body.get("did") or None)
+
+    raise ValueError(f"Subject id derivation failed: identity registry returned {resp.status_code}")
+
+
+async def holds_data_subject_credential(access: RegistryAccess, did: str) -> bool:
+    """Does *did* already hold a valid ``DataSubjectCredential``?
+
+    **The idempotency guard, and it is not a workaround.**
+    ``POST /admin/credentials/data-subject`` reuses the subject DID but allocates
+    a status-list index and mints a fresh credential on *every* call. A wizard
+    that provisions on entry would therefore issue one credential per visit and
+    burn one revocation slot per visit. Checking first and issuing only on
+    absence is worth keeping after ds changes its end.
+
+    ``/credentials/check`` rather than ``/users/resolve`` because it answers the
+    exact question — a boolean, with *valid* meaning active **and** unexpired,
+    both decided at the registry — and because enumerating what somebody holds is
+    a disclosure this caller has no reason to make.
+
+    Needs ``identity-registry.credentials.read``, which is a **narrower** grant
+    than the issuance one this service already holds.
+
+    **Asked by the caller, not by :func:`provision_subject`.** The two doors want
+    different answers. The wizard asks, because a member who already holds a
+    credential should keep it. The funnel does not: a manager has just approved
+    *this* submission, and the row needs a ``dataspace_vc_id`` of its own to be
+    revocable — ds returns no credential id for a credential it did not just
+    issue (``/credentials/check`` is a boolean and ``/users/resolve``'s entries
+    carry role, type and dates but no id), so a reused one could not be recorded
+    and the submission's enablement could never be undone.
     """
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
-            f"{base_url}/users/resolve",
-            params={"email": email, "derive": "true"},
+            f"{access.base_url}/credentials/check",
+            params={"subject_did": did, "type": DATA_SUBJECT_CREDENTIAL},
+            headers=access.headers,
+        )
+
+    if resp.status_code >= 400:
+        # Fail *open* — towards issuing. A refused check is not evidence of
+        # absence, but treating it as "already held" would leave a member with no
+        # credential and no error, which is the silent half of the two failures.
+        # Issuing a second credential is visible, repairable and revocable.
+        logger.warning(
+            "Credential check for %s answered %s; provisioning will issue rather "
+            "than assume a credential exists",
+            did,
+            resp.status_code,
+        )
+        return False
+
+    return bool(resp.json().get("holds"))
+
+
+async def provision_subject(
+    access: RegistryAccess,
+    facts: SubjectFacts,
+    binding: template_service.DataspaceBinding,
+) -> SubjectIdentity:
+    """Mint a person's dataspace identity, and tell Keycloak who they are.
+
+    **The whole of provisioning, taking facts rather than a database row.** Both
+    doors converge here and differ only in who established that the person may
+    become a subject — a REC manager approving a submission, or the
+    preregistration the REC did offline. The credential records the assurance
+    either way; see :data:`VERIFICATION_METHOD` for why it does not record which
+    door.
+
+    **This function always issues.** Whether it should is
+    :func:`holds_data_subject_credential`'s question, and it is the caller's to
+    ask — see there for why the two doors answer it differently.
+
+    Order matters and matches :func:`revoke_user_identity` in reverse: credential,
+    then membership, then the Keycloak mapping — the membership has a foreign key
+    to the DID. A Keycloak sync that fails after its retries rolls both back.
+    """
+    base_url, headers = access.base_url, access.headers
+
+    body: dict[str, Any] = {"subject_id": facts.subject_id, "role": facts.role}
+    if facts.ttl_days is not None:
+        body["ttl_days"] = facts.ttl_days
+    if binding.linked_participant_did:
+        body["linked_participant_did"] = binding.linked_participant_did
+    if facts.allowed_actions:
+        body["allowed_actions"] = list(facts.allowed_actions)
+    if facts.verified_by:
+        body["verified_by"] = facts.verified_by
+    if facts.verification_method:
+        body["verification_method"] = facts.verification_method
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base_url}/admin/credentials/data-subject",
+            json=body,
             headers=headers,
         )
-    if resp.status_code == 200:
-        sid = resp.json().get("subject_id")
-        if sid:
-            return sid
-    raise ValueError(f"Subject id derivation failed: identity registry returned {resp.status_code}")
+        if resp.status_code >= 400:
+            raise ValueError(f"Credential issuance failed ({resp.status_code}): {resp.text}")
+
+        evidence = resp.json()
+
+    did: str | None = evidence.get("subjectDid")
+    cred_id: str | None = evidence.get("credentialId")
+    if not did or not cred_id:
+        raise ValueError("Identity-registry response is missing subjectDid or credentialId")
+
+    org_alias = binding.organization
+    if org_alias:
+        await _register_membership(base_url, headers, did, org_alias, binding.membership_role)
+
+    if facts.keycloak_user_id and facts.keycloak_realm:
+        await _sync_keycloak(
+            base_url,
+            headers,
+            did=did,
+            keycloak_user_id=facts.keycloak_user_id,
+            keycloak_realm=facts.keycloak_realm,
+            email=facts.email,
+            username=facts.keycloak_username,
+            credential_id=cred_id,
+            organization_alias=org_alias,
+        )
+
+    return SubjectIdentity(
+        did=did,
+        credential_id=cred_id,
+        issued_at=_parse_generated_at(evidence.get("generatedAt")),
+    )
 
 
 async def provision_user_identity(
@@ -425,7 +699,12 @@ async def provision_user_identity(
     keycloak_username: str | None = None,
     provision_shares: bool = True,
 ) -> None:
-    """Mint the participant's dataspace identity, and tell Keycloak who they are.
+    """The funnel's door into :func:`provision_subject`.
+
+    Reads the facts off an approved submission, provisions, and writes the
+    resulting identity back onto the row. **The authority here is a submission a
+    REC manager approved**; the wizard's is the REC's offline preregistration,
+    and both record the same assurance.
 
     ``keycloak_username`` is what provisioning read back from Keycloak. It is the
     same value that becomes ``Member.user_id`` in the REC registry, and passing
@@ -461,75 +740,47 @@ async def provision_user_identity(
         )
         return
 
-    base_url = settings.identity_registry_url.rstrip("/")
-    headers = await _auth_headers()
+    access = await registry_access()
 
     source = settings.dataspace_subject_source.strip().lower()
     if source in {"email_hash", "email"}:
         if not submission.email:
             raise ValueError("Cannot derive subject id: submission has no email")
-        subject_id = await _resolve_or_derive_subject(
-            base_url,
-            headers,
-            submission.email,
-        )
+        resolved = await resolve_subject(access, email=submission.email)
     elif source in {"submission_ref", "ref"}:
-        subject_id = _submission_ref_subject_id(submission)
+        # No resolve call, so no DID and no issuance guard. That is the honest
+        # answer for this source: the subject id comes from the submission and the
+        # registry has never been asked about this person.
+        resolved = ResolvedSubject(subject_id=_submission_ref_subject_id(submission))
     else:
         raise ValueError("Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref.")
 
-    allowed_actions = [
-        a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
-    ]
-
-    body: dict[str, Any] = {
-        "subject_id": subject_id,
-        "role": settings.dataspace_user_role,
-        "ttl_days": settings.dataspace_vc_ttl_days,
-    }
-    if binding.linked_participant_did:
-        body["linked_participant_did"] = binding.linked_participant_did
-    if allowed_actions:
-        body["allowed_actions"] = allowed_actions
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{base_url}/admin/credentials/data-subject",
-            json=body,
-            headers=headers,
-        )
-        if resp.status_code >= 400:
-            raise ValueError(f"Credential issuance failed ({resp.status_code}): {resp.text}")
-
-        evidence = resp.json()
-
-    submission.dataspace_subject_id = subject_id
-
-    did: str | None = evidence.get("subjectDid")
-    cred_id: str | None = evidence.get("credentialId")
-    if not did or not cred_id:
-        raise ValueError("Identity-registry response is missing subjectDid or credentialId")
-
-    submission.dataspace_did = did
-    submission.dataspace_vc_id = cred_id
-    submission.dataspace_vc_issued_at = _parse_generated_at(evidence.get("generatedAt"))
-
-    org_alias = binding.organization
-    if org_alias:
-        await _register_membership(base_url, headers, did, org_alias, binding.membership_role)
-
-    if keycloak_user_id and keycloak_realm:
-        await _sync_keycloak(
-            base_url,
-            headers,
-            did=did,
+    identity = await provision_subject(
+        access,
+        SubjectFacts(
+            subject_id=resolved.subject_id,
+            role=settings.dataspace_user_role,
+            email=submission.email,
             keycloak_user_id=keycloak_user_id,
             keycloak_realm=keycloak_realm,
-            email=submission.email,
-            username=keycloak_username,
-            credential_id=cred_id,
-            organization_alias=org_alias,
-        )
+            keycloak_username=keycloak_username,
+            # The REC established this person's identity, by reviewing the
+            # submission its manager approved. `organization_did` is the only
+            # authority this service can name without inventing one.
+            verified_by=binding.organization_did or None,
+            verification_method=VERIFICATION_METHOD,
+            allowed_actions=tuple(
+                a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
+            ),
+            ttl_days=settings.dataspace_vc_ttl_days,
+        ),
+        binding,
+    )
+
+    submission.dataspace_subject_id = resolved.subject_id
+    submission.dataspace_did = identity.did
+    submission.dataspace_vc_id = identity.credential_id
+    submission.dataspace_vc_issued_at = identity.issued_at
 
     # Standing data-sharing consent, if the person opted in. Deliberately the
     # LAST step and deliberately non-fatal: a failed share is recoverable, and
