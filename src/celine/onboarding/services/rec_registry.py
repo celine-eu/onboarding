@@ -311,8 +311,12 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
     return f"deactivated registry member {member_key}"
 
 
-async def set_member_did(submission: Submission, *, member_key: str, did: str) -> str:
+async def set_member_did(rec_slug: str, *, member_key: str, did: str) -> str:
     """Write the participant's dataspace DID onto their registry member.
+
+    Takes a ``rec_slug`` rather than the ``Submission`` it used to, because the
+    member's wizard mints DIDs for people who have no submission and never will.
+    The community is the only thing the row was ever read for.
 
     **A second call, not a field on the create.** The DID does not exist when the
     member is registered: it is minted one step later, by the identity registry,
@@ -344,7 +348,7 @@ async def set_member_did(submission: Submission, *, member_key: str, did: str) -
         return "no registry configured"
 
     await template_service.ensure_fresh()
-    binding = template_service.rec_registry_binding(submission.rec_slug)
+    binding = template_service.rec_registry_binding(rec_slug)
     if not binding.enabled:
         return "this community declares no rec_registry binding"
 
@@ -372,6 +376,104 @@ async def set_member_did(submission: Submission, *, member_key: str, did: str) -
         did,
     )
     return f"registry member {member_key} holds the dataspace DID"
+
+
+async def ensure_member_did(rec_slug: str, *, user_id: str, did: str) -> str:
+    """Make sure this member's registry row carries *did*, and say what happened.
+
+    **Why this exists.** The POD export joins the connector's answer to *who
+    consented* — stated in DIDs — to the registry's answer to *what they hold*,
+    through ``Member.did``. The approval path writes that column as part of
+    enablement. The member's wizard mints DIDs outside enablement entirely, so
+    without this a member provisioned there would consent, appear in the
+    connector's audience, and contribute **no supply points to any export** —
+    silently, because a missing join is indistinguishable from a person who holds
+    nothing.
+
+    Idempotent and safe to call on every read, which is the point: it also heals
+    a row whose write failed once, and a member provisioned before this existed.
+    A row that already holds the DID costs one lookup and no write.
+
+    **A row holding a *different* DID is refused, not corrected.** That is one
+    person with two dataspace identities, and picking one would silently move
+    which consent record their supply points answer to. An operator has to decide
+    which is real, so it is logged at error and left alone.
+
+    Never raises: this runs beside a member reading their own consent page, and
+    failing that page over a registry write would take away the thing they came
+    for. Every outcome is a sentence, and the bad ones are logged.
+    """
+    if not settings.rec_registry_url:
+        return "no registry configured"
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(rec_slug)
+    if not binding.enabled:
+        return "this community declares no rec_registry binding"
+
+    try:
+        member = await _get_client().lookup_member_by_user_id(user_id)
+    except Exception:
+        logger.exception(
+            "Could not look up registry member %r in community %s; the dataspace "
+            "DID %s is not on their row and their supply points will not be exported",
+            user_id,
+            binding.community,
+            did,
+        )
+        return "registry lookup failed"
+
+    if member is None:
+        # They hold a dataspace identity and no membership in the community that
+        # would disclose anything about them. Not an error here — but it is the
+        # reason an export will not carry them, so it must not be silent.
+        logger.warning(
+            "No registry member with user_id %r in community %s; the dataspace "
+            "DID %s has nowhere to go and this member's supply points cannot be exported",
+            user_id,
+            binding.community,
+            did,
+        )
+        return "no registry member for this user"
+
+    if member.community_key != binding.community:
+        logger.error(
+            "Registry member %s for user_id %r belongs to community %s, not %s; "
+            "not writing the dataspace DID",
+            member.key,
+            user_id,
+            member.community_key,
+            binding.community,
+        )
+        return "registry member belongs to another community"
+
+    existing = (getattr(member, "did", None) or "").strip()
+    if existing == did:
+        return "registry member already holds the dataspace DID"
+    if existing:
+        logger.error(
+            "Registry member %s already holds dataspace DID %s, not %s. One person "
+            "with two dataspace identities — an operator must decide which is real; "
+            "not overwriting",
+            member.key,
+            existing,
+            did,
+        )
+        return "registry member holds a different dataspace DID"
+
+    try:
+        return await set_member_did(rec_slug, member_key=member.key, did=did)
+    except Exception:
+        # Includes the registry's 409: another member already holds this DID.
+        # Fatal on the approval path, where it fails the step; here it must not
+        # take down the page, and the log is what an operator acts on.
+        logger.exception(
+            "Could not write dataspace DID %s onto registry member %s; their supply "
+            "points will not be exported until it is",
+            did,
+            member.key,
+        )
+        return "registry refused the dataspace DID"
 
 
 async def supply_points_by_did(dids: list[str], *, rec_slug: str) -> dict[str, list[str]] | None:

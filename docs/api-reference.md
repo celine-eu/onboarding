@@ -58,6 +58,12 @@ looking them up, and the only way a member learns a DID minted on their behalf.
 The dates are there because "my sharing stopped working" and "my credential
 expired last week" are one event and only one of them is visible to the person.
 
+**The read route also reconciles the export join.** `Member.did` in the REC
+registry is what connects the connector's answer to *who consented* to the
+registry's answer to *what they hold*; enablement writes it for a member the
+funnel approved, and this route writes it for everyone else. Idempotent, never
+fatal to the request, and detailed in [data-sharing.md](data-sharing.md).
+
 **The read route provisions.** Where a member's community takes part and they
 hold no presentable credential, `GET /api/me/data-sharing` issues one on the
 strength of the REC's preregistration and re-resolves. This is a write behind a

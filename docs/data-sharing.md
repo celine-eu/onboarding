@@ -307,6 +307,29 @@ Four things constrain it:
   history, and minting a credential to discover that would also race the read
   that already provisions.
 
+**The DID reaches the registry, or the consent does nothing.** The POD export
+above asks the connector *who consented* — in DIDs — and the registry *what they
+hold*, joined on `Member.did`. Enablement writes that column for a member the
+funnel approved. A member provisioned from the wizard has no submission and no
+enablement run, so `GET /api/me/data-sharing` reconciles it directly: it looks the
+member up by their Keycloak username (which is what `Member.user_id` holds) and
+writes the DID onto their row if it is absent.
+
+It runs on **every** read, not only after provisioning, so a write that failed
+once — or a member provisioned before this existed — is healed by them opening the
+page. A row that already holds the DID costs one lookup and no write. Three cases
+are refused rather than forced, each logged for an operator:
+
+| Case | Why not |
+|---|---|
+| the row already holds a **different** DID | one person with two dataspace identities; overwriting silently moves which consent record their supply points answer to |
+| the row belongs to **another community** | the lookup is global by design; writing across the boundary would attribute a person's supply points to a REC that may not disclose them |
+| there is **no member row** | they hold an identity and no membership to disclose anything about — logged as a warning, because it is the reason an export will not carry them |
+
+None of it can fail the member's page: they came to manage their consent, and the
+join being wrong is an operator's problem to fix, not a reason to refuse them the
+withdrawal Art. 7(3) requires.
+
 A `role` change — `consumer` to `prosumer` when production equipment is
 commissioned — is a **reissue** in ds, not a second identity and not a
 delete-and-recreate. Nothing here works around that.

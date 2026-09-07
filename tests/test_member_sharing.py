@@ -743,6 +743,106 @@ class TestTheSecondDoor:
         assert issued == []
 
 
+# ── the DID has to reach the registry, or nothing is exported ─────
+
+
+class TestTheExportJoin:
+    """Consent that never reaches an export is not consent.
+
+    The POD export asks the connector who consented — in DIDs — and the registry
+    what they hold, joined on `Member.did`. Enablement writes that column for a
+    member the funnel approved. A member provisioned from their own wizard has no
+    submission and no enablement run, so without this their consent is recorded,
+    they appear in the connector's audience, and the file has no rows for them.
+    """
+
+    @pytest.fixture()
+    def _registry(self, monkeypatch):
+        from celine.onboarding.services import rec_registry
+
+        calls: list = []
+
+        async def _ensure(rec_slug, *, user_id, did):
+            calls.append((rec_slug, user_id, did))
+            return "registry member holds the dataspace DID"
+
+        monkeypatch.setattr(rec_registry, "ensure_member_did", _ensure)
+        return calls
+
+    async def test_the_did_is_written_for_a_member_the_wizard_provisioned(
+        self, monkeypatch, bind_rec, _dataspace, _registry
+    ):
+        _patch_httpx(monkeypatch, _handler(resolve=_resolves_after_provisioning()))
+
+        await ms.get_data_sharing(_member())
+
+        assert _registry == [("default", "member", RESOLVE_WITH_CREDENTIAL["did"])]
+
+    async def test_it_is_reconciled_on_every_read_not_only_on_provisioning(
+        self, monkeypatch, bind_rec, _dataspace, _registry
+    ):
+        """Self-healing, which is the reason it lives on the read.
+
+        A write that failed once, and a member provisioned before this existed,
+        are both fixed by them opening the page. The registry call is idempotent
+        and costs one lookup when the row already holds the DID.
+        """
+        _patch_httpx(monkeypatch, _handler())
+
+        await ms.get_data_sharing(_member())
+
+        assert _registry == [("default", "member", RESOLVE_WITH_CREDENTIAL["did"])]
+
+    async def test_a_member_with_no_identity_writes_nothing(
+        self, monkeypatch, bind_rec, _dataspace, _registry
+    ):
+        _patch_httpx(monkeypatch, _handler(resolve=httpx.Response(200, json=NO_MAPPING)))
+
+        await ms.get_data_sharing(_member())
+
+        assert _registry == []
+
+    async def test_a_registry_failure_does_not_take_down_the_page(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """The member came for their consent, not for the join.
+
+        `ensure_member_did` never raises, and this asserts the caller does not
+        reintroduce one — the export being wrong is an operator's problem, and
+        the log is how they find it; the member can still withdraw.
+        """
+        from celine.onboarding.services import rec_registry
+
+        async def _ensure(rec_slug, *, user_id, did):
+            return "registry lookup failed"
+
+        monkeypatch.setattr(rec_registry, "ensure_member_did", _ensure)
+        _patch_httpx(monkeypatch, _handler())
+
+        view = await ms.get_data_sharing(_member())
+
+        assert view.state is ms.SharingState.OK
+        assert view.offers
+
+    async def test_a_member_with_no_username_is_warned_about(
+        self, monkeypatch, bind_rec, _dataspace, _registry, caplog
+    ):
+        """`Member.user_id` holds a Keycloak *username*, and it is the only key.
+
+        Without one there is nothing to look the member up with, so the join
+        cannot be made — which must be said out loud rather than skipped.
+        """
+        member = _member()
+        member.preferred_username = None
+        _patch_httpx(monkeypatch, _handler())
+
+        with caplog.at_level("WARNING"):
+            await ms.get_data_sharing(member)
+
+        assert _registry == []
+        assert any("will not be exported" in r.getMessage() for r in caplog.records)
+
+
 # ── what a member may be told about themselves ────────────────────
 
 

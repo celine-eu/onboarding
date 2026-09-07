@@ -407,7 +407,7 @@ class TestSetMemberDid:
         monkeypatch.setattr(rr.settings, "rec_registry_url", "")
 
         assert (
-            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:x")
+            await rr.set_member_did(_sub().rec_slug, member_key="20260727-abcd", did="did:web:x")
             == "no registry configured"
         )
 
@@ -416,14 +416,14 @@ class TestSetMemberDid:
         monkeypatch.setattr(rr.settings, "rec_registry_url", "http://registry:8004")
 
         assert (
-            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:x")
+            await rr.set_member_did(_sub().rec_slug, member_key="20260727-abcd", did="did:web:x")
             == "this community declares no rec_registry binding"
         )
 
     async def test_the_did_reaches_the_addressed_member(self, monkeypatch, _configured):
         calls = _stub_client(monkeypatch, 200)
 
-        await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+        await rr.set_member_did(_sub().rec_slug, member_key="20260727-abcd", did="did:web:alice")
 
         community, member_key, body = calls[0]
         assert community == "test-community"
@@ -436,7 +436,7 @@ class TestSetMemberDid:
         registration. It names one field because it knows one field."""
         calls = _stub_client(monkeypatch, 200)
 
-        await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+        await rr.set_member_did(_sub().rec_slug, member_key="20260727-abcd", did="did:web:alice")
 
         assert list(calls[0][2].to_dict()) == ["did"]
 
@@ -449,13 +449,161 @@ class TestSetMemberDid:
         _stub_client(monkeypatch, 409, b"did 'did:web:alice' already belongs to another member")
 
         with pytest.raises(ValueError, match="already belongs to another member"):
-            await rr.set_member_did(_sub(), member_key="20260727-abcd", did="did:web:alice")
+            await rr.set_member_did(
+                _sub().rec_slug, member_key="20260727-abcd", did="did:web:alice"
+            )
 
     async def test_an_unknown_member_raises(self, monkeypatch, _configured):
         _stub_client(monkeypatch, 404, b"member not found")
 
         with pytest.raises(ValueError, match="REC registry refused the dataspace DID"):
-            await rr.set_member_did(_sub(), member_key="nobody", did="did:web:alice")
+            await rr.set_member_did(_sub().rec_slug, member_key="nobody", did="did:web:alice")
+
+
+class TestEnsureMemberDid:
+    """The same join, for a member who never had a submission.
+
+    Enablement writes `Member.did` for somebody the funnel approved. A member
+    provisioned from their own wizard has no submission and no enablement run, so
+    without this their consent is recorded, reported in the connector's audience,
+    and produces **no rows in any export** — silently, because a missing join is
+    indistinguishable from a person who holds no supply point.
+
+    Every path returns a sentence and none raises: this runs beside a member
+    reading their own consent page, and failing that page over a registry write
+    would take away the thing they came for.
+    """
+
+    def _lookup_client(self, monkeypatch, member, *, patch_status: int = 200):
+        calls: list = []
+
+        class _Client:
+            async def lookup_member_by_user_id(self, user_id):
+                calls.append(("lookup", user_id))
+                return member
+
+            async def patch_member(self, community, member_key, body):
+                calls.append(("patch", community, member_key, body))
+                return SimpleNamespace(status_code=patch_status, content=b"clash")
+
+        monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+        return calls
+
+    async def test_skipped_without_a_registry_url(self, monkeypatch, bind_rec):
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "")
+
+        result = await rr.ensure_member_did("example", user_id="alice", did="did:web:x")
+
+        assert result == "no registry configured"
+
+    async def test_skipped_without_a_binding(self, monkeypatch, bind_rec):
+        bind_rec("example")
+        monkeypatch.setattr(rr.settings, "rec_registry_url", "http://registry:8004")
+
+        result = await rr.ensure_member_did("example", user_id="alice", did="did:web:x")
+
+        assert result == "this community declares no rec_registry binding"
+
+    async def test_a_row_without_a_did_gets_one(self, monkeypatch, _configured):
+        member = SimpleNamespace(key="m-1", community_key="test-community", did=None)
+        calls = self._lookup_client(monkeypatch, member)
+
+        result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert calls[0] == ("lookup", "alice")
+        assert calls[1][1:3] == ("test-community", "m-1")
+        assert calls[1][3].to_dict() == {"did": "did:web:alice"}
+        assert "holds the dataspace DID" in result
+
+    async def test_a_row_that_already_holds_it_is_not_written(self, monkeypatch, _configured):
+        """Idempotent by inspection, not by relying on the registry's no-op.
+
+        This runs on every read of the sharing page, so the common case must cost
+        one lookup and no write.
+        """
+        member = SimpleNamespace(key="m-1", community_key="test-community", did="did:web:alice")
+        calls = self._lookup_client(monkeypatch, member)
+
+        result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert [c[0] for c in calls] == ["lookup"]
+        assert result == "registry member already holds the dataspace DID"
+
+    async def test_a_row_holding_a_different_did_is_refused(self, monkeypatch, _configured, caplog):
+        """One person with two dataspace identities. An operator decides, not this.
+
+        Overwriting would silently move which consent record their supply points
+        answer to — and both DIDs may have consent rows behind them.
+        """
+        member = SimpleNamespace(key="m-1", community_key="test-community", did="did:web:older")
+        calls = self._lookup_client(monkeypatch, member)
+
+        with caplog.at_level("ERROR"):
+            result = await rr.ensure_member_did("example", user_id="alice", did="did:web:newer")
+
+        assert [c[0] for c in calls] == ["lookup"]
+        assert result == "registry member holds a different dataspace DID"
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+
+    async def test_a_member_of_another_community_is_refused(self, monkeypatch, _configured, caplog):
+        """The lookup is global, so the answer needs checking against the REC.
+
+        `lookup_member_by_user_id` searches every community and returns one row;
+        writing this REC's DID onto another community's member would attribute a
+        person's supply points across a boundary that exists on purpose.
+        """
+        member = SimpleNamespace(key="m-1", community_key="somewhere-else", did=None)
+        calls = self._lookup_client(monkeypatch, member)
+
+        with caplog.at_level("ERROR"):
+            result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert [c[0] for c in calls] == ["lookup"]
+        assert result == "registry member belongs to another community"
+
+    async def test_no_member_row_is_warned_about_and_not_an_error(
+        self, monkeypatch, _configured, caplog
+    ):
+        """They hold a dataspace identity and no membership to disclose anything.
+
+        Not a failure — but it *is* the reason an export will not carry them, so
+        it must not pass silently.
+        """
+        self._lookup_client(monkeypatch, None)
+
+        with caplog.at_level("WARNING"):
+            result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert result == "no registry member for this user"
+        assert any("cannot be exported" in r.getMessage() for r in caplog.records)
+
+    async def test_a_refused_write_is_logged_and_swallowed(self, monkeypatch, _configured, caplog):
+        """A 409 here means another member already holds this DID.
+
+        Fatal on the approval path, where it fails the enablement step. Here it
+        must not take down the member's page — the log is what an operator acts
+        on.
+        """
+        member = SimpleNamespace(key="m-1", community_key="test-community", did=None)
+        self._lookup_client(monkeypatch, member, patch_status=409)
+
+        with caplog.at_level("ERROR"):
+            result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert result == "registry refused the dataspace DID"
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+
+    async def test_a_broken_lookup_is_logged_and_swallowed(self, monkeypatch, _configured):
+        class _Client:
+            async def lookup_member_by_user_id(self, user_id):
+                raise RuntimeError("registry down")
+
+        monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+
+        result = await rr.ensure_member_did("example", user_id="alice", did="did:web:alice")
+
+        assert result == "registry lookup failed"
 
 
 # ── reading supply points back ────────────────────────────────────────────────

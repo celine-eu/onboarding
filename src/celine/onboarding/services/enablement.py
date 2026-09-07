@@ -215,7 +215,7 @@ async def _write_member_did(ctx: RunContext) -> str | None:
         return None
 
     return await set_member_did(
-        ctx.submission,
+        ctx.submission.rec_slug,
         member_key=member_key,
         did=ctx.submission.dataspace_did,
     )

@@ -49,7 +49,7 @@ from celine.sdk.auth import JwtUser
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.security import policy
-from celine.onboarding.services import dataspace_identity, template_service
+from celine.onboarding.services import dataspace_identity, rec_registry, template_service
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +400,35 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
         return SharingView(state=state)
 
     assert rec_slug is not None  # noqa: S101 - narrowing; OK implies both
+
+    # **The join that makes a consent count**, reconciled on every read.
+    #
+    # The POD export asks the connector who consented — in DIDs — and the
+    # registry what they hold, and `Member.did` is the only thing connecting the
+    # two. Enablement writes it for a member the funnel approved; nothing wrote
+    # it for a member provisioned here, so their consent would be recorded, be
+    # reported in the audience, and produce no rows. Silently: a missing join
+    # looks exactly like a person who holds no supply point.
+    #
+    # Done here rather than only after provisioning so it is self-healing — a
+    # write that failed once, or a member provisioned before this existed, is
+    # fixed by them opening the page. It never raises and never changes what the
+    # member sees; a row that already holds the DID costs one lookup.
+    if user.preferred_username:
+        detail = await rec_registry.ensure_member_did(
+            rec_slug, user_id=user.preferred_username, did=credential.subject_id
+        )
+        logger.debug("Registry DID reconciliation for %s: %s", user.sub, detail)
+    else:
+        # `Member.user_id` holds a Keycloak *username*, and it is the only key
+        # the registry can be searched by here. Without one there is nothing to
+        # look the member up with.
+        logger.warning(
+            "Member %s has no preferred_username, so their dataspace DID cannot be "
+            "written to the registry and their supply points will not be exported",
+            user.sub,
+        )
+
     try:
         offers = await template_service.get_sharing_offers(rec_slug)
     except template_service.SharingOffersUnavailableError as exc:
