@@ -6,10 +6,19 @@ Two halves, and they catch different things:
   in `inventory.py` still exists with the fields we send.
 - `test_ds_semantics.py` calls ds and proves the things a schema cannot say.
 
-**Both skip rather than fail when ds is not reachable, and both say so loudly.**
-A check that silently stops running is how the drift this plan repairs survived
-three weeks — so the skip names the URL it could not reach, and the task runs
-pytest with `-rs` so the reasons are printed rather than counted.
+**Both skip rather than fail when the suite is not pointed at a ds, and both say
+so loudly.** A check that silently stops running is how three weeks of drift
+survived unseen — so the skip names what it could not reach, or what was never
+configured, and the task runs pytest with `-rs` so the reasons are printed
+rather than counted.
+
+**Nothing below has a default, and that is deliberate.** This service does not
+require a dataspace: the integration is off unless configured, and every ds
+address is empty until someone fills it in. A default here would have to name
+one particular deployment's hosts, credentials and seeded data — telling every
+reader that some stack they cannot see is the one this service means, and
+checking the suite against it while reporting green. Absent is the only answer
+that is true on every checkout. `task test:contract` lists the variables.
 """
 
 from __future__ import annotations
@@ -19,29 +28,83 @@ import os
 import httpx
 import pytest
 
-IR_URL = os.environ.get("DS_CONTRACT_IR_URL", "http://127.0.0.1:30005")
-CONNECTOR_URL = os.environ.get(
-    "DS_CONTRACT_CONNECTOR_URL", "http://portal.dataspaces.localhost/api/connector"
-)
-PROVENANCE_URL = os.environ.get(
-    "DS_CONTRACT_PROVENANCE_URL", "http://portal.dataspaces.localhost/api/provenance"
-)
-TOKEN_URL = os.environ.get(
-    "DS_CONTRACT_TOKEN_URL",
-    "http://keycloak.dataspaces.localhost/realms/dataspaces/protocol/openid-connect/token",
-)
-CLIENT_ID = os.environ.get("DS_CONTRACT_CLIENT_ID", "svc-ds-onboarding")
-CLIENT_SECRET = os.environ.get("DS_CONTRACT_CLIENT_SECRET", "svc-ds-onboarding")
+
+def _env(name: str) -> str | None:
+    """The variable, or None when it is unset or blank.
+
+    Blank counts as unset so that an environment file carrying an empty
+    assignment skips the suite rather than sending requests to `""`.
+    """
+    return os.environ.get(name, "").strip() or None
+
+
+IR_URL = _env("DS_CONTRACT_IR_URL")
+CONNECTOR_URL = _env("DS_CONTRACT_CONNECTOR_URL")
+PROVENANCE_URL = _env("DS_CONTRACT_PROVENANCE_URL")
+TOKEN_URL = _env("DS_CONTRACT_TOKEN_URL")
+CLIENT_ID = _env("DS_CONTRACT_CLIENT_ID")
+CLIENT_SECRET = _env("DS_CONTRACT_CLIENT_SECRET")
+
+#: The seeded data the semantic checks assert against. These name one
+#: deployment's fixtures as precisely as the URLs name its hosts — an owner
+#: whose id and alias differ, the offer published under each legal basis — so
+#: they are supplied the same way and absent for the same reason.
+OWNER_ID = _env("DS_CONTRACT_OWNER_ID")
+OWNER_ALIAS = _env("DS_CONTRACT_OWNER_ALIAS")
+CONSENT_OFFER = _env("DS_CONTRACT_CONSENT_OFFER")
+CONTRACT_OFFER = _env("DS_CONTRACT_CONTRACT_OFFER")
+#: A subject DID under the deployment's own participant, used only in requests
+#: that must be refused before anything is created.
+PROBE_SUBJECT = _env("DS_CONTRACT_PROBE_SUBJECT")
+
+ADDRESSES = {
+    "DS_CONTRACT_IR_URL": IR_URL,
+    "DS_CONTRACT_CONNECTOR_URL": CONNECTOR_URL,
+    "DS_CONTRACT_PROVENANCE_URL": PROVENANCE_URL,
+}
+CREDENTIALS = {
+    "DS_CONTRACT_TOKEN_URL": TOKEN_URL,
+    "DS_CONTRACT_CLIENT_ID": CLIENT_ID,
+    "DS_CONTRACT_CLIENT_SECRET": CLIENT_SECRET,
+}
+FIXTURE_IDS = {
+    "DS_CONTRACT_OWNER_ID": OWNER_ID,
+    "DS_CONTRACT_OWNER_ALIAS": OWNER_ALIAS,
+    "DS_CONTRACT_CONSENT_OFFER": CONSENT_OFFER,
+    "DS_CONTRACT_CONTRACT_OFFER": CONTRACT_OFFER,
+    "DS_CONTRACT_PROBE_SUBJECT": PROBE_SUBJECT,
+}
 
 BASES = {"ir": IR_URL, "connector": CONNECTOR_URL, "provenance": PROVENANCE_URL}
+
+
+def skip_unconfigured(
+    names: dict[str, str | None], what: str, *, module_level: bool = False
+) -> None:
+    """Skip, naming every variable that is missing rather than the first one.
+
+    One run should tell somebody everything they have to set. Reporting them one
+    at a time turns pointing the suite at a deployment into a guessing game, and
+    a guessing game is what gets a check switched off.
+    """
+    absent = sorted(name for name, value in names.items() if not value)
+    if not absent:
+        return
+    pytest.skip(
+        f"\n  DS CONTRACT CHECK DID NOT RUN — {what} is not configured\n"
+        f"  unset: {', '.join(absent)}\n"
+        f"  This is a skip, not a pass. Point the suite at a ds deployment\n"
+        f"  and run again; `task test:contract` lists every variable.\n",
+        allow_module_level=module_level,
+    )
 
 
 def _unreachable(what: str, url: str, exc: Exception) -> str:
     return (
         f"\n  DS CONTRACT CHECK DID NOT RUN — {what} is not reachable at {url}\n"
         f"  ({type(exc).__name__}: {exc})\n"
-        f"  This is a skip, not a pass. Start the ds stack, or point\n"
-        f"  DS_CONTRACT_*_URL at one, and run again.\n"
+        f"  This is a skip, not a pass. Start the ds deployment this suite is\n"
+        f"  pointed at, or point DS_CONTRACT_*_URL at a running one.\n"
     )
 
 
@@ -53,6 +116,8 @@ def specs() -> dict[str, dict]:
     unauthenticated, so this half of the check needs reachability and nothing
     else — no client, no secret, no realm.
     """
+    skip_unconfigured(ADDRESSES, "the ds deployment to check against", module_level=True)
+
     out: dict[str, dict] = {}
     for name, base in BASES.items():
         url = f"{base.rstrip('/')}/openapi.json"
@@ -67,12 +132,14 @@ def specs() -> dict[str, dict]:
 
 @pytest.fixture(scope="session")
 def token() -> str:
-    """An `svc-ds-onboarding` access token — the identity this service really uses.
+    """An access token for the client this service really authenticates as.
 
     Checking with a broader client would prove the endpoint exists and not that
     *we* may call it, which is half of what went wrong: `/owners/resolve` was
     reachable all along, just not by us.
     """
+    skip_unconfigured(CREDENTIALS, "the client this suite authenticates as", module_level=True)
+
     try:
         resp = httpx.post(
             TOKEN_URL,

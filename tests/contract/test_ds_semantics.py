@@ -18,30 +18,38 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from .conftest import CONNECTOR_URL, IR_URL
+from .conftest import (
+    CLIENT_ID,
+    CONNECTOR_URL,
+    CONSENT_OFFER,
+    CONTRACT_OFFER,
+    FIXTURE_IDS,
+    IR_URL,
+    OWNER_ALIAS,
+    OWNER_ID,
+    PROBE_SUBJECT,
+    skip_unconfigured,
+)
 
 pytestmark = pytest.mark.ds_contract
 
 
 @pytest.fixture(autouse=True)
 def _ds_is_up(specs):
-    """Skip, do not fail, when ds is not there.
+    """Skip, do not fail, when ds is not there or its fixtures are not named.
 
     These call ds directly rather than through a fixture, so without this an
     unreachable stack surfaces as a `ConnectError` failure — and a red suite that
     means "nothing was checked" is the noise that gets a check deleted. Depending
     on `specs` reuses the schema half's reachability probe, so both halves skip on
     one signal and say the same thing.
+
+    The second half is this module's own. Every assertion below names seeded
+    data — an owner whose id and alias differ, the offer published under each
+    legal basis, a subject to probe with — and every deployment seeds its own.
+    Unset, they would reach ds as `None` and fail as though ds had changed.
     """
-
-
-# Seeded by the ds dev fixtures: an owner whose id and alias differ, which is the
-# whole point — the two are indistinguishable on any deployment where they match.
-OWNER_ID = "example-org"
-OWNER_ALIAS = "example"
-
-CONSENT_OFFER = "household-energy-flexibility"
-CONTRACT_OFFER = "community-incentive-calculation"
+    skip_unconfigured(FIXTURE_IDS, "the seeded data these checks assert against")
 
 
 def test_owners_resolve_accepts_an_alias(auth):
@@ -103,7 +111,7 @@ def test_a_contract_offer_cannot_be_provisioned_as_consent(auth):
         headers=auth,
         timeout=10,
         json={
-            "subject_id": "did:web:rec.dataspaces.localhost:users:contract-probe",
+            "subject_id": PROBE_SUBJECT,
             "offer_id": CONTRACT_OFFER,
             "enabled": True,
             "legal_basis": {
@@ -136,7 +144,7 @@ def test_the_disclosure_route_is_ours_to_call(auth):
         json={"offer_id": "no-such-offer-contract-check", "recipient_ref": "probe"},
     )
     assert r.status_code != 403, (
-        "403 from /admin/disclosure — svc-ds-onboarding has lost "
+        f"403 from /admin/disclosure — {CLIENT_ID} has lost "
         "connector.disclosure.record, and every POD export now fails"
     )
     assert r.status_code == 422, (
@@ -195,7 +203,7 @@ def test_the_audience_read_is_ours_to_call(auth):
         timeout=10,
     )
     assert r.status_code != 403, (
-        "403 from GET /consent/admin/shares — svc-ds-onboarding has lost "
+        f"403 from GET /consent/admin/shares — {CLIENT_ID} has lost "
         "connector.consent.audience, and the POD export can no longer read who consents"
     )
     assert r.status_code == 422, (

@@ -113,9 +113,29 @@ tasks:
       - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}
 
   test:contract:
-    desc: >-
-      Check this service's calls against the ds it talks to. Needs a live ds;
-      skips loudly when there is not one, and a skip is not a pass.
+    desc: |-
+      Check this service's calls against the ds it talks to. Needs a live ds and
+      every variable below; skips loudly when either is missing, and a skip is
+      not a pass.
+
+      Nothing is defaulted, on purpose. This service runs with the dataspace
+      switched off, so there is no stack it means by default — a default here
+      would name one deployment's hosts and seeded data, and check the suite
+      against that while reporting green.
+
+        addresses    DS_CONTRACT_IR_URL, DS_CONTRACT_CONNECTOR_URL,
+                     DS_CONTRACT_PROVENANCE_URL
+        client       DS_CONTRACT_TOKEN_URL (the realm is inside it),
+                     DS_CONTRACT_CLIENT_ID, DS_CONTRACT_CLIENT_SECRET
+        seeded data  DS_CONTRACT_OWNER_ID and DS_CONTRACT_OWNER_ALIAS (which
+                     must differ — the id/alias check proves nothing where they
+                     are the same), DS_CONTRACT_CONSENT_OFFER,
+                     DS_CONTRACT_CONTRACT_OFFER, DS_CONTRACT_PROBE_SUBJECT
+
+      The values belong to whichever deployment is being checked, and stay
+      there. Point the suite at one with its own env file:
+
+        set -a; . <deployment>/.env.contract; set +a; task test:contract
     dir: "{{.SRC_DIR}}"
     cmds:
       # `-rs` so the skip reasons are printed rather than counted. A check that
