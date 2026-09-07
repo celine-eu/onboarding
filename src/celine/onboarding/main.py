@@ -314,7 +314,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="REC Onboarding",
-        version="0.1.0",
+        # **This is the OpenAPI document's version, and `celine-sdk` keys its
+        # snapshot directory on it.** A change to this service's HTTP surface that
+        # leaves this string alone overwrites `openapi/onboarding/v<version>/` in
+        # place, so the same directory name comes to mean two different APIs and
+        # no consumer can tell that anything moved — see the SDK's
+        # `regenerating-clients` playbook, which treats that as a defect to
+        # report. Moved to 0.2.0 for the member's self-service surface
+        # (`/api/me/data-sharing`) and the `identity` block on its response.
+        version="0.2.0",
         lifespan=lifespan,
     )
 
