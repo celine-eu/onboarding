@@ -404,11 +404,6 @@ async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
 # the exact failure `verified_by` exists to prevent (ds `D-53`).
 VERIFICATION_METHOD = "submission-review"
 
-#: The credential type `GET /credentials/check` is asked about. ds writes this
-#: string into `Credential.credential_type` from the VC's own second type entry
-#: (`services/vc.py`), so it is the registry's spelling and not ours.
-DATA_SUBJECT_CREDENTIAL = "DataSubjectCredential"
-
 
 @dataclass(frozen=True, slots=True)
 class RegistryAccess:
@@ -519,11 +514,11 @@ async def resolve_subject(
     is seeded by the email and nothing else; deriving from a username would mint
     a second identity for somebody who may already have one.
 
-    Returns the DID too when a mapping exists, which is what lets the caller ask
-    :func:`holds_data_subject_credential` before issuing. The response also
-    carries the person's ``vc_jws``; it is deliberately **not** read here. This
-    function's job is identification, and a credential that is never lifted out
-    of the response cannot leak from a caller that did not need it.
+    Returns the DID too when a mapping exists. The response also carries the
+    person's ``vc_jws``; it is deliberately **not** read here. This function's job
+    is identification, and a credential that is never lifted out of the response
+    cannot leak from a caller that did not need it — see
+    :func:`resolve_subject_credential` for the path that does need it.
     """
     params: dict[str, str] = {"derive": "true"}
     if email:
@@ -596,6 +591,13 @@ class SubjectCredential:
 
     subject_id: str
     vc_jws: str
+    #: What a member can be shown, and quote to a REC manager. Read from the same
+    #: registry entry as ``vc_jws`` because they describe *that* credential — the
+    #: one being presented — and a role taken from a different entry would
+    #: describe a capacity the member is not acting in.
+    role: str | None = None
+    issued_at: str | None = None
+    expires_at: str | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -611,91 +613,71 @@ class SubjectCredential:
         return f"SubjectCredential(subject_id={self.subject_id!r}, vc_jws=<redacted>)"
 
 
+async def resolve_subject_and_credential(
+    access: RegistryAccess,
+    *,
+    email: str,
+) -> tuple[ResolvedSubject, SubjectCredential | None]:
+    """Who this person is, and the credential they can act with, in one call.
+
+    Both answers come out of the same ``/users/resolve`` body, and a caller that
+    may have to provision needs both: the ``subject_id`` to issue against, and
+    the credential to know whether to. Asking twice was a real cost — the second
+    read told nobody anything the first had not already said.
+
+    The credential is ``None`` when they hold none, which is an ordinary answer:
+    a participant enabled before the dataspace existed has no credential, and
+    neither does a preregistered member who has not been provisioned yet.
+
+    **Selected by role, not by recency.** One human legitimately holds several
+    credentials — a data subject about their own consumption, a consumer user
+    acting for somebody else — and the registry returns them all. The singular
+    ``role`` / ``vc_jws`` fields are the most recently issued one, which for such
+    a person is the wrong credential; presenting it to the consent API would
+    authenticate them in a capacity they are not acting in. The singular fields
+    are a fallback, and only when they name the right role.
+
+    Raises :class:`SubjectIdentifierConflictError` on a 409, which a
+    member-facing caller must not present as a retryable failure.
+    """
+    body = await _resolve_raw(access, email=email)
+    resolved = ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
+
+    subject_id = body.get("did") or body.get("subject_did")
+    if not subject_id:
+        return resolved, None
+
+    for credential in body.get("credentials") or []:
+        if credential.get("role") == settings.dataspace_user_role and credential.get("vc_jws"):
+            return resolved, _as_subject_credential(subject_id, credential)
+
+    if body.get("role") == settings.dataspace_user_role and body.get("vc_jws"):
+        return resolved, _as_subject_credential(subject_id, body)
+
+    return resolved, None
+
+
 async def resolve_subject_credential(
     access: RegistryAccess,
     *,
     email: str,
 ) -> SubjectCredential | None:
-    """The member's own ``DataSubjectCredential``, or ``None`` if they hold none.
-
-    ``None`` is an ordinary answer, not an error: a participant enabled before
-    the dataspace existed has no credential, and neither does anyone whose
-    community does not take part.
-
-    **Selected by role, not by recency.** One human legitimately holds several
-    credentials — a data subject about their own consumption, a consumer user
-    acting for somebody else — and `/users/resolve` returns them all. The
-    singular ``role`` / ``vc_jws`` fields are the most recently issued one, which
-    for such a person is the wrong credential; presenting it to the consent API
-    would authenticate them in a capacity they are not acting in. The singular
-    fields are used only as a fallback, and only when they name the right role.
-
-    Raises :class:`SubjectIdentifierConflictError` on a 409, which a member-facing
-    caller must not present as a retryable failure.
-    """
-    resolved_raw = await _resolve_raw(access, email=email)
-    subject_id = resolved_raw.get("did") or resolved_raw.get("subject_did")
-    if not subject_id:
-        return None
-
-    for credential in resolved_raw.get("credentials") or []:
-        if credential.get("role") == settings.dataspace_user_role and credential.get("vc_jws"):
-            return SubjectCredential(subject_id=subject_id, vc_jws=credential["vc_jws"])
-
-    if resolved_raw.get("role") == settings.dataspace_user_role and resolved_raw.get("vc_jws"):
-        return SubjectCredential(subject_id=subject_id, vc_jws=resolved_raw["vc_jws"])
-
-    return None
+    """The member's own credential, for a caller that needs nothing else."""
+    _, credential = await resolve_subject_and_credential(access, email=email)
+    return credential
 
 
-async def holds_data_subject_credential(access: RegistryAccess, did: str) -> bool:
-    """Does *did* already hold a valid ``DataSubjectCredential``?
+def _as_subject_credential(subject_id: str, entry: dict[str, Any]) -> SubjectCredential:
+    def _text(value: Any) -> str | None:
+        return str(value) if value else None
 
-    **The idempotency guard, and it is not a workaround.**
-    ``POST /admin/credentials/data-subject`` reuses the subject DID but allocates
-    a status-list index and mints a fresh credential on *every* call. A wizard
-    that provisions on entry would therefore issue one credential per visit and
-    burn one revocation slot per visit. Checking first and issuing only on
-    absence is worth keeping after ds changes its end.
-
-    ``/credentials/check`` rather than ``/users/resolve`` because it answers the
-    exact question — a boolean, with *valid* meaning active **and** unexpired,
-    both decided at the registry — and because enumerating what somebody holds is
-    a disclosure this caller has no reason to make.
-
-    Needs ``identity-registry.credentials.read``, which is a **narrower** grant
-    than the issuance one this service already holds.
-
-    **Asked by the caller, not by :func:`provision_subject`.** The two doors want
-    different answers. The wizard asks, because a member who already holds a
-    credential should keep it. The funnel does not: a manager has just approved
-    *this* submission, and the row needs a ``dataspace_vc_id`` of its own to be
-    revocable — ds returns no credential id for a credential it did not just
-    issue (``/credentials/check`` is a boolean and ``/users/resolve``'s entries
-    carry role, type and dates but no id), so a reused one could not be recorded
-    and the submission's enablement could never be undone.
-    """
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"{access.base_url}/credentials/check",
-            params={"subject_did": did, "type": DATA_SUBJECT_CREDENTIAL},
-            headers=access.headers,
-        )
-
-    if resp.status_code >= 400:
-        # Fail *open* — towards issuing. A refused check is not evidence of
-        # absence, but treating it as "already held" would leave a member with no
-        # credential and no error, which is the silent half of the two failures.
-        # Issuing a second credential is visible, repairable and revocable.
-        logger.warning(
-            "Credential check for %s answered %s; provisioning will issue rather "
-            "than assume a credential exists",
-            did,
-            resp.status_code,
-        )
-        return False
-
-    return bool(resp.json().get("holds"))
+    return SubjectCredential(
+        subject_id=subject_id,
+        vc_jws=entry["vc_jws"],
+        role=_text(entry.get("role")),
+        issued_at=_text(entry.get("issued_at")),
+        expires_at=_text(entry.get("expires_at")),
+    )
 
 
 async def provision_subject(
@@ -712,9 +694,20 @@ async def provision_subject(
     either way; see :data:`VERIFICATION_METHOD` for why it does not record which
     door.
 
-    **This function always issues.** Whether it should is
-    :func:`holds_data_subject_credential`'s question, and it is the caller's to
-    ask — see there for why the two doors answer it differently.
+    **This function always issues**, because issuance is not idempotent: ds reuses
+    the subject DID but allocates a status-list index and mints a fresh credential
+    on every call. Whether it *should* be called is the caller's question, and the
+    two doors answer it differently.
+
+    * The **funnel** does not ask. A manager has just approved this submission, and
+      the row needs a ``dataspace_vc_id`` of its own to stay revocable — a reused
+      credential could not supply one, because ds returns no id for a credential it
+      did not just issue.
+    * The **wizard** asks by calling :func:`resolve_subject_credential` first and
+      provisioning only when it answers ``None``. That is a *stronger* guard than
+      the ``GET /credentials/check`` this was first built around, and it is a call
+      that path already makes — see the plan for why the narrower route turned out
+      to be the wrong question here.
 
     Order matters and matches :func:`revoke_user_identity` in reverse: credential,
     then membership, then the Keycloak mapping — the membership has a foreign key

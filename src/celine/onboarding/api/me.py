@@ -53,6 +53,11 @@ class DataSharingStatusResponse(BaseModel):
     in a dataspace" and "you have no credential yet" need different sentences and
     used to get the same one.
 
+    ``identity`` carries the member's DID, their credential's role, and its
+    issued/expires dates — enough to quote to a REC manager looking them up, and
+    the only way a member learns a DID that was minted on their behalf. ``None``
+    unless `state` is `ok`.
+
     **No credential is ever in here.** Not the `vc_jws`, which authenticates as
     the member, and not in any field added later.
     """
@@ -60,6 +65,7 @@ class DataSharingStatusResponse(BaseModel):
     has_identity: bool
     state: member_sharing.SharingState
     offers: list[dict[str, Any]] = Field(default_factory=list)
+    identity: dict[str, Any] | None = None
 
 
 class DataSharingHistoryResponse(BaseModel):
@@ -94,7 +100,10 @@ async def get_data_sharing(user: MemberDep) -> DataSharingStatusResponse:
         raise _unavailable(exc) from exc
 
     return DataSharingStatusResponse(
-        has_identity=view.has_identity, state=view.state, offers=view.offers
+        has_identity=view.has_identity,
+        state=view.state,
+        offers=view.offers,
+        identity=view.identity,
     )
 
 
@@ -123,7 +132,10 @@ async def set_data_sharing(
         raise _unavailable(exc) from exc
 
     return DataSharingStatusResponse(
-        has_identity=view.has_identity, state=view.state, offers=view.offers
+        has_identity=view.has_identity,
+        state=view.state,
+        offers=view.offers,
+        identity=view.identity,
     )
 
 

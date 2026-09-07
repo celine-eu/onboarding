@@ -272,8 +272,44 @@ through the connector's `POST /admin/disclosure`, which computes the
 consent-snapshot hash a disclosure record requires. Unset returns an empty list —
 the decisions stand without their history.
 
-Remaining future work: **provisioning on demand**, so a preregistered member who
-holds no credential can obtain one from this surface rather than being told they
-have no dataspace identity; and consumer/policy registration in ds. Until the
-first is in place, such a member gets `state: no_identity` and an explanation.
-Phase A remains available for ad-hoc, DPA-governed disclosures.
+### The second door — becoming a subject from the wizard
+
+A REC may admit members **offline**: screened on paper, meters installed on
+signature. They hold no submission and never will, so the approval path above
+cannot reach them — and until they hold a `DataSubjectCredential` there is
+nothing for the connector to authenticate, so the page above could only tell them
+they had no dataspace identity.
+
+`GET /api/me/data-sharing` provisions one. Where the member's community takes
+part and they hold no presentable credential, it issues on the strength of that
+preregistration and re-resolves. The credential records **the same assurance the
+approval path records** — `verification_method: submission-review`, `verified_by`
+the REC's `organization_did`. The two doors are the same check performed in
+different places; where the check happened is not a property of the person's
+identity and is deliberately not in their credential.
+
+Four things constrain it:
+
+- **It is guarded by the resolve that precedes it.** Issuance is not idempotent:
+  ds reuses the subject DID but allocates a status-list index and mints a fresh
+  credential on every call. Provisioning on arrival without a guard would issue
+  one credential and burn one revocation slot per visit.
+- **The DID is bound to the realm that authenticated the member**, taken from
+  their token's issuer — not `DATASPACE_KEYCLOAK_REALM`, which names the realm
+  the funnel *creates* users in. A member with no realm in their issuer is not
+  provisioned at all: the connector resolves subjects to data-plane identities
+  through that mapping, and a DID bound to nothing is an identity that cannot be
+  used and cannot be explained.
+- **A community outside the dataspace is never provisioned.** That is
+  `no_dataspace`, and it is distinct from `no_identity` precisely so this cannot
+  happen.
+- **The history route never provisions.** A member with no identity has no
+  history, and minting a credential to discover that would also race the read
+  that already provisions.
+
+A `role` change — `consumer` to `prosumer` when production equipment is
+commissioned — is a **reissue** in ds, not a second identity and not a
+delete-and-recreate. Nothing here works around that.
+
+Remaining future work: consumer/policy registration in ds. Phase A remains
+available for ad-hoc, DPA-governed disclosures.

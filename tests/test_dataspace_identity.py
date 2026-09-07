@@ -985,38 +985,6 @@ class TestResolveSubject:
             await di.resolve_subject(_access(), email="a@example.org")
 
 
-class TestHoldsDataSubjectCredential:
-    async def test_it_asks_the_registry_the_exact_question(self, monkeypatch):
-        seen: list[httpx.URL] = []
-
-        def handler(req):
-            seen.append(req.url)
-            return httpx.Response(200, json={"holds": True})
-
-        _patch_httpx(monkeypatch, handler)
-
-        assert await di.holds_data_subject_credential(_access(), "did:web:x") is True
-        assert seen[0].path == "/credentials/check"
-        assert seen[0].params["subject_did"] == "did:web:x"
-        assert seen[0].params["type"] == "DataSubjectCredential"
-
-    async def test_no_credential_is_false(self, monkeypatch):
-        _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json={"holds": False}))
-
-        assert await di.holds_data_subject_credential(_access(), "did:web:x") is False
-
-    async def test_a_refused_check_fails_towards_issuing(self, monkeypatch):
-        """Fail open, deliberately.
-
-        A refused check is not evidence of absence, but reading it as "already
-        held" would leave a member with no credential and no error. A second
-        credential is visible, repairable and revocable; silence is not.
-        """
-        _patch_httpx(monkeypatch, lambda req: httpx.Response(403))
-
-        assert await di.holds_data_subject_credential(_access(), "did:web:x") is False
-
-
 class TestTheCredentialSaysHowThePersonWasChecked:
     async def test_the_funnel_records_the_rec_and_the_review(
         self, monkeypatch, submission, _enable_vc, bind_rec

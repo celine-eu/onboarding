@@ -116,10 +116,35 @@ class SharingView:
 
     state: SharingState
     offers: list[dict[str, Any]] = field(default_factory=list)
+    #: The member's own dataspace identity, as far as they need to know it:
+    #: enough to quote to a REC manager who is looking them up, and nothing that
+    #: authenticates as them. ``None`` unless :attr:`state` is ``OK``.
+    identity: dict[str, Any] | None = None
 
     @property
     def has_identity(self) -> bool:
         return self.state is SharingState.OK
+
+
+def _identity_of(credential: dataspace_identity.SubjectCredential) -> dict[str, Any]:
+    """The four facts a member may be shown about their own credential.
+
+    Built field by field, never by serialising the credential. `vc_jws` sits on
+    the same object and **is** the member's authentication — the difference
+    between this and `asdict()` is the whole guarantee, so it must stay a list
+    somebody has to add to deliberately.
+
+    The DID is here because a REC manager looking a member up in the registry
+    needs it and the member has no other way to learn it. The dates are here
+    because "my sharing stopped working" and "my credential expired last week"
+    are the same event, and only one of them is visible to the person.
+    """
+    return {
+        "did": credential.subject_id,
+        "role": credential.role,
+        "issued_at": credential.issued_at,
+        "expires_at": credential.expires_at,
+    }
 
 
 def resolve_member_rec(user: JwtUser) -> str | None:
@@ -160,12 +185,107 @@ def resolve_member_rec(user: JwtUser) -> str | None:
     return candidates[0]
 
 
-async def _resolve(user: JwtUser) -> tuple[SharingState, str | None, Any]:
+def keycloak_realm_of(user: JwtUser) -> str | None:
+    """The realm that actually authenticated this member, from their issuer.
+
+    Deliberately **not** `DATASPACE_KEYCLOAK_REALM`, which defaults to
+    `dataspaces` and names the dedicated realm the funnel *creates* users in. A
+    preregistered member already has an account, in whichever realm they log into
+    — celine's — and binding their DID to the wrong realm would produce a mapping
+    the connector cannot resolve them through. The issuer is the only thing that
+    knows which realm a token came from.
+    """
+    issuer = (user.iss or "").rstrip("/")
+    marker = "/realms/"
+    if marker not in issuer:
+        return None
+    realm = issuer.rsplit(marker, 1)[1].strip("/")
+    return realm or None
+
+
+async def _provision_from_preregistration(
+    access: dataspace_identity.RegistryAccess,
+    user: JwtUser,
+    binding: template_service.DataspaceBinding,
+    subject_id: str,
+) -> dataspace_identity.SubjectCredential | None:
+    """Make this member a dataspace subject, on the strength of preregistration.
+
+    **The second door.** The REC screened these members offline and installed
+    their meters on signature; there is no submission and there never will be, so
+    the funnel's entrypoint cannot reach them. The authority is that
+    preregistration, and the credential records the same assurance the funnel's
+    does — the operator's answer on 2026-09-06 was that the two *are* the same
+    check, performed in different places.
+
+    Called only where :func:`_resolve` has already established that this
+    member's community takes part and that they hold no presentable credential.
+    **That is the idempotency guard**, and it matters: ds reuses the subject DID
+    but mints a fresh credential and burns a revocation slot on every issuance,
+    so a page that provisioned on every visit would do so once per visit.
+
+    ``subject_id`` comes from the caller's own resolve rather than being read
+    again here: the call that established there was no credential established
+    the identifier too.
+
+    Returns the credential the member can now act with, or ``None`` if issuance
+    produced nothing presentable — which is not an error the member can act on
+    either, and leaves them where they were.
+    """
+    realm = keycloak_realm_of(user)
+    if not realm:
+        # Without a realm the Keycloak sync would bind the DID to nothing, and
+        # the connector resolves a subject to a data-plane identity through
+        # exactly that mapping. Better no credential than an unusable one.
+        logger.error("Cannot provision member %s: no realm in issuer %r", user.sub, user.iss)
+        return None
+
+    identity = await dataspace_identity.provision_subject(
+        access,
+        dataspace_identity.SubjectFacts(
+            subject_id=subject_id,
+            role=settings.dataspace_user_role,
+            email=user.email,
+            keycloak_user_id=user.sub,
+            keycloak_realm=realm,
+            # `preferred_username` is what the data plane joins on — the same
+            # value the funnel writes into `Member.user_id`. The registry falls
+            # back to the email without it, which is right only while the two
+            # agree.
+            keycloak_username=user.preferred_username,
+            verified_by=binding.organization_did or None,
+            verification_method=dataspace_identity.VERIFICATION_METHOD,
+            allowed_actions=tuple(
+                a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
+            ),
+            ttl_days=settings.dataspace_vc_ttl_days,
+        ),
+        binding,
+    )
+    logger.info(
+        "Provisioned dataspace identity %s for member %s on preregistration",
+        identity.did,
+        user.sub,
+    )
+
+    # Re-resolve rather than build a credential from the issuance response: it
+    # returns the DID, the credential id and a timestamp, and no `vc_jws` — which
+    # is the one thing the member needs in order to act.
+    return await dataspace_identity.resolve_subject_credential(access, email=user.email)
+
+
+async def _resolve(
+    user: JwtUser, *, provision: bool = True
+) -> tuple[SharingState, str | None, Any]:
     """Resolve community and credential, returning the state that stopped it.
 
     Returns ``(state, rec_slug, credential)``. Only ``SharingState.OK`` carries
     both; every other state is terminal for this request and carries whatever was
     established before it stopped.
+
+    ``provision`` is False on the history route. A member with no identity has no
+    history, and minting a credential to discover that is both gratuitous and a
+    second writer racing the read that already provisions.
     """
     if not settings.dataspace_enabled:
         return SharingState.NO_DATASPACE, None, None
@@ -196,7 +316,9 @@ async def _resolve(user: JwtUser) -> tuple[SharingState, str | None, Any]:
 
     try:
         access = await dataspace_identity.registry_access()
-        credential = await dataspace_identity.resolve_subject_credential(access, email=user.email)
+        resolved, credential = await dataspace_identity.resolve_subject_and_credential(
+            access, email=user.email
+        )
     except dataspace_identity.SubjectIdentifierConflictError:
         # Already logged at error level with the identifiers, which is the only
         # thing that brings an operator to it.
@@ -205,7 +327,18 @@ async def _resolve(user: JwtUser) -> tuple[SharingState, str | None, Any]:
         raise SharingUnavailableError(f"Identity registry unavailable: {exc}") from exc
 
     if credential is None:
-        return SharingState.NO_IDENTITY, rec_slug, None
+        if not provision:
+            return SharingState.NO_IDENTITY, rec_slug, None
+        try:
+            credential = await _provision_from_preregistration(
+                access, user, binding, resolved.subject_id
+            )
+        except dataspace_identity.SubjectIdentifierConflictError:
+            return SharingState.IDENTITY_CONFLICT, rec_slug, None
+        except (httpx.HTTPError, ValueError) as exc:
+            raise SharingUnavailableError(f"Could not provision an identity: {exc}") from exc
+        if credential is None:
+            return SharingState.NO_IDENTITY, rec_slug, None
 
     return SharingState.OK, rec_slug, credential
 
@@ -275,7 +408,11 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
         # shown that would reasonably conclude they had nothing to withdraw.
         raise SharingUnavailableError(str(exc)) from exc
 
-    return SharingView(state=state, offers=_merge(offers, await _list_decisions(credential)))
+    return SharingView(
+        state=state,
+        offers=_merge(offers, await _list_decisions(credential)),
+        identity=_identity_of(credential),
+    )
 
 
 async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> SharingView:
@@ -349,7 +486,7 @@ async def get_history(user: JwtUser) -> tuple[SharingState, list[dict[str, Any]]
     stand without their history, and failing here would make the whole page
     unusable for a detail.
     """
-    state, _, credential = await _resolve(user)
+    state, _, credential = await _resolve(user, provision=False)
     if state is not SharingState.OK:
         return state, []
 

@@ -40,7 +40,15 @@ RESOLVE_WITH_CREDENTIAL = {
     "did": "did:web:users.example:email-abc123",
     "role": "DataSubject",
     "vc_jws": VC,
-    "credentials": [{"role": "DataSubject", "vc_jws": VC}],
+    "credentials": [
+        {
+            "role": "DataSubject",
+            "vc_jws": VC,
+            "credential_type": "DataSubjectCredential",
+            "issued_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2027-01-01T00:00:00Z",
+        }
+    ],
 }
 
 
@@ -70,14 +78,33 @@ def _patch_httpx(monkeypatch, handler):
     monkeypatch.setattr(httpx, "AsyncClient", factory)
 
 
-def _member(organization: str | None = "rec-example", email: str | None = "member@example.org"):
-    """A plain member: an organization membership and no groups at all."""
+ISSUER = "https://keycloak.test/realms/celine"
+
+
+def _member(
+    organization: str | None = "rec-example",
+    email: str | None = "member@example.org",
+    *,
+    iss: str | None = ISSUER,
+):
+    """A plain member: an organization membership and no groups at all.
+
+    ``iss`` carries the realm. Phase 3 binds a provisioned DID to the realm that
+    authenticated the member, so a token without one is a distinct branch rather
+    than a detail — see `test_a_member_whose_issuer_names_no_realm_is_not_provisioned`.
+    """
     from celine.sdk.auth import JwtUser
 
     claims: dict = {"sub": "member-sub", "email": email}
     if organization:
         claims["organization"] = {organization: {"id": "org-uuid", "groups": []}}
-    return JwtUser(sub="member-sub", email=email, claims=claims)
+    return JwtUser(
+        sub="member-sub",
+        email=email,
+        preferred_username="member",
+        iss=iss,
+        claims=claims,
+    )
 
 
 @pytest.fixture()
@@ -111,13 +138,32 @@ def _dataspace(monkeypatch, bind_rec):
     di._token_provider = _mock_token_provider()
 
 
-def _handler(*, resolve=None, shares=None, offers=None, prov=None, post=None):
-    """One transport for the four services a member request can touch."""
+NO_MAPPING = {"subject_id": "email-abc123"}
+
+ISSUED = {
+    "subjectDid": RESOLVE_WITH_CREDENTIAL["did"],
+    "credentialId": "urn:uuid:cred-001",
+    "generatedAt": "2026-09-06T10:00:00Z",
+}
+
+
+def _handler(*, resolve=None, shares=None, offers=None, prov=None, post=None, issue=None):
+    """One transport for every service a member request can touch."""
 
     def handle(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
         if "users/resolve" in url:
-            return resolve or httpx.Response(200, json=RESOLVE_WITH_CREDENTIAL)
+            return (
+                resolve()
+                if callable(resolve)
+                else (resolve or httpx.Response(200, json=RESOLVE_WITH_CREDENTIAL))
+            )
+        if "/admin/credentials/data-subject" in url:
+            return issue or httpx.Response(201, json=ISSUED)
+        if "/admin/memberships" in url:
+            return httpx.Response(201, json={})
+        if "/admin/keycloak/sync" in url:
+            return httpx.Response(200, json={})
         if "/ns/sharing-offers" in url:
             return offers or httpx.Response(200, json=[OFFER_CONSENT, OFFER_CONTRACT])
         if "/prov/my/events" in url:
@@ -129,6 +175,25 @@ def _handler(*, resolve=None, shares=None, offers=None, prov=None, post=None):
         raise AssertionError(f"unexpected call to {url}")
 
     return handle
+
+
+def _resolves_after_provisioning():
+    """`/users/resolve`: no credential the first time, one after issuance.
+
+    What the registry really does — the mapping exists either way, but the
+    credential only after `POST /admin/credentials/data-subject`. Provisioning
+    then re-resolves, because the issuance response carries no `vc_jws`.
+    """
+    calls = {"n": 0}
+
+    def resolve() -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=NO_MAPPING)
+        return httpx.Response(200, json=RESOLVE_WITH_CREDENTIAL)
+
+    resolve.calls = calls
+    return resolve
 
 
 # ── which community, and how it is found ──────────────────────────
@@ -508,6 +573,224 @@ class TestHistory:
         assert (state, events) == (ms.SharingState.OK, [])
 
 
+# ── provisioning on demand, from the member's own session ─────────
+
+
+class TestTheSecondDoor:
+    async def test_a_preregistered_member_becomes_a_subject_on_arrival(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """The gap this whole plan exists to close.
+
+        The pilot's members were screened offline and their meters installed on
+        signature. There is no submission and there never will be, so the funnel
+        cannot reach them — they arrived at the sharing page and were told they
+        had no dataspace identity, which was true and useless.
+        """
+        resolve = _resolves_after_provisioning()
+        _patch_httpx(monkeypatch, _handler(resolve=resolve))
+
+        view = await ms.get_data_sharing(_member())
+
+        assert view.state is ms.SharingState.OK
+        assert view.has_identity is True
+        # Resolved, found nothing, issued, resolved again — the issuance response
+        # carries no `vc_jws`, so the second read is not optional.
+        assert resolve.calls["n"] == 2
+
+    async def test_it_records_the_same_assurance_the_funnel_does(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """Both doors are the same check performed in different places.
+
+        The operator's answer on 2026-09-06. The credential records how well the
+        person was checked, not which entrypoint minted it — where the check
+        happened is not a property of their identity.
+        """
+        bodies: list[dict] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                bodies.append(json.loads(req.content))
+            return _handler(resolve=_resolves_after_provisioning())(req)
+
+        _patch_httpx(monkeypatch, handle)
+        await ms.get_data_sharing(_member())
+
+        assert bodies[0]["verification_method"] == "submission-review"
+        assert bodies[0]["verified_by"] == "did:web:rec.example"
+
+    async def test_the_did_is_bound_to_the_realm_that_authenticated_them(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """Not `DATASPACE_KEYCLOAK_REALM`, which names a realm they are not in.
+
+        That setting defaults to `dataspaces` and describes where the funnel
+        *creates* users. A preregistered member already has an account, in the
+        realm they log into, and binding the DID elsewhere produces a mapping the
+        connector cannot resolve them through.
+        """
+        monkeypatch.setattr(ms.settings, "dataspace_keycloak_realm", "dataspaces")
+        syncs: list[dict] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/keycloak/sync" in str(req.url):
+                syncs.append(json.loads(req.content))
+            return _handler(resolve=_resolves_after_provisioning())(req)
+
+        _patch_httpx(monkeypatch, handle)
+        await ms.get_data_sharing(_member())
+
+        assert syncs[0]["keycloak_realm"] == "celine"
+        assert syncs[0]["keycloak_user_id"] == "member-sub"
+        # What the data plane joins on — the same value the funnel writes into
+        # `Member.user_id`.
+        assert syncs[0]["username"] == "member"
+
+    async def test_a_member_whose_issuer_names_no_realm_is_not_provisioned(
+        self, monkeypatch, bind_rec, _dataspace, caplog
+    ):
+        """Better no credential than one bound to nothing.
+
+        The connector resolves a subject to a data-plane identity through exactly
+        that mapping, so a DID with no realm behind it is an identity that cannot
+        be used and cannot be explained.
+        """
+        issued: list[str] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                issued.append(str(req.url))
+            return _handler(resolve=httpx.Response(200, json=NO_MAPPING))(req)
+
+        _patch_httpx(monkeypatch, handle)
+
+        with caplog.at_level("ERROR"):
+            view = await ms.get_data_sharing(_member(iss=None))
+
+        assert view.state is ms.SharingState.NO_IDENTITY
+        assert issued == []
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+
+    async def test_a_member_who_already_has_one_is_never_re_issued(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """The idempotency guard, and it is the resolve rather than a second call.
+
+        ds reuses the subject DID but allocates a status-list index and mints a
+        fresh credential on **every** issuance, so a page that provisioned on
+        arrival without checking would issue one per visit and burn one
+        revocation slot per visit. `resolve_subject_credential` already answers
+        the stronger question — does this member hold an active, unexpired,
+        *presentable* credential — and it is a call this path makes anyway.
+        """
+        issued: list[str] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                issued.append(str(req.url))
+            return _handler()(req)
+
+        _patch_httpx(monkeypatch, handle)
+        await ms.get_data_sharing(_member())
+        await ms.get_data_sharing(_member())
+
+        assert issued == []
+
+    async def test_a_community_outside_the_dataspace_is_never_provisioned(
+        self, monkeypatch, bind_rec
+    ):
+        """The distinction the operator asked for, doing its job.
+
+        `no_dataspace` reaches this branch before any registry call. Provisioning
+        somebody whose community cannot use an identity is worse than explaining
+        why there is nothing to share.
+        """
+        bind_rec("default")
+        template_service._cache["default"] = {
+            "slug": "default",
+            "name": "default",
+            "organization": "rec-example",
+        }
+        monkeypatch.setattr(ms.settings, "dataspace_enabled", True)
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            raise AssertionError(f"should not have called {req.url}")
+
+        _patch_httpx(monkeypatch, handle)
+
+        view = await ms.get_data_sharing(_member("rec-example"))
+
+        assert view.state is ms.SharingState.NO_DATASPACE
+
+    async def test_the_history_route_never_provisions(self, monkeypatch, bind_rec, _dataspace):
+        """A member with no identity has no history.
+
+        Minting a credential to discover that is gratuitous, and it would put a
+        second writer in a race with the read that already provisions.
+        """
+        issued: list[str] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                issued.append(str(req.url))
+            return _handler(resolve=httpx.Response(200, json=NO_MAPPING))(req)
+
+        _patch_httpx(monkeypatch, handle)
+        state, events = await ms.get_history(_member())
+
+        assert state is ms.SharingState.NO_IDENTITY
+        assert issued == []
+
+
+# ── what a member may be told about themselves ────────────────────
+
+
+class TestTheIdentityBlock:
+    async def test_it_carries_what_a_rec_manager_would_ask_for(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """A DID minted on somebody's behalf is otherwise unknowable to them.
+
+        The dates are here for the same reason: "my sharing stopped working" and
+        "my credential expired last week" are one event, and only one of them is
+        visible to the person it happened to.
+        """
+        _patch_httpx(monkeypatch, _handler())
+
+        view = await ms.get_data_sharing(_member())
+
+        assert view.identity == {
+            "did": RESOLVE_WITH_CREDENTIAL["did"],
+            "role": "DataSubject",
+            "issued_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2027-01-01T00:00:00Z",
+        }
+
+    async def test_it_never_carries_the_credential(self, monkeypatch, bind_rec, _dataspace):
+        """The one field that must never appear, asserted on the block itself.
+
+        `_identity_of` builds field by field rather than serialising the
+        credential, and this is what holds that: `asdict()` would pass every
+        other test in this file and ship the member's authentication.
+        """
+        _patch_httpx(monkeypatch, _handler())
+
+        view = await ms.get_data_sharing(_member())
+
+        assert VC not in json.dumps(view.identity)
+        assert "vc_jws" not in (view.identity or {})
+
+    async def test_there_is_nothing_to_show_without_an_identity(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        _patch_httpx(monkeypatch, _handler(resolve=httpx.Response(200, json=NO_MAPPING)))
+
+        view = await ms.get_data_sharing(_member())
+
+        assert view.identity is None
+
+
 # ── the credential never leaves ───────────────────────────────────
 
 
@@ -640,14 +923,11 @@ class TestTheRoutes:
     ):
         """`has_identity: false` alone is what the BFF could already say.
 
-        `state` is the half that lets the page say *why*, which is the whole
-        point: "your community does not take part" and "you have no credential
-        yet" need different sentences and one of them is Phase 3's job to fix.
+        `state` is the half that lets the page say *why*. Here the community is
+        in no dataspace, which Phase 3 must never try to provision out of — so
+        the sentence is "there is nothing to share", not "not yet".
         """
-        _patch_httpx(
-            monkeypatch,
-            _handler(resolve=httpx.Response(200, json={"subject_id": "email-abc123"})),
-        )
+        template_service._cache["default"].pop("dataspace")
         token = issue_token(
             sub="member-sub",
             email="member@example.org",
@@ -658,7 +938,12 @@ class TestTheRoutes:
             "/api/me/data-sharing", headers={"Authorization": f"Bearer {token}"}
         ).json()
 
-        assert body == {"has_identity": False, "state": "no_identity", "offers": []}
+        assert body == {
+            "has_identity": False,
+            "state": "no_dataspace",
+            "offers": [],
+            "identity": None,
+        }
 
     def test_deciding_something_undecidable_is_409(
         self, client, issue_token, monkeypatch, bind_rec, _dataspace

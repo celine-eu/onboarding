@@ -35,9 +35,9 @@ community's offers.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/me/data-sharing` | Every offer this member's community publishes, with their decision on it. `state` says why `has_identity` is false — see below |
+| `GET` | `/api/me/data-sharing` | Every offer this member's community publishes, with their decision on it. **Provisions a dataspace identity** for a preregistered member who holds none — see below. `state` says why `has_identity` is false; `identity` carries the DID, role and dates |
 | `POST` | `/api/me/data-sharing/{offer_id}` | Grant or withdraw one offer. `409` when the offer is not consent-based, not published by this REC, or the member is in a state with nothing to decide |
-| `GET` | `/api/me/data-sharing/history` | The member's own provenance record. Empty when `DS_PROVENANCE_URL` is unset |
+| `GET` | `/api/me/data-sharing/history` | The member's own provenance record. Empty when `DS_PROVENANCE_URL` is unset. **Never provisions** — a member with no identity has no history |
 
 `state` is one of:
 
@@ -45,12 +45,27 @@ community's offers.
 |---|---|
 | `ok` | Offers listed, decisions merged, controls live |
 | `no_dataspace` | This member's community does not take part, so there is nothing to decide and nothing to provision |
-| `no_identity` | The community takes part; this member holds no credential yet |
+| `no_identity` | The community takes part and provisioning did not produce a usable credential. After the read route it means issuance was attempted and failed, or the member's token names no realm |
 | `identity_conflict` | The identity registry answered `409`. Terminal for the member — retrying cannot clear it — and logged for an operator, who is the only one who can |
 | `ambiguous_community` | The member is in more than one participating community, so "their offers" has no single answer. Refused rather than guessed |
 
 `has_identity` is kept beside `state` because `../celine-webapp` and the page
 built on it already read it. `state` is the additive half that says *why*.
+
+`identity` is `null` unless `state` is `ok`, and otherwise carries `did`, `role`,
+`issued_at` and `expires_at` — enough for a member to quote to a REC manager
+looking them up, and the only way a member learns a DID minted on their behalf.
+The dates are there because "my sharing stopped working" and "my credential
+expired last week" are one event and only one of them is visible to the person.
+
+**The read route provisions.** Where a member's community takes part and they
+hold no presentable credential, `GET /api/me/data-sharing` issues one on the
+strength of the REC's preregistration and re-resolves. This is a write behind a
+`GET`, which is unusual and deliberate: the pilot's members were admitted offline
+and hold no submission, so the door they are standing at is the only one they
+have. It is guarded by the resolve that precedes it — issuance is not idempotent
+and each call burns a revocation slot — and it never runs for a community outside
+the dataspace, which is what `no_dataspace` is for.
 
 **No response here ever carries a credential.** Not `vc_jws`, which authenticates
 as the member, and not in any field added later.
