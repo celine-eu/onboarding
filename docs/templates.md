@@ -134,7 +134,6 @@ dataspace:
   organization: example-community          # = KC org alias = IR owner id
   organization_did: did:web:example-community.dataspaces.localhost
   linked_participant_did: did:web:consumer.dataspaces.localhost
-  membership_role: member                  # optional
 ```
 
 `organization` is **one identifier** across the platform: the owner `id` in the

@@ -39,19 +39,26 @@ def test_block_resolves_every_field(bind_rec):
         organization="rec-a",
         organization_did="did:web:rec-a.dataspaces.localhost",
         linked_participant_did="did:web:consumer.dataspaces.localhost",
-        membership_role="participant",
     )
     binding = ts.dataspace_binding("rec-a")
     assert binding.enabled is True
     assert binding.organization == "rec-a"
     assert binding.organization_did == "did:web:rec-a.dataspaces.localhost"
     assert binding.linked_participant_did == "did:web:consumer.dataspaces.localhost"
-    assert binding.membership_role == "participant"
 
 
-def test_membership_role_defaults(bind_rec):
-    bind_rec("rec-a", organization="rec-a")
-    assert ts.dataspace_binding("rec-a").membership_role == "member"
+def test_a_manifest_that_still_declares_a_membership_role_still_loads(bind_rec):
+    """The key was removed; a manifest carrying it must not stop working.
+
+    It named a role the registry stored in a column nothing read and has since
+    dropped. Communities are not asked to re-cut their manifests for a value that
+    never had an effect, so the key is ignored rather than rejected — and there is
+    no attribute left for anything to read it back from.
+    """
+    bind_rec("rec-a", organization="rec-a", membership_role="participant")
+    binding = ts.dataspace_binding("rec-a")
+    assert binding.organization == "rec-a"
+    assert not hasattr(binding, "membership_role")
 
 
 def test_two_recs_do_not_share_a_binding(bind_rec):

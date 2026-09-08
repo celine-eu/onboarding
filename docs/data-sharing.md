@@ -290,10 +290,13 @@ identity and is deliberately not in their credential.
 
 Four things constrain it:
 
-- **It is guarded by the resolve that precedes it.** Issuance is not idempotent:
-  ds reuses the subject DID but allocates a status-list index and mints a fresh
-  credential on every call. Provisioning on arrival without a guard would issue
-  one credential and burn one revocation slot per visit.
+- **It is guarded by the resolve that precedes it.** ds is idempotent per role —
+  a repeat call for a member who already holds an active credential in the same
+  role returns that credential rather than minting a second one — but that is a
+  floor, not the guard. The resolve asks the stronger question: whether this
+  service can *read the credential back*, which is what the member's own consent
+  calls then present. It was the only guard when every call minted and burned a
+  revocation slot, and it is still the right one.
 - **The DID is bound to the realm that authenticated the member**, taken from
   their token's issuer — not `DATASPACE_KEYCLOAK_REALM`, which names the realm
   the funnel *creates* users in. A member with no realm in their issuer is not

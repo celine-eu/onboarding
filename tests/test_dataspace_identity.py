@@ -249,10 +249,12 @@ async def test_membership_registered_after_credential(monkeypatch, submission, _
     assert "admin/memberships" in paths[2]
 
     body = json.loads(calls[2][2])
+    # No role. It is a claim on the credential, changed by reissue; the registry
+    # dropped the column this used to fill, and a body that still named one would
+    # read as though membership recorded what somebody is.
     assert body == {
         "user_did": CREDENTIAL_RESPONSE["subjectDid"],
         "organization_alias": "rec-example",
-        "role": "member",
     }
 
 

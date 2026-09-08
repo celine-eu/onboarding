@@ -90,13 +90,15 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
     It also sends **`verified_by` and `verification_method`** -- who established this person's identity, and how. The dataspace layer does no KYC by design; whoever runs onboarding does, and the credential records it rather than implying an assurance level nobody established. `verified_by` is the REC's `dataspace.organization_did`, omitted when the manifest declares none, because naming an empty authority is worse than naming none. `verification_method` is always `submission-review`, and deliberately a constant rather than a setting: a deployment able to edit it could make the credential claim a check that never happened.
 
-    **Issuance is not idempotent.** The registry reuses the subject DID -- one human keeps one identifier across organisations -- but allocates a status-list index and mints a fresh credential on every call. Whether to call it is therefore the caller's question, and the two doors answer it differently.
+    **Issuance is idempotent per role.** The registry reuses the subject DID -- one human keeps one identifier across organisations -- and a repeat call for somebody who already holds an active credential *in the same role* returns that credential's id and re-delivers it to the custodian, rather than minting a second one and spending a status-list index that is never recovered. A different role does mint, because roles are additive. This was **not** true when the two doors below were written -- every call minted -- and both guards remain correct for reasons that have moved.
 
-    The **approval path** does not guard: a manager has just approved this submission, and the row needs a `dataspace_vc_id` of its own to stay revocable, which a reused credential cannot supply because the registry returns no id for one it did not just issue. The **member's wizard** guards by resolving first and provisioning only when `resolve_subject_and_credential` answers `None` -- a stronger question than `GET /credentials/check` (it asks whether the member holds an *active, unexpired and presentable* credential, which is what they actually need) and asked with a call that path already makes. `/credentials/check` and the `identity-registry.credentials.read` grant it would have needed are therefore not used here.
+    The **approval path** does not guard: a manager has just approved this submission, and the row needs a `dataspace_vc_id` of its own to stay revocable, which it gets whether the registry minted or matched, since the response names the credential either way. The **member's wizard** guards by resolving first and provisioning only when `resolve_subject_and_credential` answers `None` -- a stronger question than `GET /credentials/check` (it asks whether the member holds an *active, unexpired and presentable* credential, which is what they actually need) and asked with a call that path already makes. The registry's own per-role match is a floor and not a substitute for it: it says a credential exists, not that this service can resolve one to present. `/credentials/check` and the `identity-registry.credentials.read` grant it would have needed are therefore not used here.
 
 4. **Organization** -- onboarding **does not create one**, by design. See "Why onboarding never creates an organization" below. The organization named by the REC's manifest must already exist and be promoted in the identity registry; a `404` from the membership call means it was never seeded, and says so.
 
-5. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization with the manifest's `dataspace.membership_role`. A `409 Conflict` is treated as success; a `404` means the organization does not exist. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
+5. **Membership registration** -- `POST /admin/memberships` registers the user's DID as a member of the REC organization. A `409 Conflict` is treated as success; a `404` means the organization does not exist. Without this step the user cannot use the ds consent endpoints, which gate on `GET /memberships/check`.
+
+    **No role is sent.** A membership says *where* somebody belongs; what they are there is a `communityRole` claim on their data-subject credential, changed by reissuing it. The registry once accepted a role here and stored it in a column nothing read, and has since dropped the column -- so a manifest's `dataspace.membership_role` recorded nothing while reading as though it did. The key is gone; a manifest that still carries it is ignored rather than rejected.
 
 6. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
 
@@ -159,7 +161,6 @@ dataspace:
   organization: example-community          # = KC org alias = IR owner id
   organization_did: did:web:example-community.dataspaces.localhost
   linked_participant_did: did:web:consumer.dataspaces.localhost
-  membership_role: member                  # optional, defaults to "member"
 ```
 
 | Key | Notes |
@@ -167,7 +168,6 @@ dataspace:
 | `organization` | Owner `id` in the identity registry. Must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$` and an owner that already exists there. Validated by `task import-templates`. |
 | `organization_did` | Optional DID for the organization; used as the disclosing agent on provenance events. |
 | `linked_participant_did` | Optional participant the issued credential is linked to. |
-| `membership_role` | Role recorded on the membership. |
 
 `organization` is **required** when the block is present. There is no "in the
 dataspace but a member of nothing" state: a credential without a membership is an

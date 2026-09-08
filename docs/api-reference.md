@@ -67,11 +67,12 @@ fatal to the request, and detailed in [data-sharing.md](data-sharing.md).
 **The read route provisions.** Where a member's community takes part and they
 hold no presentable credential, `GET /api/me/data-sharing` issues one on the
 strength of the REC's preregistration and re-resolves. This is a write behind a
-`GET`, which is unusual and deliberate: the pilot's members were admitted offline
-and hold no submission, so the door they are standing at is the only one they
-have. It is guarded by the resolve that precedes it — issuance is not idempotent
-and each call burns a revocation slot — and it never runs for a community outside
-the dataspace, which is what `no_dataspace` is for.
+`GET`, which is unusual and deliberate: members admitted offline hold no
+submission, so the door they are standing at is the only one they have. It is
+guarded by the resolve that precedes it — ds's own per-role idempotency is a
+floor, and the resolve asks the stronger question of whether the credential can
+be read back — and it never runs for a community outside the dataspace, which is
+what `no_dataspace` is for.
 
 **No response here ever carries a credential.** Not `vc_jws`, which authenticates
 as the member, and not in any field added later.

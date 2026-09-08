@@ -53,8 +53,12 @@ CALLS: tuple[Call, ...] = (
         "ir",
         "post",
         "/admin/memberships",
-        sends=frozenset({"user_did", "organization_alias", "role"}),
-        why="Membership is what the consent endpoints check.",
+        sends=frozenset({"user_did", "organization_alias"}),
+        why=(
+            "Membership is what the consent endpoints check. No role: a "
+            "membership says where somebody belongs, and what they are there is "
+            "a credential claim."
+        ),
     ),
     Call(
         "ir",
@@ -96,6 +100,40 @@ CALLS: tuple[Call, ...] = (
             "Read that decision back before exporting against it: who currently "
             "consents to this offer. The read counterpart to the POST above, and "
             "what lets the POD export stop reading the intake form."
+        ),
+    ),
+    # The three below are made **as the member**, with the credential this
+    # service resolved for them (`X-Subject-Id` + `X-User-VC`), not with the
+    # service client every other call uses. The schema half does not care — it
+    # reads what ds publishes and authenticates as nobody — but a reader who
+    # assumes one principal for the whole file would be wrong about these.
+    Call(
+        "connector",
+        "get",
+        "/consent/my/shares",
+        why=(
+            "The member's own standing decisions, read as themselves. What the "
+            "sharing page merges the published offers against."
+        ),
+    ),
+    Call(
+        "connector",
+        "post",
+        "/consent/my/shares",
+        sends=frozenset({"offer_id", "enabled"}),
+        why=(
+            "The member turning one offer on or off. Names an offer and never a "
+            "dataset, so the decision cannot drift from the copy they read."
+        ),
+    ),
+    Call(
+        "provenance",
+        "get",
+        "/prov/my/events",
+        why=(
+            "The member's Art. 15 read of what has happened with their data, "
+            "served under their own credential. Read-only, and the only "
+            "provenance call left here."
         ),
     ),
     Call(

@@ -694,20 +694,29 @@ async def provision_subject(
     either way; see :data:`VERIFICATION_METHOD` for why it does not record which
     door.
 
-    **This function always issues**, because issuance is not idempotent: ds reuses
-    the subject DID but allocates a status-list index and mints a fresh credential
-    on every call. Whether it *should* be called is the caller's question, and the
-    two doors answer it differently.
+    **This function always calls, and the registry decides whether that mints.**
+    A repeat call for somebody who already holds an active credential *in the
+    same role* returns the one they hold — same ``credentialId``, no second
+    status-list index — and re-delivers it to their custodian. A different role
+    mints, because roles are additive: one person is a data subject about their
+    own consumption and may be a consumer user acting for somebody else. The
+    subject DID is settled by the first call and reused by every later one.
 
-    * The **funnel** does not ask. A manager has just approved this submission, and
-      the row needs a ``dataspace_vc_id`` of its own to stay revocable — a reused
-      credential could not supply one, because ds returns no id for a credential it
-      did not just issue.
+    **That was not always true, and both doors were built when it was not**: a
+    repeat call used to mint a fresh credential and spend a status-list index,
+    which is never recovered. Both guards are still right, for reasons that have
+    moved:
+
+    * The **funnel** does not ask. A manager has just approved this submission,
+      and the row needs a ``dataspace_vc_id`` of its own to stay revocable — which
+      it gets whether the registry minted or matched, since the response names the
+      credential either way.
     * The **wizard** asks by calling :func:`resolve_subject_credential` first and
-      provisioning only when it answers ``None``. That is a *stronger* guard than
-      the ``GET /credentials/check`` this was first built around, and it is a call
-      that path already makes — see the plan for why the narrower route turned out
-      to be the wrong question here.
+      provisioning only when it answers ``None``. Keep it. It is the stronger
+      question — it proves the credential can be **read back**, which is what the
+      member's own consent calls then present — and it is a call that path already
+      makes. The registry's per-role match is a floor, not a substitute: it says a
+      credential exists, not that this service can resolve one.
 
     Order matters and matches :func:`revoke_user_identity` in reverse: credential,
     then membership, then the Keycloak mapping — the membership has a foreign key
@@ -745,7 +754,7 @@ async def provision_subject(
 
     org_alias = binding.organization
     if org_alias:
-        await _register_membership(base_url, headers, did, org_alias, binding.membership_role)
+        await _register_membership(base_url, headers, did, org_alias)
 
     if facts.keycloak_user_id and facts.keycloak_realm:
         await _sync_keycloak(
@@ -1068,12 +1077,18 @@ async def _register_membership(
     headers: dict[str, str],
     did: str,
     org_alias: str,
-    membership_role: str,
 ) -> None:
     """Register the user DID as a member of the REC organization.
 
     Membership is what the ds consent endpoints check, so a user without it holds a
     valid credential but cannot manage data sharing.
+
+    **A membership says where somebody belongs, not what they are there**, and
+    that is why no role is sent. The registry used to accept one, store it in a
+    column nothing read, and has since dropped the column; what a person is in a
+    community is a ``communityRole`` claim on their data-subject credential,
+    changed by reissuing it. Sending a role here recorded nothing while reading,
+    to anybody who found it, as though it recorded something.
 
     Onboarding does **not** create the organization. Dataspace trust state arrives
     through the registry's verify -> agreement -> credential -> promote chain,
@@ -1087,7 +1102,6 @@ async def _register_membership(
     body = {
         "user_did": did,
         "organization_alias": org_alias,
-        "role": membership_role,
     }
 
     async with httpx.AsyncClient(timeout=15) as client:

@@ -152,7 +152,6 @@ consent:
 #   organization: example-community
 #   organization_did: did:web:example-community.dataspaces.localhost
 #   linked_participant_did: did:web:consumer.dataspaces.localhost
-#   membership_role: member
 
 notifications:
   from: "noreply@example.com"

@@ -195,7 +195,6 @@ class DataspaceBinding:
     organization: str = ""
     organization_did: str = ""
     linked_participant_did: str = ""
-    membership_role: str = "member"
 
     @property
     def enabled(self) -> bool:
@@ -252,7 +251,6 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
         organization=str(block["organization"]).strip(),
         organization_did=str(block.get("organization_did", "") or "").strip(),
         linked_participant_did=str(block.get("linked_participant_did", "") or "").strip(),
-        membership_role=str(block.get("membership_role") or "member").strip(),
     )
 
 
