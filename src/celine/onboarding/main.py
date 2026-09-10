@@ -146,6 +146,131 @@ async def _validate_dataspace_config() -> None:
             )
 
 
+def _validate_keycloak_config() -> None:
+    """Refuse to start when approving somebody could not give them a login.
+
+    Provisioning is step 1 of enablement and fails closed, so a missing setting
+    here does not degrade anything — it stops a review, in front of an operator
+    who can do nothing about it. Every other outbound dependency is checked at
+    boot for that reason and this one was not.
+    """
+    leftovers = [
+        name
+        for name, value in (
+            ("DATASPACE_KEYCLOAK_ADMIN_USERNAME", settings.removed_keycloak_admin_username),
+            ("DATASPACE_KEYCLOAK_ADMIN_PASSWORD", settings.removed_keycloak_admin_password),
+            (
+                "DATASPACE_KEYCLOAK_ADMIN_CLIENT_SECRET",
+                settings.removed_keycloak_admin_client_secret,
+            ),
+        )
+        if value
+    ]
+    if leftovers:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"  {', '.join(leftovers)} is set, and no longer does anything\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "Participant logins used to be provisioned by logging in as a\n"
+            "Keycloak administrator: a person's username and password, against\n"
+            "the master realm, in the environment of the service that serves the\n"
+            "public wizard. It is now done with this service's own service\n"
+            "account, which holds `manage-users` and `view-users` and nothing\n"
+            "else.\n\n"
+            "Nothing reads these any more, and an administrator's password that\n"
+            "nothing reads is still an administrator's password in a deployment's\n"
+            "environment — so startup refuses it rather than leaving it there.\n\n"
+            "  1. Remove them from your .env and environment\n"
+            "  2. Rotate the credential: it has been readable by this process\n"
+            "  3. Grant `manage-users` and `view-users` on realm-management to\n"
+            "     the DS_ONBOARDING_CLIENT_ID service account\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if not settings.dataspace_keycloak_enabled:
+        return
+
+    from celine.onboarding.services.service_auth import issuer_realm
+
+    if (
+        not settings.dataspace_keycloak_base_url.strip()
+        and "/realms/" not in settings.oidc_base_url
+    ):
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  DATASPACE_KEYCLOAK_BASE_URL is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "DATASPACE_KEYCLOAK_ENABLED=true, so approving a participant has to\n"
+            "create their login before anything else can reference it. It is\n"
+            "normally left unset and taken from OIDC_BASE_URL, which here names\n"
+            f"no Keycloak realm: {settings.oidc_base_url!r}.\n\n"
+            "  1. Set DATASPACE_KEYCLOAK_BASE_URL in your .env file\n"
+            "  2. Or set DATASPACE_KEYCLOAK_ENABLED=false, which onboards\n"
+            "     participants without giving them a login\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if not settings.ds_onboarding_client_secret.strip():
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  DS_ONBOARDING_CLIENT_SECRET is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "It is how this service authenticates as itself, and Keycloak user\n"
+            "provisioning now uses it in place of an administrator's password.\n"
+            "Without it there is no token to present to the Admin API.\n\n"
+            f"  1. Set DS_ONBOARDING_CLIENT_SECRET for client\n"
+            f"     '{settings.ds_onboarding_client_id}' in your .env file\n"
+            "  2. Grant that client's service account `manage-users` and\n"
+            "     `view-users` on realm-management, in the realm below\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    # An unset DATASPACE_KEYCLOAK_REALM means "the realm the issuer names", so
+    # there is nothing to disagree with — see `keycloak_identity.keycloak_realm`.
+    minting_realm = issuer_realm(settings.oidc_base_url)
+    target_realm = settings.dataspace_keycloak_realm.strip()
+
+    if not target_realm and not minting_realm:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  DATASPACE_KEYCLOAK_REALM is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "It is normally left unset, because the realm whose users this\n"
+            "service provisions is the realm OIDC_BASE_URL issues from. That URL\n"
+            f"names none: {settings.oidc_base_url!r} is not a Keycloak realm\n"
+            "issuer, so the realm has to be stated.\n\n"
+            "  1. Set DATASPACE_KEYCLOAK_REALM in your .env file\n"
+            "  2. Or point OIDC_BASE_URL at the realm, e.g.\n"
+            "     http://keycloak.example/realms/<realm>\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if target_realm and minting_realm and minting_realm != target_realm:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"  Keycloak realms disagree: '{minting_realm}' vs '{target_realm}'\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "Provisioning presents this service's own token to the Admin API,\n"
+            f"and OIDC_BASE_URL mints that token in realm '{minting_realm}'. A\n"
+            "client-credentials token administers the realm it was issued by and\n"
+            f"no other, so every call against '{target_realm}' would be refused.\n\n"
+            "The addresses have to agree too: Keycloak checks a token's issuer\n"
+            "against the address the request arrived on, and answers 401 when\n"
+            "they differ. Leaving DATASPACE_KEYCLOAK_BASE_URL unset takes it\n"
+            "from OIDC_BASE_URL, which is always an address that agrees.\n\n"
+            f"  1. Set DATASPACE_KEYCLOAK_REALM={minting_realm}, or unset it — it\n"
+            "     defaults to the realm the issuer names\n"
+            "  2. Or point OIDC_BASE_URL at the realm whose users this service\n"
+            "     provisions\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+
 def _validate_admin_config() -> None:
     """Refuse to start with an admin console that is not actually protected.
 
@@ -282,6 +407,7 @@ async def lifespan(app: FastAPI):
 
     await _validate_dataspace_config()
     _validate_admin_config()
+    _validate_keycloak_config()
 
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(

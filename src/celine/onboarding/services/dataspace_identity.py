@@ -12,6 +12,7 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import template_service
+from celine.onboarding.services.service_auth import service_token_provider
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +24,13 @@ _KC_SYNC_MAX_RETRIES = 3
 
 
 def _get_token_provider() -> OidcClientCredentialsProvider:
+    """This service's own service account, built once in `services.service_auth`.
+
+    The module-level handle stays here because it is what a test substitutes.
+    """
     global _token_provider
     if _token_provider is None:
-        if not settings.oidc_base_url:
-            raise ValueError("OIDC_BASE_URL is required when dataspace VC is enabled")
-        _token_provider = OidcClientCredentialsProvider(
-            base_url=settings.oidc_base_url,
-            client_id=settings.ds_onboarding_client_id,
-            client_secret=settings.ds_onboarding_client_secret,
-        )
+        _token_provider = service_token_provider()
     return _token_provider
 
 

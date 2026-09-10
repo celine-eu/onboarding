@@ -25,6 +25,24 @@ class Settings(BaseSettings):
     # policies; a leftover value in a `.env` would otherwise look like protection.
     removed_admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
 
+    # Same, for the Keycloak administrator this service used to log in as. It
+    # provisioned participant logins with `grant_type=password` against the
+    # master realm, which put a human realm administrator's credential in the
+    # environment of a service facing the public wizard — for a job needing
+    # `manage-users` and `view-users` on one realm. It now uses its own service
+    # account (`DS_ONBOARDING_CLIENT_ID`). These are declared so that a value
+    # left behind is rejected rather than ignored: nothing reads it any more,
+    # and it is still a realm administrator's password sitting in a deployment.
+    removed_keycloak_admin_username: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_ADMIN_USERNAME"
+    )
+    removed_keycloak_admin_password: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_ADMIN_PASSWORD"
+    )
+    removed_keycloak_admin_client_secret: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_ADMIN_CLIENT_SECRET"
+    )
+
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     security_headers: bool = True
 
@@ -134,12 +152,14 @@ class Settings(BaseSettings):
 
     dataspace_keycloak_enabled: bool = False
     dataspace_keycloak_base_url: str = ""
-    dataspace_keycloak_realm: str = "dataspaces"
-    dataspace_keycloak_admin_realm: str = "master"
-    dataspace_keycloak_admin_client_id: str = "admin-cli"
-    dataspace_keycloak_admin_client_secret: str = ""
-    dataspace_keycloak_admin_username: str = ""
-    dataspace_keycloak_admin_password: str = ""
+    # The realm whose users this service provisions. Empty means the realm
+    # `OIDC_BASE_URL` issues from, which is the only realm it *can* be: the
+    # Admin API is reached with this service's own service-account token, and a
+    # client-credentials token administers the realm that minted it and no
+    # other. Set it only where the issuer URL names no realm; startup checks the
+    # two agree. A default naming a particular deployment's realm would be wrong
+    # on every other checkout, so there is none.
+    dataspace_keycloak_realm: str = ""
     dataspace_keycloak_default_password: str = ""
     dataspace_keycloak_temporary_password: bool = False
     dataspace_keycloak_update_existing: bool = True

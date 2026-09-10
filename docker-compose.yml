@@ -51,7 +51,10 @@ services:
       OIDC_BASE_URL: ${OIDC_BASE_URL:-http://host.docker.internal:8080/realms/celine}
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
       DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
-      DATASPACE_KEYCLOAK_BASE_URL: ${DATASPACE_KEYCLOAK_BASE_URL:-http://host.docker.internal:8080}
+      # Unset means the origin of OIDC_BASE_URL, which is the address Keycloak
+      # will accept the token at. Only override it where Keycloak serves the
+      # same issuer at another address.
+      DATASPACE_KEYCLOAK_BASE_URL: ${DATASPACE_KEYCLOAK_BASE_URL:-}
       # Admin console. The issuer above is shared: operator tokens and the
       # service's own outbound M2M tokens come from the same realm.
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-svc-onboarding}

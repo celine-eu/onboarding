@@ -140,6 +140,55 @@ The same token carries **`rec-registry.lookup`** for the other half of that expo
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M authentication. |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M authentication. Required when `DATASPACE_ENABLED=true`. |
 
+### Keycloak user provisioning settings
+
+This service **holds no Keycloak administrator credential**, and a deployment that
+gives it one is refused at boot. The Admin API is called with the same service
+account every other outbound call uses -- `DS_ONBOARDING_CLIENT_ID` /
+`DS_ONBOARDING_CLIENT_SECRET` against `OIDC_BASE_URL` -- whose service account needs
+exactly two realm-management roles in the realm it provisions into:
+
+| Role | What it is for |
+|---|---|
+| `manage-users` | Create the participant and set their profile |
+| `view-users` | Find out whether they already exist |
+
+Grant them in Keycloak under *Clients -> the client -> Service account roles ->
+Assign role -> Filter by clients -> realm-management*.
+
+Both halves of the address are taken from `OIDC_BASE_URL`, and both for the same
+reason -- a token minted there is the only token that works anywhere else:
+
+- **The realm.** A client-credentials token administers the realm that minted it and
+  no other, so `DATASPACE_KEYCLOAK_REALM` defaults to the realm the issuer names, and
+  startup refuses a pair that disagrees.
+- **The host.** Keycloak checks a token's `iss` against the address the request
+  arrived on and answers **401** when they differ -- before it looks at any role. So
+  `DATASPACE_KEYCLOAK_BASE_URL` defaults to the issuer's origin. Override it only
+  where Keycloak is configured to serve the same issuer at the other address.
+
+The two refusals this earns are worth telling apart, and the server log names both:
+
+| | Meaning |
+|---|---|
+| `401` | The address it arrived on is not the one that minted the token |
+| `403` | The token is valid and the service account holds no realm-management roles |
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATASPACE_KEYCLOAK_ENABLED` | `false` | Whether approval provisions a login at all. `false` is a supported deployment: participants are onboarded and given no login. |
+| `DATASPACE_KEYCLOAK_BASE_URL` | *(the origin of `OIDC_BASE_URL`)* | Base URL of the Keycloak whose Admin API is called. |
+| `DATASPACE_KEYCLOAK_REALM` | *(the realm `OIDC_BASE_URL` names)* | The realm users are created in. Set it only where the issuer URL names no realm. |
+| `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` | *(none)* | Initial password set on users this service creates. Empty means none is set. |
+| `DATASPACE_KEYCLOAK_TEMPORARY_PASSWORD` | `false` | Whether that password must be changed at first login. |
+| `DATASPACE_KEYCLOAK_UPDATE_EXISTING` | `true` | Refresh the profile of a user who already existed. Never their username -- renaming a login changes what they type to sign in and invalidates the `user_id` any registry row holds for them. |
+
+`DATASPACE_KEYCLOAK_ADMIN_USERNAME`, `DATASPACE_KEYCLOAK_ADMIN_PASSWORD` and
+`DATASPACE_KEYCLOAK_ADMIN_CLIENT_SECRET` were the previous password-grant login as a
+realm administrator. **Startup refuses to run with any of them set**: remove them,
+and rotate what they held. See
+[ADR-0001](decisions/ADR-0001-provision-logins-as-the-service.md).
+
 ### Dataspace policy settings
 
 These settings control what goes into the issued credential:

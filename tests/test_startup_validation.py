@@ -327,3 +327,130 @@ async def test_a_registry_reporting_no_status_still_starts(bind_rec, monkeypatch
     _registry_says(True, status=None)
 
     await app_main._validate_dataspace_config()
+
+
+# ---------------------------------------------------------------------------
+# Keycloak provisioning
+#
+# Provisioning is step 1 of enablement and fails closed, so a missing setting
+# does not degrade anything — it stops a review in front of an operator who can
+# do nothing about it. Every other outbound dependency is checked at boot for
+# that reason, and this one was not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _keycloak_configured(monkeypatch):
+    monkeypatch.setattr(app_main.settings, "removed_keycloak_admin_username", "")
+    monkeypatch.setattr(app_main.settings, "removed_keycloak_admin_password", "")
+    monkeypatch.setattr(app_main.settings, "removed_keycloak_admin_client_secret", "")
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_enabled", True)
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "http://kc:8080")
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_realm", "celine")
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "http://keycloak.test/realms/celine")
+    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "s3cret")
+
+
+def test_a_configured_deployment_starts(_keycloak_configured):
+    app_main._validate_keycloak_config()
+
+
+def test_provisioning_switched_off_needs_nothing(monkeypatch, _keycloak_configured):
+    """Onboarding without giving anybody a login is a supported deployment."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_enabled", False)
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "")
+    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "")
+
+    app_main._validate_keycloak_config()
+
+
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        "removed_keycloak_admin_username",
+        "removed_keycloak_admin_password",
+        "removed_keycloak_admin_client_secret",
+    ],
+)
+def test_a_leftover_admin_credential_refuses_to_start(monkeypatch, _keycloak_configured, leftover):
+    """Nothing reads it any more, and it is still a realm administrator's
+    credential sitting in a deployment's environment. Being told to remove and
+    rotate it is the point."""
+    monkeypatch.setattr(app_main.settings, leftover, "leftover")
+
+    with pytest.raises(RuntimeError, match="no longer does anything"):
+        app_main._validate_keycloak_config()
+
+
+def test_the_leftover_refusal_says_to_rotate(monkeypatch, _keycloak_configured):
+    monkeypatch.setattr(app_main.settings, "removed_keycloak_admin_password", "leftover")
+
+    with pytest.raises(RuntimeError, match="Rotate the credential"):
+        app_main._validate_keycloak_config()
+
+
+def test_an_unset_base_url_is_taken_from_the_issuer(monkeypatch, _keycloak_configured):
+    """Keycloak answers 401 when a token reaches it at an address other than the
+    one that minted it, so the derived origin is the one that always agrees."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "")
+
+    app_main._validate_keycloak_config()
+
+
+def test_no_base_url_and_no_issuer_realm_refuses_to_start(monkeypatch, _keycloak_configured):
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "")
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "https://issuer.example/oauth2")
+
+    with pytest.raises(RuntimeError, match="DATASPACE_KEYCLOAK_BASE_URL is required"):
+        app_main._validate_keycloak_config()
+
+
+def test_missing_service_account_secret_refuses_to_start(monkeypatch, _keycloak_configured):
+    """It is how this service authenticates as itself, and provisioning now uses
+    it in place of an administrator's password."""
+    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "")
+
+    with pytest.raises(RuntimeError, match="DS_ONBOARDING_CLIENT_SECRET is required"):
+        app_main._validate_keycloak_config()
+
+
+def test_realms_that_disagree_refuse_to_start(monkeypatch, _keycloak_configured):
+    """A client-credentials token administers the realm that issued it and no
+    other, so this combination cannot work — every call would be refused."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_realm", "dataspaces")
+
+    with pytest.raises(RuntimeError, match="Keycloak realms disagree"):
+        app_main._validate_keycloak_config()
+
+
+def test_urls_may_differ_while_the_realm_matches(monkeypatch, _keycloak_configured):
+    """One Keycloak is often reachable at an internal and an external address."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "http://127.0.0.1:8080")
+    monkeypatch.setattr(
+        app_main.settings, "oidc_base_url", "http://keycloak.celine.localhost/realms/celine"
+    )
+
+    app_main._validate_keycloak_config()
+
+
+def test_a_non_keycloak_issuer_is_not_compared(monkeypatch, _keycloak_configured):
+    """`/realms/<name>` is the shape a Keycloak issuer has. Anything else names
+    no realm, and there is nothing to disagree with."""
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "https://issuer.example/oauth2")
+
+    app_main._validate_keycloak_config()
+
+
+def test_an_unset_realm_is_taken_from_the_issuer(monkeypatch, _keycloak_configured):
+    """The normal configuration: one realm, named once, in OIDC_BASE_URL."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_realm", "")
+
+    app_main._validate_keycloak_config()
+
+
+def test_an_unset_realm_with_no_issuer_realm_refuses_to_start(monkeypatch, _keycloak_configured):
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_realm", "")
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", "https://issuer.example/oauth2")
+
+    with pytest.raises(RuntimeError, match="DATASPACE_KEYCLOAK_REALM is required"):
+        app_main._validate_keycloak_config()

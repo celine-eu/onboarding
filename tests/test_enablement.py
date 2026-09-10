@@ -25,6 +25,7 @@ from celine.onboarding.services import (
     rec_registry,
 )
 from celine.onboarding.services.enablement import EnablementError
+from celine.onboarding.services.errors import ConfigurationError
 from celine.onboarding.services.keycloak_identity import KeycloakProvisionResult
 
 
@@ -394,6 +395,51 @@ class TestFailClosed:
             await enablement.enable(db, submission)
         rows = await enablement.load_steps(db, submission.id)
         assert enablement.state_of(rows) == "failed"
+
+
+class TestAMisconfiguredStep:
+    """A deployment's own fault is not the reviewing operator's to read.
+
+    The message names settings only a platform operator can change, and it is
+    shown in the console to whoever pressed Approve. They are told who can act;
+    the detail goes to the log, where that person is looking.
+    """
+
+    @pytest.fixture()
+    def keycloak_unconfigured(self, monkeypatch, happy_path):
+        async def _boom(sub):
+            raise ConfigurationError("DATASPACE_KEYCLOAK_BASE_URL is required")
+
+        monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _boom)
+
+    async def test_it_still_fails_closed(self, db, submission, keycloak_unconfigured):
+        with pytest.raises(EnablementError) as exc:
+            await enablement.enable(db, submission)
+        assert exc.value.step == EnablementStep.KEYCLOAK_USER
+
+    async def test_the_operator_is_told_who_can_fix_it(self, db, submission, keycloak_unconfigured):
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        row = (await enablement.load_steps(db, submission.id))[EnablementStep.KEYCLOAK_USER]
+        assert "not configured in this deployment" in row.last_error
+        assert "platform operator" in row.last_error
+
+    async def test_the_setting_is_not_named_to_the_operator(
+        self, db, submission, keycloak_unconfigured
+    ):
+        with pytest.raises(EnablementError) as exc:
+            await enablement.enable(db, submission)
+
+        row = (await enablement.load_steps(db, submission.id))[EnablementStep.KEYCLOAK_USER]
+        assert "DATASPACE_KEYCLOAK_BASE_URL" not in row.last_error
+        assert "DATASPACE_KEYCLOAK_BASE_URL" not in str(exc.value)
+
+    async def test_the_detail_is_logged(self, db, submission, keycloak_unconfigured, caplog):
+        with caplog.at_level("ERROR"), pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        assert "DATASPACE_KEYCLOAK_BASE_URL" in caplog.text
 
 
 class TestSoftFailure:

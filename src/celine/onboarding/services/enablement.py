@@ -47,6 +47,7 @@ from celine.onboarding.models.enablement import (
     SubmissionEnablementStep,
 )
 from celine.onboarding.models.submission import Submission
+from celine.onboarding.services.errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -162,13 +163,16 @@ async def _revoke_registry_member(ctx: RunContext, row: SubmissionEnablementStep
 
 
 async def _run_dataspace_identity(ctx: RunContext) -> StepOutcome:
-    from celine.onboarding.config.settings import settings
     from celine.onboarding.services.dataspace_identity import provision_user_identity
+    from celine.onboarding.services.keycloak_identity import keycloak_realm
 
     await provision_user_identity(
         ctx.submission,
         keycloak_user_id=ctx.keycloak_user_id,
-        keycloak_realm=(settings.dataspace_keycloak_realm if ctx.keycloak_user_id else None),
+        # The realm the user was provisioned in, resolved the same way step 1
+        # resolved it — the identity registry is told where to find them, so a
+        # second answer to "which realm" is a way for the two to disagree.
+        keycloak_realm=(keycloak_realm() if ctx.keycloak_user_id else None),
         # The same value step 2 wrote into `Member.user_id`. The identity
         # registry stores it beside the DID, and the connector reads it back to
         # name this person to the data plane — so the two systems that have to
@@ -390,6 +394,25 @@ async def _run_one(db: AsyncSession, ctx: RunContext, spec: StepSpec) -> Submiss
 
     try:
         outcome = await spec.run(ctx)
+    except ConfigurationError as exc:
+        # Not the operator's to fix, and not theirs to read: the message names
+        # this deployment's own settings, and it would be shown to every REC
+        # operator who pressed Approve. They are told who can act instead, and
+        # the detail goes where that person is looking.
+        row.status = EnablementStatus.FAILED
+        row.last_error = (
+            f"{spec.label} is not configured in this deployment. A platform "
+            f"operator has to fix it — the details are in the server log."
+        )
+        row.completed_at = datetime.now(UTC)
+        logger.error(
+            "Enablement step %s is misconfigured, so %s cannot be enabled: %s",
+            spec.step,
+            ctx.submission.ref,
+            exc,
+        )
+        await db.commit()
+        return row
     except Exception as exc:
         row.status = EnablementStatus.FAILED
         row.last_error = f"{type(exc).__name__}: {exc}"[:4000]
