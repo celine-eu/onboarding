@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     # Same, for the Keycloak administrator this service used to log in as. It
     # provisioned participant logins with `grant_type=password` against the
     # master realm, which put a human realm administrator's credential in the
-    # environment of a service facing the public wizard — for a job needing
-    # `manage-users` and `view-users` on one realm. It now uses its own service
-    # account (`DS_ONBOARDING_CLIENT_ID`). These are declared so that a value
-    # left behind is rejected rather than ignored: nothing reads it any more,
-    # and it is still a realm administrator's password sitting in a deployment.
+    # environment of a service facing the public wizard — for a job that reaches
+    # one group of one realm. It now uses its own service account
+    # (`OIDC_CLIENT_ID`). These are declared so that a value left behind is
+    # rejected rather than ignored: nothing reads it any more, and it is still a
+    # realm administrator's password sitting in a deployment.
     removed_keycloak_admin_username: str = Field(
         default="", validation_alias="DATASPACE_KEYCLOAK_ADMIN_USERNAME"
     )
@@ -160,6 +160,19 @@ class Settings(BaseSettings):
     # two agree. A default naming a particular deployment's realm would be wrong
     # on every other checkout, so there is none.
     dataspace_keycloak_realm: str = ""
+    # The realm group every participant is created in, and the only part of the
+    # realm this service may touch. It is not a membership model — community
+    # membership is the registry's `Member` row and the Keycloak organization —
+    # but a permission boundary: `../celine-policies` declares `svc-onboarding`'s
+    # rights as a fine-grained permission over this group, so creating a user
+    # *outside* it is refused, and so is reading, disabling or resetting the
+    # password of anyone who is not in it. An operator's account is therefore
+    # unreachable from here, which is the point.
+    #
+    # It must not name one of the role-hierarchy groups (`admins`, `managers`,
+    # `editors`, `viewers`): those are operator roles, and `access.rego` reads a
+    # realm-level one as a platform-wide grant. Startup refuses them.
+    dataspace_keycloak_participants_group: str = "/participants"
     dataspace_keycloak_default_password: str = ""
     dataspace_keycloak_temporary_password: bool = False
     dataspace_keycloak_update_existing: bool = True

@@ -143,18 +143,66 @@ The same token carries **`rec-registry.lookup`** for the other half of that expo
 ### Keycloak user provisioning settings
 
 This service **holds no Keycloak administrator credential**, and a deployment that
-gives it one is refused at boot. The Admin API is called with the same service
-account every other outbound call uses -- `DS_ONBOARDING_CLIENT_ID` /
-`DS_ONBOARDING_CLIENT_SECRET` against `OIDC_BASE_URL` -- whose service account needs
-exactly two realm-management roles in the realm it provisions into:
+gives it one is refused at boot. The Admin API is called as `OIDC_CLIENT_ID` /
+`OIDC_CLIENT_SECRET` against `OIDC_BASE_URL` -- **celine's own client**, not the
+dataspace's. The two identities this service holds are granted by different people
+for different things, and provisioning a login in celine's realm is celine's
+business:
 
-| Role | What it is for |
+| Identity | Is | Used for |
+|---|---|---|
+| `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Administering the members of the participants group |
+| `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Identity registry, connector, registry lookups |
+
+### What it may do, which is one group of the realm
+
+Its service account holds no realm-management role. It holds a **fine-grained
+admin permission over a single group** -- the one
+`DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP` names, `/participants` by default:
+
+| Scope | What it is for |
 |---|---|
-| `manage-users` | Create the participant and set their profile |
-| `view-users` | Find out whether they already exist |
+| `manage-members` | Create the participant, refresh their profile, disable them |
+| `manage-membership` | Put them in the group -- creating one takes both scopes |
+| `view-members` | Read a member back, and find one who already has a login |
+| `view` | Resolve the group's own id, which every member call is addressed by |
 
-Grant them in Keycloak under *Clients -> the client -> Service account roles ->
-Assign role -> Filter by clients -> realm-management*.
+It is not granted by hand. `celine-policies` declares it in `clients.yaml` under
+`admin_permissions`, and `keycloak sync` creates the group and the permission
+together. **A realm that has not been synced has neither**, and provisioning
+fails there -- see the refusals below, because a missing group and a missing
+grant look identical.
+
+**What the service cannot do is the point.** Measured on Keycloak 26.6.0 holding
+exactly that grant: reading the realm's user list, reading or disabling an
+operator's account, resetting anybody's password outside the group, and creating
+a user in *no* group are all `403`. A leaked secret reaches the participants of
+this deployment and nothing else in the realm.
+
+Two consequences reach this service's code, and both were measured rather than
+assumed:
+
+- **There is no user search.** `GET /users?username=` needs `Users: view` across
+  the realm. `GET /groups/{id}/members` is permitted, but it *ignores* `search`
+  and `exact` -- it answers 200 with every member however it is called. Finding a
+  participant is therefore a paged scan of the group, matched by this service.
+- **So a creation goes first.** Scanning before every approval would page the
+  whole group to discover what is almost always a new user, so `POST /users` runs
+  first and Keycloak's `409` is what triggers the scan.
+
+**A participant who exists outside the group cannot be adopted.** If the `409`
+turns out to belong to an account that is not in the group -- one made by hand, or
+by `celine-policies`' `sync-users`, which files its users elsewhere -- this
+service can neither read it nor move it, and the enablement step fails saying so.
+Adding that account to the group and retrying is what resolves it.
+
+**The group is not a membership model.** Community membership is the registry's
+`Member` row and the Keycloak organization; this group is a permission boundary.
+It must never be one of the operator role-hierarchy groups (`admins`, `managers`,
+`editors`, `viewers`): `policies/celine/onboarding/access.rego` reads a
+realm-level one as a grant over *every* community on the deployment, so
+provisioning into it would make every participant an operator everywhere.
+Startup refuses those four names.
 
 Both halves of the address are taken from `OIDC_BASE_URL`, and both for the same
 reason -- a token minted there is the only token that works anywhere else:
@@ -172,13 +220,19 @@ The two refusals this earns are worth telling apart, and the server log names bo
 | | Meaning |
 |---|---|
 | `401` | The address it arrived on is not the one that minted the token |
-| `403` | The token is valid and the service account holds no realm-management roles |
+| `403` | The token is valid and carries no rights over the participants group -- **or the group does not exist**, which a creation cannot tell apart |
+| `409` | The username or email is taken. By a member: adopted. By anybody else: the step fails, naming what a person has to do |
+
+A `404` from `group-by-path` is the one call that distinguishes a missing group
+from a missing grant, and it is reported as a misconfiguration rather than a
+failed step.
 
 | Variable | Default | Description |
 |---|---|---|
 | `DATASPACE_KEYCLOAK_ENABLED` | `false` | Whether approval provisions a login at all. `false` is a supported deployment: participants are onboarded and given no login. |
 | `DATASPACE_KEYCLOAK_BASE_URL` | *(the origin of `OIDC_BASE_URL`)* | Base URL of the Keycloak whose Admin API is called. |
 | `DATASPACE_KEYCLOAK_REALM` | *(the realm `OIDC_BASE_URL` names)* | The realm users are created in. Set it only where the issuer URL names no realm. |
+| `DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP` | `/participants` | The group participants are created in, and the only part of the realm this service may touch. Must match what `celine-policies` declares, and must not be an operator role-hierarchy group. |
 | `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` | *(none)* | Initial password set on users this service creates. Empty means none is set. |
 | `DATASPACE_KEYCLOAK_TEMPORARY_PASSWORD` | `false` | Whether that password must be changed at first login. |
 | `DATASPACE_KEYCLOAK_UPDATE_EXISTING` | `true` | Refresh the profile of a user who already existed. Never their username -- renaming a login changes what they type to sign in and invalidates the `user_id` any registry row holds for them. |
@@ -187,7 +241,7 @@ The two refusals this earns are worth telling apart, and the server log names bo
 `DATASPACE_KEYCLOAK_ADMIN_CLIENT_SECRET` were the previous password-grant login as a
 realm administrator. **Startup refuses to run with any of them set**: remove them,
 and rotate what they held. See
-[ADR-0001](decisions/ADR-0001-provision-logins-as-the-service.md).
+[ADR-0001](decisions/ADR-0001-provision-logins-as-the-service.md) and [ADR-0002](decisions/ADR-0002-administer-the-realm-as-celines-own-client.md).
 
 ### Dataspace policy settings
 

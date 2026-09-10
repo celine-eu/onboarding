@@ -1,18 +1,27 @@
-"""The one credential this service uses to act as itself.
+"""The identities this service presents when it acts as itself.
 
-Everything this app calls outbound authenticates as the same OIDC service
-account — `DS_ONBOARDING_CLIENT_ID` against `OIDC_BASE_URL`. Two callers today:
-the dataspace identity registry and connector, and the Keycloak Admin API that
-provisions a participant's login on approval.
+There are two, and the split is not historical — they are granted by different
+people for different things:
 
-Keycloak provisioning used to be the exception. It logged in as a *person* — a
-realm administrator's username and password, `grant_type=password`, against the
-master realm — which meant an internet-facing service held a credential that
-could do anything to any realm, to create users in one. It now presents this
-token like every other call, and the two roles it actually needs
-(`manage-users`, `view-users`) are granted to the service account in Keycloak.
+``svc-onboarding`` — ``OIDC_CLIENT_ID`` / ``OIDC_CLIENT_SECRET``
+    celine's own client, and the one that administers users in the realm.
+    Provisioning a participant's login is celine business, so the credential
+    that does it is celine's.
 
-The provider caches and renews its own token, so it is built once per process.
+``svc-ds-onboarding`` — ``DS_ONBOARDING_CLIENT_ID`` / ``DS_ONBOARDING_CLIENT_SECRET``
+    the dataspace's client, carrying the grants a dataspace deployment gives
+    this service: the identity registry, the connector, the registry lookups.
+
+Keycloak provisioning used to be neither. It logged in as a *person* — a realm
+administrator's username and password, ``grant_type=password``, against the
+master realm — which meant the service facing the public wizard held a
+credential that could do anything to any realm, in order to create users in one.
+It now presents ``svc-onboarding``, whose service account is granted the members
+of one realm group — ``DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP`` — and nothing else
+in the realm. Not even the realm's user search: see ``keycloak_identity``.
+
+Providers cache and renew their own tokens, so one is built per client id per
+process.
 """
 
 from __future__ import annotations
@@ -22,23 +31,31 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 from celine.onboarding.config.settings import settings
 from celine.onboarding.services.errors import ConfigurationError
 
-_provider: OidcClientCredentialsProvider | None = None
+_providers: dict[str, OidcClientCredentialsProvider] = {}
+
+
+def _provider_for(client_id: str, client_secret: str) -> OidcClientCredentialsProvider:
+    if not settings.oidc_base_url:
+        raise ConfigurationError(
+            "OIDC_BASE_URL is required for any call this service makes as itself"
+        )
+    if client_id not in _providers:
+        _providers[client_id] = OidcClientCredentialsProvider(
+            base_url=settings.oidc_base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    return _providers[client_id]
 
 
 def service_token_provider() -> OidcClientCredentialsProvider:
-    """The shared client-credentials provider, built on first use."""
-    global _provider
-    if _provider is None:
-        if not settings.oidc_base_url:
-            raise ConfigurationError(
-                "OIDC_BASE_URL is required for any call this service makes as itself"
-            )
-        _provider = OidcClientCredentialsProvider(
-            base_url=settings.oidc_base_url,
-            client_id=settings.ds_onboarding_client_id,
-            client_secret=settings.ds_onboarding_client_secret,
-        )
-    return _provider
+    """The dataspace-facing identity: the identity registry and the connector."""
+    return _provider_for(settings.ds_onboarding_client_id, settings.ds_onboarding_client_secret)
+
+
+def keycloak_admin_token_provider() -> OidcClientCredentialsProvider:
+    """The realm-facing identity: this service's own client, administering users."""
+    return _provider_for(settings.oidc_client_id, settings.oidc_client_secret)
 
 
 def issuer_realm(oidc_base_url: str) -> str | None:
@@ -53,12 +70,16 @@ def issuer_realm(oidc_base_url: str) -> str | None:
     return None
 
 
-def reset_service_token_provider() -> None:
-    """Drop the cached provider. For tests, and for a settings change at boot."""
-    global _provider
-    _provider = None
+def reset_token_providers() -> None:
+    """Drop the cached providers. For tests, and for a settings change at boot."""
+    _providers.clear()
 
 
 async def service_auth_headers() -> dict[str, str]:
     token = await service_token_provider().get_token()
+    return {"Authorization": f"Bearer {token.access_token}"}
+
+
+async def keycloak_admin_auth_headers() -> dict[str, str]:
+    token = await keycloak_admin_token_provider().get_token()
     return {"Authorization": f"Bearer {token.access_token}"}

@@ -39,3 +39,5 @@ edited to say something else.
 | ADR | Decision |
 |---|---|
 | [0001](ADR-0001-provision-logins-as-the-service.md) | Participant logins are provisioned by this service's own service account, never by a Keycloak administrator |
+| [0002](ADR-0002-administer-the-realm-as-celines-own-client.md) | The realm is administered by celine's own client, not the dataspace's — supersedes 0001 |
+| [0003](ADR-0003-provision-into-the-group-this-service-may-administer.md) | Participants are created into the one group this service may administer, and found by scanning it — completes 0002 |

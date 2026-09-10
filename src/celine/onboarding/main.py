@@ -176,15 +176,15 @@ def _validate_keycloak_config() -> None:
             "Keycloak administrator: a person's username and password, against\n"
             "the master realm, in the environment of the service that serves the\n"
             "public wizard. It is now done with this service's own service\n"
-            "account, which holds `manage-users` and `view-users` and nothing\n"
-            "else.\n\n"
+            "account, which may administer the members of one group and\n"
+            "nothing else in the realm.\n\n"
             "Nothing reads these any more, and an administrator's password that\n"
             "nothing reads is still an administrator's password in a deployment's\n"
             "environment — so startup refuses it rather than leaving it there.\n\n"
             "  1. Remove them from your .env and environment\n"
             "  2. Rotate the credential: it has been readable by this process\n"
-            "  3. Grant `manage-users` and `view-users` on realm-management to\n"
-            "     the DS_ONBOARDING_CLIENT_ID service account\n\n"
+            "  3. Declare the OIDC_CLIENT_ID service account's rights over the\n"
+            "     participants group in celine-policies' clients.yaml, and sync\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 
@@ -212,19 +212,59 @@ def _validate_keycloak_config() -> None:
             "═══════════════════════════════════════════════════════════════\n"
         )
 
-    if not settings.ds_onboarding_client_secret.strip():
+    if not settings.oidc_client_secret.strip():
         raise RuntimeError(
             "\n\n"
             "═══════════════════════════════════════════════════════════════\n"
-            "  DS_ONBOARDING_CLIENT_SECRET is required\n"
+            "  OIDC_CLIENT_SECRET is required\n"
             "═══════════════════════════════════════════════════════════════\n\n"
-            "It is how this service authenticates as itself, and Keycloak user\n"
-            "provisioning now uses it in place of an administrator's password.\n"
-            "Without it there is no token to present to the Admin API.\n\n"
-            f"  1. Set DS_ONBOARDING_CLIENT_SECRET for client\n"
-            f"     '{settings.ds_onboarding_client_id}' in your .env file\n"
-            "  2. Grant that client's service account `manage-users` and\n"
-            "     `view-users` on realm-management, in the realm below\n\n"
+            "Provisioning a login is celine's own business, so it is done as\n"
+            "celine's own client rather than the dataspace's — and in place of\n"
+            "the administrator password it used to be done with. Without the\n"
+            "secret there is no token to present to the Admin API.\n\n"
+            f"  1. Set OIDC_CLIENT_SECRET for client\n"
+            f"     '{settings.oidc_client_id}' in your .env file\n"
+            "  2. Grant that client's service account the members of the\n"
+            f"     participants group ({settings.dataspace_keycloak_participants_group}):\n"
+            "     declare `admin_permissions` for it in celine-policies'\n"
+            "     clients.yaml and run `keycloak sync`\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    from celine.onboarding.services.keycloak_identity import ROLE_HIERARCHY_GROUPS
+
+    group = settings.dataspace_keycloak_participants_group.strip().rstrip("/")
+    if not group:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "  DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP is required\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "This service may only create a user inside the group its Keycloak\n"
+            "grant names — creating one in no group at all is a realm-wide act,\n"
+            "and is refused. With no group there is nowhere to put a participant.\n\n"
+            "  1. Set DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP, or unset it to take\n"
+            "     the default of /participants\n"
+            "  2. Or set DATASPACE_KEYCLOAK_ENABLED=false, which onboards\n"
+            "     participants without giving them a login\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    if group.lstrip("/").lower() in ROLE_HIERARCHY_GROUPS:
+        raise RuntimeError(
+            "\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"  DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP={group} is an operator role\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "admins, managers, editors and viewers are the operator hierarchy,\n"
+            "and this console reads a realm-level one as a grant over EVERY\n"
+            "community on the deployment — no organization check. Provisioning\n"
+            "into it would make every participant an operator of every REC.\n\n"
+            "viewers is not a safe floor either: it reads every community's\n"
+            "submissions and audit trail. A participant is the person a\n"
+            "submission is about, not somebody who reviews submissions.\n\n"
+            "  1. Name a group that appears in no capability table — the default\n"
+            "     /participants is one, which is why it is the default\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 

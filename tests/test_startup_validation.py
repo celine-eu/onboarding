@@ -347,8 +347,9 @@ def _keycloak_configured(monkeypatch):
     monkeypatch.setattr(app_main.settings, "dataspace_keycloak_enabled", True)
     monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "http://kc:8080")
     monkeypatch.setattr(app_main.settings, "dataspace_keycloak_realm", "celine")
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_participants_group", "/participants")
     monkeypatch.setattr(app_main.settings, "oidc_base_url", "http://keycloak.test/realms/celine")
-    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "s3cret")
+    monkeypatch.setattr(app_main.settings, "oidc_client_secret", "s3cret")
 
 
 def test_a_configured_deployment_starts(_keycloak_configured):
@@ -359,7 +360,7 @@ def test_provisioning_switched_off_needs_nothing(monkeypatch, _keycloak_configur
     """Onboarding without giving anybody a login is a supported deployment."""
     monkeypatch.setattr(app_main.settings, "dataspace_keycloak_enabled", False)
     monkeypatch.setattr(app_main.settings, "dataspace_keycloak_base_url", "")
-    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "")
+    monkeypatch.setattr(app_main.settings, "oidc_client_secret", "")
 
     app_main._validate_keycloak_config()
 
@@ -406,11 +407,11 @@ def test_no_base_url_and_no_issuer_realm_refuses_to_start(monkeypatch, _keycloak
 
 
 def test_missing_service_account_secret_refuses_to_start(monkeypatch, _keycloak_configured):
-    """It is how this service authenticates as itself, and provisioning now uses
-    it in place of an administrator's password."""
-    monkeypatch.setattr(app_main.settings, "ds_onboarding_client_secret", "")
+    """Provisioning a login is celine's own business, done as celine's own client
+    and in place of the administrator password it used to be done with."""
+    monkeypatch.setattr(app_main.settings, "oidc_client_secret", "")
 
-    with pytest.raises(RuntimeError, match="DS_ONBOARDING_CLIENT_SECRET is required"):
+    with pytest.raises(RuntimeError, match="OIDC_CLIENT_SECRET is required"):
         app_main._validate_keycloak_config()
 
 
@@ -454,3 +455,42 @@ def test_an_unset_realm_with_no_issuer_realm_refuses_to_start(monkeypatch, _keyc
 
     with pytest.raises(RuntimeError, match="DATASPACE_KEYCLOAK_REALM is required"):
         app_main._validate_keycloak_config()
+
+
+def test_no_participants_group_refuses_to_start(monkeypatch, _keycloak_configured):
+    """There is nowhere to put a participant: creating a user in no group at all
+    is a realm-wide act, and this service's grant reaches one group."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_participants_group", "  ")
+
+    with pytest.raises(RuntimeError, match="DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP is required"):
+        app_main._validate_keycloak_config()
+
+
+@pytest.mark.parametrize("name", ["admins", "managers", "editors", "viewers"])
+def test_an_operator_role_as_the_participants_group_refuses_to_start(
+    monkeypatch, _keycloak_configured, name
+):
+    """`access.rego` reads a realm-level hierarchy group as a grant over every
+    community on the deployment, with no organization check. Provisioning into
+    one would make every participant an operator of every REC — and `viewers`,
+    the least privileged of them, still reads every community's submissions and
+    audit trail."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_participants_group", f"/{name}")
+
+    with pytest.raises(RuntimeError, match="is an operator role"):
+        app_main._validate_keycloak_config()
+
+
+def test_the_group_is_matched_however_it_is_written(monkeypatch, _keycloak_configured):
+    """A path, a bare name, a trailing slash, a capital: the refusal is about
+    which group it is, not how it was typed."""
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_participants_group", "Viewers/")
+
+    with pytest.raises(RuntimeError, match="is an operator role"):
+        app_main._validate_keycloak_config()
+
+
+def test_a_group_of_its_own_starts(monkeypatch, _keycloak_configured):
+    monkeypatch.setattr(app_main.settings, "dataspace_keycloak_participants_group", "members")
+
+    app_main._validate_keycloak_config()

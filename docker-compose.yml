@@ -59,6 +59,15 @@ services:
       # service's own outbound M2M tokens come from the same realm.
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-svc-onboarding}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-svc-onboarding}
+      # Also the credential Keycloak user provisioning presents: celine's own
+      # client, whose service account may administer the members of the
+      # participants group and nothing else in the realm.
+      # Required when DATASPACE_KEYCLOAK_ENABLED=true.
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      # The group that grant is scoped to, and the group participants are
+      # created in — celine-policies declares both. Never one of admins,
+      # managers, editors or viewers: those are operator roles.
+      DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP: ${DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP:-/participants}
       POLICIES_DIR: /app/policies
     env_file:
       - .env

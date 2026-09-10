@@ -1,7 +1,7 @@
 # ADR-0001 — Participant logins are provisioned by this service's own service account, never by a Keycloak administrator
 
 **Date:** 2026-09-10
-**Status:** accepted
+**Status:** superseded by [ADR-0002](ADR-0002-administer-the-realm-as-celines-own-client.md)
 
 ## Context
 

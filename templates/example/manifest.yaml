@@ -188,10 +188,17 @@ notifications:
   #   secret: "${WEBHOOK_SECRET}"
 
 steps:
+  # `statute` is not optional where `consent.data_sharing` is declared above.
+  # The wizard renders the sharing offers **in this step and nowhere else**;
+  # drop it and the statute checkbox quietly falls back into `consents` while
+  # the offers disappear, so every submission records a declined sharing
+  # consent nobody was ever shown. It sits after the data steps on purpose —
+  # consent asked before the data exists is uninformed.
   - consents
   - personal
   - phone_verify
   - energy
+  - statute
   - review
 
 content:
