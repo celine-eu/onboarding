@@ -1071,6 +1071,62 @@ async def withdraw_user_shares(
     return True
 
 
+async def _canonical_org_alias(base_url: str, headers: dict[str, str], alias: str) -> str:
+    """The owner id the memberships API files *alias* under.
+
+    An organisation answers to more than one real name. Greenland is ``greenland``
+    in the owner list, the identity registry and the governance files, and
+    ``gr-renewable-community`` in Keycloak and the rec registry; the deployment's
+    ``owners.yaml`` bridges the two with an ``aliases`` entry, and
+    ``/owners/resolve`` honours that bridge and answers with the canonical ``id``.
+
+    **The memberships API does not.** Its POST, check, list and delete each compare
+    ``organization_alias`` as a literal string, so a row written under one name is
+    invisible to a check made under the other. That is not hypothetical: onboarding
+    registered under the manifest's ``dataspace.organization`` — the Keycloak name,
+    which ``validate_organization`` forces it to carry — while the connector checks
+    the controller alias its sharing offer names, and a member holding an active
+    membership was refused a standing share with a 403 saying they were not one.
+
+    Resolving here rather than at the call sites is what keeps registration and
+    revocation on the same name: a delete that canonicalised differently from its
+    write would leave the row behind and the member a member of a community they
+    had been revoked from.
+
+    Falls back to *alias* verbatim when the registry cannot answer. An
+    unresolvable name is the behaviour that existed before this bridge and must
+    not turn an approval into an error.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{base_url}/owners/resolve",
+                params={"alias": alias},
+                headers=headers,
+            )
+        if resp.status_code == 200:
+            canonical = str(resp.json().get("id") or "").strip()
+            if canonical and canonical != alias:
+                logger.info(
+                    "Organisation %r is owner %r in the registry; filing membership "
+                    "under the owner id so the connector's check matches",
+                    alias,
+                    canonical,
+                )
+            return canonical or alias
+        logger.warning(
+            "Identity registry answered %s resolving organisation %r; using it verbatim",
+            resp.status_code,
+            alias,
+        )
+    except (httpx.HTTPError, ValueError):
+        logger.warning(
+            "Could not resolve organisation %r in the identity registry; using it verbatim",
+            alias,
+        )
+    return alias
+
+
 async def _register_membership(
     base_url: str,
     headers: dict[str, str],
@@ -1098,6 +1154,7 @@ async def _register_membership(
     a deployment error to fix in the registry, not something an approval papers
     over.
     """
+    org_alias = await _canonical_org_alias(base_url, headers, org_alias)
     body = {
         "user_did": did,
         "organization_alias": org_alias,
@@ -1124,6 +1181,7 @@ async def _delete_membership(
     base_url: str, headers: dict[str, str], did: str, org_alias: str
 ) -> None:
     try:
+        org_alias = await _canonical_org_alias(base_url, headers, org_alias)
         async with httpx.AsyncClient(timeout=15) as client:
             await client.delete(f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers)
     except Exception:

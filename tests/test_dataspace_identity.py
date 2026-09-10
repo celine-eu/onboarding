@@ -227,6 +227,10 @@ def _membership_handler(calls, *, membership_status=201):
             return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        # Membership is filed under the owner *id*, so registering one resolves the
+        # alias first. Echoing it back is the no-alias case: canonical == alias.
+        if "owners/resolve" in url:
+            return httpx.Response(200, json={"id": req.url.params.get("alias", "")})
         if "admin/memberships" in url:
             return httpx.Response(membership_status, json={"user_did": "x"})
         if "keycloak/sync" in url:
@@ -246,9 +250,10 @@ async def test_membership_registered_after_credential(monkeypatch, submission, _
     paths = [url for _, url, _ in calls]
     assert "users/resolve" in paths[0]
     assert "credentials/data-subject" in paths[1]
-    assert "admin/memberships" in paths[2]
+    assert "owners/resolve" in paths[2]
+    assert "admin/memberships" in paths[3]
 
-    body = json.loads(calls[2][2])
+    body = json.loads(calls[3][2])
     # No role. It is a claim on the credential, changed by reissue; the registry
     # dropped the column this used to fill, and a body that still named one would
     # read as though membership recorded what somebody is.
@@ -256,6 +261,117 @@ async def test_membership_registered_after_credential(monkeypatch, submission, _
         "user_did": CREDENTIAL_RESPONSE["subjectDid"],
         "organization_alias": "rec-example",
     }
+
+
+async def test_membership_is_filed_under_the_owner_id_not_the_alias(
+    monkeypatch, submission, _enable_vc
+):
+    """An organisation with two real names is one member, not two.
+
+    The manifest carries the *Keycloak* name — `validate_organization` forces it
+    to — while a sharing offer names its controller by the owner id, and the
+    registry's memberships API compares `organization_alias` as a literal string
+    with no alias resolution of its own. Filing the row under the manifest name
+    left a member holding an active membership refused a standing share with a
+    403 saying they were not a member. The row has to carry the name the check
+    will ask for.
+    """
+    di._token_provider = _mock_token_provider()
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url, req.content.decode() if req.content else ""))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "owners/resolve" in url:
+            # `rec-example` is an alias of the owner `example-community`.
+            return httpx.Response(200, json={"id": "example-community"})
+        if "admin/memberships" in url:
+            return httpx.Response(201, json={"user_did": "x"})
+        return httpx.Response(404)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    body = json.loads(next(c for _, u, c in calls if "admin/memberships" in u))
+    assert body["organization_alias"] == "example-community"
+
+
+async def test_an_unresolvable_organization_is_filed_verbatim(
+    monkeypatch, submission, _enable_vc
+):
+    """A registry that cannot answer must not turn an approval into an error.
+
+    Filing under the name as written is what happened before the owner id was
+    resolved at all, so the fallback costs nothing that was previously working.
+    """
+    di._token_provider = _mock_token_provider()
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url, req.content.decode() if req.content else ""))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url:
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "owners/resolve" in url:
+            return httpx.Response(503, text="registry down")
+        if "admin/memberships" in url:
+            return httpx.Response(201, json={"user_did": "x"})
+        return httpx.Response(404)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    body = json.loads(next(c for _, u, c in calls if "admin/memberships" in u))
+    assert body["organization_alias"] == "rec-example"
+
+
+async def test_membership_is_deleted_under_the_owner_id_it_was_written_under(
+    monkeypatch, submission, _enable_vc
+):
+    """Revocation resolves the same way registration did.
+
+    A delete that canonicalised differently from its write would answer 404 and
+    leave the row in place — the member revoked everywhere except the one table
+    the connector's membership check reads.
+    """
+    di._token_provider = _mock_token_provider()
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        calls.append((req.method, url))
+        if "users/resolve" in url:
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in url and req.method == "POST":
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "owners/resolve" in url:
+            return httpx.Response(200, json={"id": "example-community"})
+        if "admin/memberships" in url and req.method == "POST":
+            return httpx.Response(201, json={})
+        if "keycloak/sync" in url:
+            return httpx.Response(500, text="KC unavailable")
+        if req.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    _patch_httpx(monkeypatch, handler)
+
+    with pytest.raises(ValueError, match="credential .* has been revoked"):
+        await di.provision_user_identity(
+            submission,
+            keycloak_user_id="kc-user-123",
+            keycloak_realm="dataspaces",
+        )
+
+    deletes = [u for m, u in calls if m == "DELETE"]
+    assert any("memberships" in u and "example-community" in u for u in deletes)
+    assert not any("memberships" in u and "rec-example" in u for u in deletes)
 
 
 async def test_organization_is_never_created(monkeypatch, submission, _enable_vc):
@@ -387,6 +503,8 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
             return httpx.Response(200, json=DERIVE_RESPONSE)
         if "credentials/data-subject" in url:
             return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+        if "owners/resolve" in url:
+            return httpx.Response(200, json={"id": req.url.params.get("alias", "")})
         return httpx.Response(200, json={"status": "synced"})
 
     _patch_httpx(monkeypatch, handler)
@@ -396,11 +514,12 @@ async def test_kc_sync_called_after_credential(monkeypatch, submission, _enable_
         keycloak_realm="dataspaces",
     )
 
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert "users/resolve" in calls[0]
     assert "credentials/data-subject" in calls[1]
-    assert "admin/memberships" in calls[2]
-    assert "keycloak/sync" in calls[3]
+    assert "owners/resolve" in calls[2]
+    assert "admin/memberships" in calls[3]
+    assert "keycloak/sync" in calls[4]
 
 
 async def test_kc_sync_carries_the_username_the_data_plane_joins_on(

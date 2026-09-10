@@ -160,6 +160,8 @@ def _handler(*, resolve=None, shares=None, offers=None, prov=None, post=None, is
             )
         if "/admin/credentials/data-subject" in url:
             return issue or httpx.Response(201, json=ISSUED)
+        if "/owners/resolve" in url:
+            return httpx.Response(200, json={"id": req.url.params.get("alias", "")})
         if "/admin/memberships" in url:
             return httpx.Response(201, json={})
         if "/admin/keycloak/sync" in url:
