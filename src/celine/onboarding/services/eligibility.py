@@ -12,6 +12,9 @@ class AddressInfo:
     lng: float
     display_name: str
     municipality: str | None = None
+    # Every administrative name the geocoder returned that could be the comune,
+    # in the order `municipality` picks one for display. See MUNICIPALITY_KEYS.
+    municipality_candidates: tuple[str, ...] = ()
     postal_code: str | None = None
     county: str | None = None
     state: str | None = None
@@ -27,6 +30,20 @@ class EligibilityResult:
     address: AddressInfo | None = None
     reason: str | None = None
 
+
+# **OSM has no single key for "the comune", and in Trentino the obvious one is
+# wrong.** `municipality` there is the *Comunità di valle*, a body above the
+# comune: Volano comes back as `village=Volano, municipality=Comunità della
+# Vallagarina`, and Folgaria as `city=Folgaria, municipality=Magnifica Comunità
+# degli Altipiani Cimbri`. A frazione is the mirror image — Gionghi is
+# `village=Gionghi, municipality=Lavarone`, and Lavarone is the comune the
+# coverage rule names.
+#
+# So neither order works: preferring `village` rejects every frazione, and
+# preferring `municipality` rejects nine of Green Land's eleven comuni. A
+# `municipality` rule is therefore matched against **all** of these, and only
+# the display value is chosen by precedence.
+MUNICIPALITY_KEYS = ("city", "town", "village", "municipality")
 
 RULE_FIELD_MAP = {
     "municipality": "municipality",
@@ -54,14 +71,20 @@ class RulesChecker:
         addr = reverse_geocode(lat, lng)
 
         for rule_type, addr_field, values in self._rules:
-            actual = getattr(addr, addr_field, None)
-            if actual and actual.strip().lower() in values:
-                return EligibilityResult(
-                    eligible=True,
-                    matched_rule=rule_type,
-                    matched_value=actual,
-                    address=addr,
-                )
+            if rule_type == "municipality":
+                candidates = addr.municipality_candidates
+            else:
+                one = getattr(addr, addr_field, None)
+                candidates = (one,) if one else ()
+
+            for actual in candidates:
+                if actual and actual.strip().lower() in values:
+                    return EligibilityResult(
+                        eligible=True,
+                        matched_rule=rule_type,
+                        matched_value=actual,
+                        address=addr,
+                    )
 
         return EligibilityResult(
             eligible=False,
@@ -113,10 +136,10 @@ def find_recs_for_location(lat: float, lng: float) -> list[dict]:
 
 
 def _parse_address(addr: dict) -> dict:
+    candidates = tuple(dict.fromkeys(v for k in MUNICIPALITY_KEYS if (v := addr.get(k))))
     return {
-        "municipality": (
-            addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality")
-        ),
+        "municipality": candidates[0] if candidates else None,
+        "municipality_candidates": candidates,
         "postal_code": addr.get("postcode"),
         "county": addr.get("county"),
         "state": addr.get("state"),

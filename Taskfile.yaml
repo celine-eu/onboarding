@@ -17,10 +17,15 @@ tasks:
       - uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8040 --reload
 
   run:ui:
-    desc: Start frontend dev server (proxies /api to backend)
+    desc: Start frontend dev server on :3000 (proxies /api to backend)
     dir: "{{.UI_DIR}}"
     cmds:
-      - pnpm dev --host 0.0.0.0
+      # The port is part of the contract, not a preference: a reverse proxy in
+      # front of this console routes its pages to :3000, so vite's default 5173
+      # serves a working UI that nothing can reach by its real hostname.
+      # `--strictPort` so a taken port fails here rather than silently landing
+      # on another one and reproducing the same gap.
+      - pnpm dev --host 0.0.0.0 --port 3000 --strictPort
 
   build:
     desc: Build all Docker images
