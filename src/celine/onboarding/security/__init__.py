@@ -12,6 +12,7 @@ from celine.onboarding.security.policy import (
     get_policy,
     organization_aliases,
     organization_groups,
+    organization_type,
     realm_groups,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "get_policy",
     "organization_aliases",
     "organization_groups",
+    "organization_type",
     "realm_groups",
 ]

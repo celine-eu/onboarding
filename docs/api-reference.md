@@ -87,7 +87,7 @@ endpoint needs is in brackets.
 |---|---|---|
 | `GET` | `/api/admin/me` | Identity + per-community capabilities. 403 when the caller administers nothing, which is what drives the console's denied page |
 | `GET` | `/api/admin/recs` | Communities the caller may administer |
-| `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so realm-level operators only) [`recs.read`] |
+| `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so realm `admins`/`managers` only) [`recs.read`] |
 | `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action |

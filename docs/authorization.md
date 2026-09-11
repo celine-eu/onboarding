@@ -50,6 +50,33 @@ An **organization**-level group grants those for that community's RECs. A
 their credential is not, and a deployment must be able to grant one without the
 other.
 
+### Only `admins` and `managers` are platform operators
+
+A realm badge applies to every community on the deployment with no organization
+check, so the two read-only tiers do not carry one: **a realm-level `editors` or
+`viewers` grants nothing, anywhere**. A realm `viewers` used to read every REC's
+submissions and audit trail on the deployment, which is more than the name
+suggests and more than anyone intended.
+
+The tier still decides *which* actions — a realm `managers` cannot erase a
+submission or revoke a credential, because the table above names only `admins` for
+those. The two tiers keep their full meaning at organization level, which is where
+a read-only member of one REC belongs.
+
+### An organization grant requires a REC
+
+`granted_by_org_group` also checks the **type** of the matched organization: it
+must be `rec`. An organization typed `dso`, typed anything else, or carrying no
+type at all grants nothing here, whatever its members are called.
+
+The attribute is written by `celine-policies keycloak sync-orgs` from the owner's
+`organization.role`, and it is read from the flattened `type` key a real token
+carries (`"organization": {"my-rec": {"type": ["rec"], "groups": [...]}}`),
+falling back to the nested `attributes.type`. **A realm that has never been synced
+has no typed organization and its operators are refused** — visibly, with a reason
+naming the type, rather than silently. That is deliberate: tolerating a missing
+attribute would make the check bypassable by leaving it off.
+
 ## Tenancy
 
 A REC's manifest names the Keycloak organization that owns it:
@@ -64,8 +91,8 @@ separately, and `onboarding-cli import-templates` **refuses** a manifest where t
 two disagree.
 
 The key is optional. A REC without one is administrable only by realm-level
-platform operators, which is a coherent setup for a single-community deployment.
-It fails closed — no organization means no organization-scoped grant can match —
+platform operators — `admins` and `managers` — which is a coherent setup for a
+single-community deployment. It fails closed — no organization means no organization-scoped grant can match —
 and startup logs a warning naming every affected REC.
 
 ## Scopes

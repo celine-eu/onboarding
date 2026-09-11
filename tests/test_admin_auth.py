@@ -112,6 +112,33 @@ class TestMe:
         assert "submissions.review" not in capabilities
         assert "submissions.purge" not in capabilities
 
+    def test_a_read_only_realm_group_alone_is_403(self, client, issue_token):
+        """Signed in, platform-wide badge, no organization — the console is not theirs.
+
+        `viewers` at realm level used to list every REC on the deployment. It now
+        grants nothing, so `/me` answers the same 403 as a token that grants
+        nothing at all, and the console shows its denied page.
+        """
+        token = issue_token(email="realm-viewer@example.org", groups=["/viewers"])
+        assert client.get("/api/admin/me", headers=auth(token)).status_code == 403
+
+    def test_a_realm_manager_sees_every_community(self, client, issue_token):
+        token = issue_token(email="platform@example.org", groups=["/managers"])
+        body = client.get("/api/admin/me", headers=auth(token)).json()
+        assert [r["slug"] for r in body["recs"]] == ["orphan", "rec-a", "rec-b"]
+        assert body["realm_groups"] == ["managers"]
+        # The tier still decides the actions: the two irreversible ones are
+        # `admins`-only at either level.
+        capabilities = body["recs"][1]["capabilities"]
+        assert "submissions.review" in capabilities
+        assert "submissions.purge" not in capabilities
+
+    def test_an_untyped_organization_is_403(self, client, operator_token):
+        """The organization grant needs the REC type the realm sync writes."""
+        token = operator_token(ORG, "admins", org_type=None)
+        response = client.get("/api/admin/me", headers=auth(token))
+        assert response.status_code == 403
+
     def test_identity_is_reported(self, client, operator_token):
         body = client.get("/api/admin/me", headers=auth(operator_token(ORG, "editors"))).json()
         assert body["sub"] == "operator-sub"
@@ -177,8 +204,15 @@ class TestRecs:
             return None
 
         monkeypatch.setattr(template_service, "reload", _noop_reload)
-        token = operator_token(ORG, realm=("viewers",))
+        token = operator_token(ORG, realm=("managers",))
         assert client.post("/api/admin/recs/reload", headers=auth(token)).status_code == 200
+
+    def test_reload_refuses_a_read_only_realm_group(self, client, operator_token):
+        """A realm badge is platform-wide, so only admins and managers carry one."""
+        token = operator_token(ORG, realm=("viewers",))
+        response = client.post("/api/admin/recs/reload", headers=auth(token))
+        assert response.status_code == 403
+        assert "not a platform-wide grant" in response.json()["detail"]
 
     def test_recs_is_not_shadowed_by_the_rec_slug_route(self, client, operator_token):
         """`/api/admin/recs` is the community list, not a REC named "recs"."""

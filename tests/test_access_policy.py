@@ -16,6 +16,7 @@ from celine.onboarding.security.policy import (
     OnboardingAccessPolicy,
     organization_aliases,
     organization_groups,
+    organization_type,
     realm_groups,
 )
 
@@ -30,6 +31,12 @@ MANAGER = EDITOR | {"submissions.review", "enablement.retry", "export"}
 ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 
 TIERS = {"viewers": VIEWER, "editors": EDITOR, "managers": MANAGER, "admins": ADMIN}
+
+# Which tiers mean anything at *realm* level. A realm badge grants its actions on
+# every community with no organization check, so the two read-only tiers are
+# excluded from it — they are an organization-level role and nothing else.
+PLATFORM_TIERS = {"admins": ADMIN, "managers": MANAGER}
+NON_PLATFORM_TIERS = ("editors", "viewers")
 
 
 @pytest.fixture(scope="module")
@@ -50,13 +57,23 @@ def operator(
     groups: tuple[str, ...] = (),
     realm: tuple[str, ...] = (),
     sub: str = "user-1",
+    org_type: str | None = "rec",
 ) -> JwtUser:
-    """A human. Keycloak emits group paths with a leading slash."""
+    """A human. Keycloak emits group paths with a leading slash.
+
+    The organization carries `type: ["rec"]` by default — flattened, which is the
+    shape a real token has — because an organization-scoped grant requires it.
+    `org_type=None` is the untyped organization a realm that never ran
+    `keycloak sync-orgs` produces.
+    """
     claims: dict = {"email": "operator@example.org", "preferred_username": "operator"}
     if realm:
         claims["groups"] = [f"/{g}" for g in realm]
     if org:
-        claims["organization"] = {org: {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}}
+        org_claim: dict = {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
+        if org_type is not None:
+            org_claim["type"] = [org_type]
+        claims["organization"] = {org: org_claim}
     return JwtUser(sub=sub, email=claims["email"], claims=claims)
 
 
@@ -105,6 +122,47 @@ def test_org_admin_is_denied_when_no_community_is_named(policy):
     assert policy.capabilities(user, organization=None) == frozenset()
 
 
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_an_untyped_organization_grants_nothing(policy, tier):
+    """The state of a realm that never ran `keycloak sync-orgs`.
+
+    Absent is not "probably a REC": tolerating it would make the type check
+    bypassable by leaving the attribute off.
+    """
+    user = operator(org=ORG, groups=(tier,), org_type=None)
+    assert policy.capabilities(user, organization=ORG) == frozenset()
+
+
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_an_organization_of_another_type_grants_nothing(policy, tier):
+    """A DSO's operators are not a REC's, whatever their groups are called."""
+    user = operator(org=ORG, groups=(tier,), org_type="dso")
+    assert policy.capabilities(user, organization=ORG) == frozenset()
+
+
+def test_the_nested_attribute_shape_is_read_too(policy):
+    """Fixtures and the SDK docstring nest it under `attributes`; tokens flatten it."""
+    user = JwtUser(
+        sub="user-3",
+        email="op@example.org",
+        claims={
+            "email": "op@example.org",
+            "organization": {ORG: {"groups": ["/managers"], "attributes": {"type": ["rec"]}}},
+        },
+    )
+    assert policy.capabilities(user, organization=ORG) == MANAGER
+
+
+def test_untyped_organization_denial_says_so(policy):
+    decision = policy.allow(
+        operator(org=ORG, groups=("admins",), org_type=None),
+        Capability.SUBMISSIONS_READ,
+        organization=ORG,
+    )
+    assert not decision.allowed
+    assert "not typed as a REC" in (decision.reason or "")
+
+
 def test_multiple_org_memberships_are_scoped_independently(policy):
     user = JwtUser(
         sub="user-2",
@@ -112,8 +170,8 @@ def test_multiple_org_memberships_are_scoped_independently(policy):
         claims={
             "email": "op@example.org",
             "organization": {
-                ORG: {"id": "a", "groups": ["/managers"]},
-                OTHER_ORG: {"id": "b", "groups": ["/viewers"]},
+                ORG: {"id": "a", "type": ["rec"], "groups": ["/managers"]},
+                OTHER_ORG: {"id": "b", "type": ["rec"], "groups": ["/viewers"]},
             },
         },
     )
@@ -126,11 +184,25 @@ def test_multiple_org_memberships_are_scoped_independently(policy):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tier,expected", sorted(TIERS.items()))
-def test_realm_group_grants_its_tier_on_every_community(policy, tier, expected):
+@pytest.mark.parametrize("tier,expected", sorted(PLATFORM_TIERS.items()))
+def test_a_platform_realm_group_grants_its_tier_on_every_community(policy, tier, expected):
     user = operator(realm=(tier,))
     assert policy.capabilities(user, organization=ORG) == expected
     assert policy.capabilities(user, organization=OTHER_ORG) == expected
+
+
+@pytest.mark.parametrize("tier", NON_PLATFORM_TIERS)
+def test_a_read_only_realm_group_grants_nothing_anywhere(policy, tier):
+    """The narrowing this suite exists to hold.
+
+    A realm badge is a grant over every community on the deployment, so the two
+    read-only tiers do not carry one — a realm `viewers` used to read every REC's
+    submissions and audit trail.
+    """
+    user = operator(realm=(tier,))
+    assert policy.capabilities(user, organization=ORG) == frozenset()
+    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+    assert policy.capabilities(user, organization=None) == frozenset()
 
 
 def test_realm_group_applies_without_a_named_community(policy):
@@ -138,12 +210,40 @@ def test_realm_group_applies_without_a_named_community(policy):
     assert policy.capabilities(user, organization=None) == ADMIN
 
 
-def test_highest_tier_wins_when_realm_and_org_disagree(policy):
-    """Grants are additive: the realm viewer badge does not cap the org manager one."""
+def test_a_realm_manager_still_cannot_purge_or_revoke(policy):
+    """`platform_groups` decides whether the realm level applies, not what it grants.
+
+    The capability table keeps deciding the actions, so the two irreversible ones
+    stay `admins`-only at both levels.
+    """
+    user = operator(realm=("managers",))
+    caps = policy.capabilities(user, organization=ORG)
+    assert Capability.SUBMISSIONS_PURGE.value not in caps
+    assert Capability.ENABLEMENT_REVOKE.value not in caps
+
+
+def test_grants_are_additive_across_the_two_levels(policy):
+    """A realm badge that grants nothing does not cap the organization one."""
     user = operator(org=ORG, groups=("managers",), realm=("viewers",))
     assert policy.capabilities(user, organization=ORG) == MANAGER
-    # ...and on a community they are not a member of, only the realm badge counts.
-    assert policy.capabilities(user, organization=OTHER_ORG) == VIEWER
+    # ...and on a community they are not a member of, the realm viewer badge
+    # leaves them with nothing at all.
+    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+
+
+def test_a_realm_editor_is_still_an_organization_editor(policy):
+    """The two read-only tiers keep their meaning one level down."""
+    user = operator(org=ORG, groups=("editors",), realm=("editors",))
+    assert policy.capabilities(user, organization=ORG) == EDITOR
+    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+
+
+def test_non_platform_realm_denial_says_so(policy):
+    decision = policy.allow(
+        operator(realm=("viewers",)), Capability.SUBMISSIONS_READ, organization=ORG
+    )
+    assert not decision.allowed
+    assert "not a platform-wide grant" in (decision.reason or "")
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +437,26 @@ class TestClaimReaders:
         """KC omits `groups` unless the org membership mapper includes roles."""
         claims = {"organization": {ORG: {"id": "x", "type": ["rec"]}}}
         assert organization_groups(claims, ORG) == []
+
+    def test_organization_type_reads_the_flattened_claim(self):
+        """What a real Keycloak token carries, measured 2026-09-11."""
+        claims = {"organization": {ORG: {"type": ["rec"], "groups": ["/viewers"]}}}
+        assert organization_type(claims, ORG) == "rec"
+
+    def test_organization_type_falls_back_to_the_nested_attribute(self):
+        claims = {"organization": {ORG: {"attributes": {"type": ["rec"]}}}}
+        assert organization_type(claims, ORG) == "rec"
+
+    def test_organization_type_accepts_a_bare_string(self):
+        claims = {"organization": {ORG: {"type": "REC "}}}
+        assert organization_type(claims, ORG) == "rec"
+
+    def test_organization_type_is_none_when_absent_or_junk(self):
+        assert organization_type({}, ORG) is None
+        assert organization_type({"organization": {ORG: {}}}, ORG) is None
+        assert organization_type({"organization": {ORG: {"type": []}}}, ORG) is None
+        assert organization_type({"organization": {ORG: {"type": [None]}}}, ORG) is None
+        assert organization_type({"organization": {ORG: {"type": ["rec"]}}}, OTHER_ORG) is None
 
     def test_organization_aliases(self):
         claims = {"organization": {OTHER_ORG: {}, ORG: {}}}

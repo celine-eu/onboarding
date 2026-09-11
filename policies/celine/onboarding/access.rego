@@ -24,9 +24,13 @@ import rego.v1
 # Groups exist at two levels and the difference is load-bearing:
 #
 #   * A **realm**-level group (`groups` claim) is a platform-wide grant — it
-#     applies to every community on the deployment.
+#     applies to every community on the deployment. Because it is that wide,
+#     only `platform_groups` below carry one; a realm `editors` or `viewers`
+#     badge grants nothing anywhere.
 #   * An **organization**-level group (`organization.<alias>.groups`) grants the
-#     capability for that community only.
+#     capability for that community only, and only when that organization is
+#     typed `rec`. The console administers RECs; an organization of another kind
+#     is not one, whatever its members are called.
 #
 # The wrapper in `security/policy.py` passes these separately and never merges
 # them. Merging is what `celine.sdk.auth.jwt.extract_groups` does, and it is the
@@ -61,6 +65,27 @@ required_groups := {
 	"enablement.revoke": {"admins"},
 }
 
+# Which of those groups mean anything at **realm** level. A realm badge is a
+# grant over every community on the deployment with no organization check, so it
+# is the platform-operator role and not merely the top of the tier list: the two
+# read-only tiers are excluded from it entirely.
+#
+# This is an intersection with the table above, not a second table. A realm
+# `managers` still cannot purge a submission or revoke a credential, because
+# those two actions name only `admins` — the tier keeps deciding *which* actions,
+# and this set decides *whether the realm level applies at all*.
+#
+# `editors` and `viewers` keep their meaning one level down, where a read-only
+# member of one REC belongs.
+platform_groups := {"admins", "managers"}
+
+# The organization type that owns a REC, as `celine-policies keycloak sync-orgs`
+# writes it from the owner's `organization.role`. An organization carrying no
+# type grants nothing: absent is exactly the state of a realm that was never
+# synced, and treating it as "probably a REC" would make the check bypassable by
+# omission.
+rec_organization_type := "rec"
+
 # `onboarding.admin` satisfies every entry below through the shared matcher's
 # admin-override rule, so it stays a superset — but a service account should
 # hold the actions it calls, not the superset.
@@ -83,19 +108,24 @@ known_action if required_groups[input.action.name]
 
 is_service if data.celine.scopes.is_service
 
-# A realm-level group grants the action everywhere, so no organization check.
+# A realm-level group grants the action everywhere, so no organization check —
+# and for that reason only a platform group qualifies.
 granted_by_realm_group if {
 	some g in required_groups[input.action.name]
+	g in platform_groups
 	g in input.subject.groups
 }
 
 # An organization-level group grants the action only for that organization's
-# communities. `claims.organization` is the caller's organization as resolved
-# *against this request's target*, and `claims.org_groups` holds that
-# organization's groups only.
+# communities, and only when that organization is a REC. `claims.organization` is
+# the caller's organization as resolved *against this request's target*,
+# `claims.org_groups` holds that organization's groups only, and `claims.org_type`
+# its type attribute — read from the flattened `type` key a real token carries,
+# falling back to the nested `attributes.type` a fixture may use.
 granted_by_org_group if {
 	input.subject.claims.organization != null
 	input.subject.claims.organization == input.resource.attributes.organization
+	input.subject.claims.org_type == rec_organization_type
 	some g in required_groups[input.action.name]
 	g in input.subject.claims.org_groups
 }
@@ -137,6 +167,12 @@ reason := "granted by realm group" if {
 	not known_action
 } else := "service is missing a scope granting this action" if {
 	is_service
+} else := "a realm group is not a platform-wide grant — only admins and managers are" if {
+	some g in required_groups[input.action.name]
+	g in input.subject.groups
 } else := "caller belongs to a different organization than this community" if {
 	input.subject.claims.organization != input.resource.attributes.organization
+} else := "the caller's organization is not typed as a REC" if {
+	input.subject.claims.organization != null
+	input.subject.claims.org_type != rec_organization_type
 } else := "no group grants this action"

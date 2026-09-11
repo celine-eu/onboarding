@@ -107,6 +107,39 @@ def organization_groups(claims: dict[str, Any], alias: str) -> list[str]:
     return _normalize(org.get("groups"))
 
 
+def organization_type(claims: dict[str, Any], alias: str) -> str | None:
+    """The `type` attribute of one organization, or None if it declares none.
+
+    Two shapes, and reading only one of them is how a policy passes locally and
+    denies in production. A **real** Keycloak token flattens the attribute onto
+    the organization — `{"gr-renewable-community": {"type": ["rec"], ...}}` —
+    while the nested `attributes.type` shape appears in hand-written fixtures and
+    in the SDK's own docstring. Both are read, flattened first.
+
+    The value arrives as a single-element list because Keycloak attributes are
+    multi-valued; a bare string is accepted too rather than assumed away.
+    """
+    orgs = claims.get("organization")
+    if not isinstance(orgs, dict):
+        return None
+    org = orgs.get(alias)
+    if not isinstance(org, dict):
+        return None
+
+    raw = org.get("type")
+    if raw is None:
+        attributes = org.get("attributes")
+        raw = attributes.get("type") if isinstance(attributes, dict) else None
+
+    if isinstance(raw, (list, tuple)):
+        raw = next((v for v in raw if isinstance(v, str)), None)
+    if not isinstance(raw, str):
+        return None
+
+    value = raw.strip().lower()
+    return value or None
+
+
 def organization_aliases(claims: dict[str, Any]) -> list[str]:
     """Every organization alias the caller is a member of."""
     orgs = claims.get("organization")
@@ -261,6 +294,10 @@ class OnboardingAccessPolicy:
         # group from one community against another community's REC.
         matched = organization if organization and organization in aliases else None
         org_groups = organization_groups(claims, matched) if matched else []
+        # The organization's *kind*, not just its name. The console administers
+        # RECs, so an organization the realm does not type as one authorises
+        # nothing here — see `granted_by_org_group` in the rego.
+        org_type = organization_type(claims, matched) if matched else None
 
         return PolicyInput(
             subject=Subject(
@@ -268,7 +305,11 @@ class OnboardingAccessPolicy:
                 type=subject_type,
                 groups=realm,
                 scopes=scopes,
-                claims={"organization": matched, "org_groups": org_groups},
+                claims={
+                    "organization": matched,
+                    "org_groups": org_groups,
+                    "org_type": org_type,
+                },
             ),
             resource=Resource(
                 # USERDATA is a generic stand-in: access.rego inspects only

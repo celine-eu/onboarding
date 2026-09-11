@@ -171,7 +171,9 @@ class Settings(BaseSettings):
     #
     # It must not name one of the role-hierarchy groups (`admins`, `managers`,
     # `editors`, `viewers`): those are operator roles, and `access.rego` reads a
-    # realm-level one as a platform-wide grant. Startup refuses them.
+    # realm-level `admins` or `managers` as a platform-wide grant. Startup
+    # refuses all four — `editors` and `viewers` grant nothing at realm level
+    # today, but they are operator names and a participant is not an operator.
     dataspace_keycloak_participants_group: str = "/participants"
     dataspace_keycloak_default_password: str = ""
     dataspace_keycloak_temporary_password: bool = False

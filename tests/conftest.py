@@ -109,14 +109,30 @@ def issue_token(monkeypatch, _signing_key):
 
 @pytest.fixture()
 def operator_token(issue_token):
-    """A REC operator: an organization membership plus a group inside it."""
+    """A REC operator: an organization membership plus a group inside it.
 
-    def _issue(organization: str, *groups: str, realm: tuple[str, ...] = (), **extra):
+    The organization is typed `rec` by default because a real one is — the policy
+    refuses an organization-scoped grant on an organization of any other type, so
+    a fixture that omitted the attribute would test the refusal and nothing else.
+    Pass `org_type=None` for an untyped organization, or another value for a DSO.
+    """
+
+    def _issue(
+        organization: str,
+        *groups: str,
+        realm: tuple[str, ...] = (),
+        org_type: str | None = "rec",
+        **extra,
+    ):
+        org_claim: dict = {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
+        if org_type is not None:
+            # Flattened, as a real Keycloak token carries it.
+            org_claim["type"] = [org_type]
         claims: dict = {
             "sub": "operator-sub",
             "email": "operator@example.org",
             "preferred_username": "operator",
-            "organization": {organization: {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}},
+            "organization": {organization: org_claim},
             **extra,
         }
         if realm:

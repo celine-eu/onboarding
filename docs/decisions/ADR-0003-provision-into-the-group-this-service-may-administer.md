@@ -64,6 +64,14 @@ floor: least privilege among operators is not no privilege, and it still reads e
 submissions and audit trail. `participants` is safe precisely because it appears in no
 capability table.
 
+> **Update, 2026-09-11.** The hole that paragraph describes is now closed at its source:
+> `access.rego` reads a realm-level badge as platform-wide only for `admins` and `managers`,
+> so a realm `viewers` grants nothing anywhere. The refusal is **unchanged** and still covers
+> all four names — a group that grants nothing today is one capability-table edit away from
+> granting something, and a participant is not an operator of any tier. What changed is that
+> the refusal is no longer the only thing standing between a misconfiguration and every
+> participant reading every REC.
+
 ## Consequences
 
 **Adoption is now bounded by the group.** A login this service created is found again as

@@ -91,13 +91,22 @@ class TestIdp:
         realm: tuple[str, ...] = (),
         sub: str = "operator-1",
         email: str = "operator@example.org",
+        org_type: str | None = "rec",
     ) -> str:
-        """A human: an organization membership plus a group inside it."""
+        """A human: an organization membership plus a group inside it.
+
+        Typed `rec` by default, flattened the way a real token carries it: the
+        policy grants an organization-scoped operator nothing on an organization
+        of any other type.
+        """
+        org_claim: dict = {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
+        if org_type is not None:
+            org_claim["type"] = [org_type]
         claims: dict = {
             "sub": sub,
             "email": email,
             "preferred_username": sub,
-            "organization": {organization: {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}},
+            "organization": {organization: org_claim},
         }
         if realm:
             claims["groups"] = [f"/{g}" for g in realm]

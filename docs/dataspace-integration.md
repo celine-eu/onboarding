@@ -200,9 +200,11 @@ Adding that account to the group and retrying is what resolves it.
 `Member` row and the Keycloak organization; this group is a permission boundary.
 It must never be one of the operator role-hierarchy groups (`admins`, `managers`,
 `editors`, `viewers`): `policies/celine/onboarding/access.rego` reads a
-realm-level one as a grant over *every* community on the deployment, so
-provisioning into it would make every participant an operator everywhere.
-Startup refuses those four names.
+realm-level `admins` or `managers` as a grant over *every* community on the
+deployment, so provisioning into either would make every participant an operator
+everywhere. Startup refuses all four names, not just those two — a group that
+grants nothing today is one capability-table edit away from granting something,
+and a participant is not an operator of any tier.
 
 Both halves of the address are taken from `OIDC_BASE_URL`, and both for the same
 reason -- a token minted there is the only token that works anywhere else:
