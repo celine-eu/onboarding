@@ -7,11 +7,12 @@ anything", which the frontend turns into a denied page rather than a login loop.
 
 from __future__ import annotations
 
+from celine.sdk.auth import realm_groups
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from celine.onboarding.api.admin.deps import UserDep, organization_of
-from celine.onboarding.security.policy import get_policy, organization_aliases, realm_groups
+from celine.onboarding.security.policy import get_policy
 from celine.onboarding.services import template_service
 
 router = APIRouter(tags=["admin"])
@@ -97,7 +98,7 @@ async def me(user: UserDep) -> AdminMe:
         preferred_username=user.preferred_username,
         locale=claims.get("locale"),
         subject_type="service" if user.is_service_account else "user",
-        organizations=organization_aliases(claims),
+        organizations=user.organization_aliases,
         realm_groups=realm_groups(claims),
         recs=recs,
     )

@@ -93,17 +93,22 @@ def _member(
     authenticated the member, so a token without one is a distinct branch rather
     than a detail — see `test_a_member_whose_issuer_names_no_realm_is_not_provisioned`.
     """
-    from celine.sdk.auth import JwtUser
+    from celine.sdk.auth import JwtUser, Organization
 
     claims: dict = {"sub": "member-sub", "email": email}
+    organizations: list[Organization] = []
     if organization:
-        claims["organization"] = {organization: {"id": "org-uuid", "groups": []}}
+        # Parsed, as `from_token` hands it over — the only way this service
+        # builds a `JwtUser` outside a test.
+        claims["organization"] = {organization: {"id": "org-uuid"}}
+        organizations.append(Organization(alias=organization, id="org-uuid", groups=[]))
     return JwtUser(
         sub="member-sub",
         email=email,
         preferred_username="member",
         iss=iss,
         claims=claims,
+        organizations=organizations,
     )
 
 

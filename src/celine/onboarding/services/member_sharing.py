@@ -48,7 +48,6 @@ import httpx
 from celine.sdk.auth import JwtUser
 
 from celine.onboarding.config.settings import settings
-from celine.onboarding.security import policy
 from celine.onboarding.services import dataspace_identity, rec_registry, template_service
 
 logger = logging.getLogger(__name__)
@@ -170,7 +169,7 @@ def resolve_member_rec(user: JwtUser) -> str | None:
     shape, which is why it is refused loudly instead of resolved by a rule
     nobody has written.
     """
-    aliases = policy.organization_aliases(user.claims or {})
+    aliases = user.organization_aliases
 
     candidates: list[str] = []
     for alias in aliases:

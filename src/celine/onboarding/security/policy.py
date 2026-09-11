@@ -6,7 +6,11 @@ builds proper ``data.{package}.allow`` / ``.reason`` queries rather than
 evaluating the package path as a raw Rego expression.
 
 The wrapper's one job beyond plumbing is to keep realm-level and
-organization-level groups **apart**. See `realm_groups` for why.
+organization-level groups **apart** — a realm group is a platform-wide grant, so
+merging the two levels would let a `managers` badge held inside community A
+authorise an action on community B. The readers that keep them apart
+(`celine.sdk.auth.realm_groups`, `JwtUser.get_organization`) live in the SDK;
+this module used to carry private copies of them.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from celine.sdk.auth import JwtUser
+from celine.sdk.auth import JwtUser, realm_groups
 
 from celine.onboarding.config.settings import settings
 
@@ -53,99 +57,6 @@ ALL_CAPABILITIES: tuple[Capability, ...] = tuple(Capability)
 class Decision:
     allowed: bool
     reason: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Claim readers
-# ---------------------------------------------------------------------------
-
-
-def _normalize(values: Any) -> list[str]:
-    """Strip Keycloak's leading slash and deduplicate, preserving order.
-
-    Anything that is not a list is discarded rather than iterated: a `groups`
-    claim that arrived as a bare string would otherwise be walked character by
-    character and yield single-letter "groups". `extract_groups` in the SDK
-    guards the same way.
-    """
-    if not isinstance(values, (list, tuple)):
-        return []
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        name = value.lstrip("/")
-        if name and name not in seen:
-            seen.add(name)
-            out.append(name)
-    return out
-
-
-def realm_groups(claims: dict[str, Any]) -> list[str]:
-    """Groups from the top-level ``groups`` claim — realm level **only**.
-
-    Deliberately not `celine.sdk.auth.jwt.extract_groups`, which merges realm
-    groups with every organization's groups into one flat list. That is the right
-    behaviour for a service asking "is this user a viewer?", and the wrong
-    behaviour here: a realm group is a platform-wide grant, so merging would let
-    a `managers` badge held inside community A authorise an action on community
-    B. The console needs the two levels distinguishable, so it reads them apart.
-    """
-    return _normalize(claims.get("groups"))
-
-
-def organization_groups(claims: dict[str, Any], alias: str) -> list[str]:
-    """Groups the caller holds inside one specific organization."""
-    orgs = claims.get("organization")
-    if not isinstance(orgs, dict):
-        return []
-    org = orgs.get(alias)
-    if not isinstance(org, dict):
-        return []
-    return _normalize(org.get("groups"))
-
-
-def organization_type(claims: dict[str, Any], alias: str) -> str | None:
-    """The `type` attribute of one organization, or None if it declares none.
-
-    Two shapes, and reading only one of them is how a policy passes locally and
-    denies in production. A **real** Keycloak token flattens the attribute onto
-    the organization — `{"gr-renewable-community": {"type": ["rec"], ...}}` —
-    while the nested `attributes.type` shape appears in hand-written fixtures and
-    in the SDK's own docstring. Both are read, flattened first.
-
-    The value arrives as a single-element list because Keycloak attributes are
-    multi-valued; a bare string is accepted too rather than assumed away.
-    """
-    orgs = claims.get("organization")
-    if not isinstance(orgs, dict):
-        return None
-    org = orgs.get(alias)
-    if not isinstance(org, dict):
-        return None
-
-    raw = org.get("type")
-    if raw is None:
-        attributes = org.get("attributes")
-        raw = attributes.get("type") if isinstance(attributes, dict) else None
-
-    if isinstance(raw, (list, tuple)):
-        raw = next((v for v in raw if isinstance(v, str)), None)
-    if not isinstance(raw, str):
-        return None
-
-    value = raw.strip().lower()
-    return value or None
-
-
-def organization_aliases(claims: dict[str, Any]) -> list[str]:
-    """Every organization alias the caller is a member of."""
-    orgs = claims.get("organization")
-    if not isinstance(orgs, dict):
-        return []
-    return sorted(str(alias) for alias in orgs)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +183,7 @@ class OnboardingAccessPolicy:
         )
 
         claims = user.claims or {}
-        aliases = organization_aliases(claims)
+        aliases = user.organization_aliases
         realm = realm_groups(claims)
 
         # Prefer organization/group presence as the authoritative signal for
@@ -290,14 +201,20 @@ class OnboardingAccessPolicy:
         scopes = scope_claim.split() if isinstance(scope_claim, str) else list(scope_claim)
 
         # Only the organization matching *this* request is passed through, along
-        # with that organization's groups. The rego therefore cannot compare a
-        # group from one community against another community's REC.
-        matched = organization if organization and organization in aliases else None
-        org_groups = organization_groups(claims, matched) if matched else []
-        # The organization's *kind*, not just its name. The console administers
-        # RECs, so an organization the realm does not type as one authorises
+        # with that organization's groups and type. The rego therefore cannot
+        # compare a group from one community against another community's REC,
+        # and it can ask what kind of organization this is: the console
+        # administers RECs, so one the realm does not type as a REC authorises
         # nothing here — see `granted_by_org_group` in the rego.
-        org_type = organization_type(claims, matched) if matched else None
+        #
+        # `JwtUser.organizations` is parsed by `from_token`, which is the only
+        # way this service ever builds one. The SDK reads the organization's
+        # attributes flattened-first, which is the shape a real Keycloak token
+        # carries; a policy written against `attributes.type` matches nothing.
+        matched_org = user.get_organization(organization) if organization else None
+        matched = matched_org.alias if matched_org else None
+        org_groups = matched_org.groups if matched_org else []
+        org_type = matched_org.type if matched_org else None
 
         return PolicyInput(
             subject=Subject(

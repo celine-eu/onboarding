@@ -31,9 +31,11 @@ Subject type is decided by **organization/group presence first**, falling back t
 every organization: `admins > managers > editors > viewers`.
 
 The two levels mean different things, and the console keeps them **apart** — it
-does not use `celine.sdk.auth.jwt.extract_groups`, which merges them. A merged
-list would let a `managers` badge held inside community A satisfy a realm-level
-check and authorise an action on community B.
+reads the realm level with `celine.sdk.auth.realm_groups` and the organization
+level from the `Organization` that `JwtUser.get_organization` returns, never
+through `extract_groups`, which merges them. A merged list would let a
+`managers` badge held inside community A satisfy a realm-level check and
+authorise an action on community B.
 
 | Group | May |
 |---|---|
@@ -70,9 +72,11 @@ must be `rec`. An organization typed `dso`, typed anything else, or carrying no
 type at all grants nothing here, whatever its members are called.
 
 The attribute is written by `celine-policies keycloak sync-orgs` from the owner's
-`organization.role`, and it is read from the flattened `type` key a real token
-carries (`"organization": {"my-rec": {"type": ["rec"], "groups": [...]}}`),
-falling back to the nested `attributes.type`. **A realm that has never been synced
+`organization.role`. Reading it is the SDK's job: `Organization.type` takes the
+flattened `type` key a real token carries
+(`"organization": {"my-rec": {"type": ["rec"], "groups": [...]}}`) and falls back
+to the nested `attributes.type`, so a policy written against `attributes.type`
+alone would match nothing. **A realm that has never been synced
 has no typed organization and its operators are refused** — visibly, with a reason
 naming the type, rather than silently. That is deliberate: tolerating a missing
 attribute would make the check bypassable by leaving it off.

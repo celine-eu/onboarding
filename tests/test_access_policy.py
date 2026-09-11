@@ -8,16 +8,12 @@ up here rather than in production.
 from __future__ import annotations
 
 import pytest
-from celine.sdk.auth import JwtUser
+from celine.sdk.auth import JwtUser, Organization
 
 from celine.onboarding.security.policy import (
     ALL_CAPABILITIES,
     Capability,
     OnboardingAccessPolicy,
-    organization_aliases,
-    organization_groups,
-    organization_type,
-    realm_groups,
 )
 
 ORG = "my-rec"
@@ -59,22 +55,29 @@ def operator(
     sub: str = "user-1",
     org_type: str | None = "rec",
 ) -> JwtUser:
-    """A human. Keycloak emits group paths with a leading slash.
+    """A human, as `JwtUser.from_token` would have built one.
 
-    The organization carries `type: ["rec"]` by default — flattened, which is the
-    shape a real token has — because an organization-scoped grant requires it.
-    `org_type=None` is the untyped organization a realm that never ran
-    `keycloak sync-orgs` produces.
+    Realm groups stay in `claims`, because that is where the policy reads them
+    from — with Keycloak's leading slash, which the SDK's reader strips. The
+    organization is passed **parsed**, the way `from_token` parses it: the claim
+    shapes it can arrive in are the SDK's problem and are tested there, and
+    re-testing them here would pin one service to another's parser.
+
+    `org_type` defaults to `"rec"` because a real REC organization is typed one
+    and an organization-scoped grant requires it. `org_type=None` is the untyped
+    organization a realm that never ran `keycloak sync-orgs` produces.
     """
     claims: dict = {"email": "operator@example.org", "preferred_username": "operator"}
     if realm:
         claims["groups"] = [f"/{g}" for g in realm]
+
+    organizations: list[Organization] = []
     if org:
-        org_claim: dict = {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
-        if org_type is not None:
-            org_claim["type"] = [org_type]
-        claims["organization"] = {org: org_claim}
-    return JwtUser(sub=sub, email=claims["email"], claims=claims)
+        claims["organization"] = {org: {"id": "org-uuid"}}
+        organizations.append(
+            Organization(alias=org, id="org-uuid", type=org_type, groups=list(groups))
+        )
+    return JwtUser(sub=sub, email=claims["email"], claims=claims, organizations=organizations)
 
 
 def service(*scopes: str) -> JwtUser:
@@ -140,19 +143,6 @@ def test_an_organization_of_another_type_grants_nothing(policy, tier):
     assert policy.capabilities(user, organization=ORG) == frozenset()
 
 
-def test_the_nested_attribute_shape_is_read_too(policy):
-    """Fixtures and the SDK docstring nest it under `attributes`; tokens flatten it."""
-    user = JwtUser(
-        sub="user-3",
-        email="op@example.org",
-        claims={
-            "email": "op@example.org",
-            "organization": {ORG: {"groups": ["/managers"], "attributes": {"type": ["rec"]}}},
-        },
-    )
-    assert policy.capabilities(user, organization=ORG) == MANAGER
-
-
 def test_untyped_organization_denial_says_so(policy):
     decision = policy.allow(
         operator(org=ORG, groups=("admins",), org_type=None),
@@ -167,13 +157,11 @@ def test_multiple_org_memberships_are_scoped_independently(policy):
     user = JwtUser(
         sub="user-2",
         email="op@example.org",
-        claims={
-            "email": "op@example.org",
-            "organization": {
-                ORG: {"id": "a", "type": ["rec"], "groups": ["/managers"]},
-                OTHER_ORG: {"id": "b", "type": ["rec"], "groups": ["/viewers"]},
-            },
-        },
+        claims={"email": "op@example.org", "organization": {ORG: {}, OTHER_ORG: {}}},
+        organizations=[
+            Organization(alias=ORG, id="a", type="rec", groups=["managers"]),
+            Organization(alias=OTHER_ORG, id="b", type="rec", groups=["viewers"]),
+        ],
     )
     assert policy.capabilities(user, organization=ORG) == MANAGER
     assert policy.capabilities(user, organization=OTHER_ORG) == VIEWER
@@ -397,68 +385,3 @@ def test_missing_policy_bundle_is_permissive_only_when_asked(tmp_path, monkeypat
     decision = broken.allow(operator(), Capability.SUBMISSIONS_PURGE, organization=ORG)
     assert decision.allowed
     assert decision.reason == "policy-engine-unavailable-permissive"
-
-
-# ---------------------------------------------------------------------------
-# Claim readers
-# ---------------------------------------------------------------------------
-
-
-class TestClaimReaders:
-    def test_realm_groups_strips_slashes_and_deduplicates(self):
-        assert realm_groups({"groups": ["/managers", "managers", "/viewers"]}) == [
-            "managers",
-            "viewers",
-        ]
-
-    def test_realm_groups_ignores_organization_groups(self):
-        """The whole reason these are read apart from `extract_groups`."""
-        claims = {"organization": {ORG: {"groups": ["/admins"]}}}
-        assert realm_groups(claims) == []
-
-    def test_realm_groups_tolerates_junk(self):
-        assert realm_groups({}) == []
-        assert realm_groups({"groups": None}) == []
-        assert realm_groups({"groups": "not-a-list"}) == []
-        assert realm_groups({"groups": [1, None, "/ok"]}) == ["ok"]
-
-    def test_organization_groups_are_per_alias(self):
-        claims = {
-            "organization": {
-                ORG: {"groups": ["/managers"]},
-                OTHER_ORG: {"groups": ["/viewers"]},
-            }
-        }
-        assert organization_groups(claims, ORG) == ["managers"]
-        assert organization_groups(claims, OTHER_ORG) == ["viewers"]
-        assert organization_groups(claims, "unknown") == []
-
-    def test_organization_groups_tolerate_the_no_groups_shape(self):
-        """KC omits `groups` unless the org membership mapper includes roles."""
-        claims = {"organization": {ORG: {"id": "x", "type": ["rec"]}}}
-        assert organization_groups(claims, ORG) == []
-
-    def test_organization_type_reads_the_flattened_claim(self):
-        """What a real Keycloak token carries, measured 2026-09-11."""
-        claims = {"organization": {ORG: {"type": ["rec"], "groups": ["/viewers"]}}}
-        assert organization_type(claims, ORG) == "rec"
-
-    def test_organization_type_falls_back_to_the_nested_attribute(self):
-        claims = {"organization": {ORG: {"attributes": {"type": ["rec"]}}}}
-        assert organization_type(claims, ORG) == "rec"
-
-    def test_organization_type_accepts_a_bare_string(self):
-        claims = {"organization": {ORG: {"type": "REC "}}}
-        assert organization_type(claims, ORG) == "rec"
-
-    def test_organization_type_is_none_when_absent_or_junk(self):
-        assert organization_type({}, ORG) is None
-        assert organization_type({"organization": {ORG: {}}}, ORG) is None
-        assert organization_type({"organization": {ORG: {"type": []}}}, ORG) is None
-        assert organization_type({"organization": {ORG: {"type": [None]}}}, ORG) is None
-        assert organization_type({"organization": {ORG: {"type": ["rec"]}}}, OTHER_ORG) is None
-
-    def test_organization_aliases(self):
-        claims = {"organization": {OTHER_ORG: {}, ORG: {}}}
-        assert organization_aliases(claims) == sorted([ORG, OTHER_ORG])
-        assert organization_aliases({}) == []
