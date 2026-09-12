@@ -4,21 +4,27 @@ There are two, and the split is not historical — they are granted by different
 people for different things:
 
 ``svc-onboarding`` — ``OIDC_CLIENT_ID`` / ``OIDC_CLIENT_SECRET``
-    celine's own client, and the one that administers users in the realm.
-    Provisioning a participant's login is celine business, so the credential
-    that does it is celine's.
+    celine's own client, and the one that asks for a participant's login.
+    Provisioning a login in the celine realm is celine business, so the
+    credential that does it is celine's.
 
 ``svc-ds-onboarding`` — ``DS_ONBOARDING_CLIENT_ID`` / ``DS_ONBOARDING_CLIENT_SECRET``
     the dataspace's client, carrying the grants a dataspace deployment gives
     this service: the identity registry, the connector, the registry lookups.
 
-Keycloak provisioning used to be neither. It logged in as a *person* — a realm
-administrator's username and password, ``grant_type=password``, against the
-master realm — which meant the service facing the public wizard held a
-credential that could do anything to any realm, in order to create users in one.
-It now presents ``svc-onboarding``, whose service account is granted the members
-of one realm group — ``DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP`` — and nothing else
-in the realm. Not even the realm's user search: see ``keycloak_identity``.
+Keycloak provisioning used to be neither, and is now neither a Keycloak
+credential at all. It logged in as a *person* — a realm administrator's username
+and password, ``grant_type=password``, against the master realm — which meant
+the service facing the public wizard held a credential that could do anything to
+any realm, in order to create users in one. Then it presented ``svc-onboarding``
+under a fine-grained grant over one realm group, which was the narrowest shape
+Keycloak can express and still admin rights held by a public front door.
+
+**It holds no Keycloak right now.** ``svc-onboarding`` carries the scope
+``provisioning.participants.write``, and the login is created by
+``../celine-policies``' provisioning service — one writer, reachable only from
+inside the network. The token above is what that service checks the scope on;
+nothing here reaches the Admin API. See ``services.provisioning``.
 
 Providers cache and renew their own tokens, so one is built per client id per
 process.
@@ -53,8 +59,15 @@ def service_token_provider() -> OidcClientCredentialsProvider:
     return _provider_for(settings.ds_onboarding_client_id, settings.ds_onboarding_client_secret)
 
 
-def keycloak_admin_token_provider() -> OidcClientCredentialsProvider:
-    """The realm-facing identity: this service's own client, administering users."""
+def celine_token_provider() -> OidcClientCredentialsProvider:
+    """The celine-facing identity: this service's own client.
+
+    Was ``keycloak_admin_token_provider``, and the rename is the point of the
+    change that retired it. This token administers nothing — it carries
+    ``provisioning.participants.write`` and is presented to the provisioning
+    service, which is the thing that administers the realm. A name saying
+    "keycloak admin" would keep describing a grant this client no longer has.
+    """
     return _provider_for(settings.oidc_client_id, settings.oidc_client_secret)
 
 
@@ -77,9 +90,4 @@ def reset_token_providers() -> None:
 
 async def service_auth_headers() -> dict[str, str]:
     token = await service_token_provider().get_token()
-    return {"Authorization": f"Bearer {token.access_token}"}
-
-
-async def keycloak_admin_auth_headers() -> dict[str, str]:
-    token = await keycloak_admin_token_provider().get_token()
     return {"Authorization": f"Bearer {token.access_token}"}

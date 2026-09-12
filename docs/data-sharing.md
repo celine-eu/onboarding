@@ -299,7 +299,7 @@ Four things constrain it:
   revocation slot, and it is still the right one.
 - **The DID is bound to the realm that authenticated the member**, taken from
   their token's issuer — not `DATASPACE_KEYCLOAK_REALM`, which names the realm
-  the funnel *creates* users in. A member with no realm in their issuer is not
+  the approval funnel's accounts are *provisioned into*. A member with no realm in their issuer is not
   provisioned at all: the connector resolves subjects to data-plane identities
   through that mapping, and a DID bound to nothing is an identity that cannot be
   used and cannot be explained.

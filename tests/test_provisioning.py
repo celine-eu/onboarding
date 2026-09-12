@@ -1,0 +1,443 @@
+"""Provisioning the login, and what the rest of enablement is told about it.
+
+The login is the first effect of approval, and the *username* the account is
+created or found under is the value the REC registry needs: every self-service
+route there resolves a caller by matching `Member.user_id` against the token's
+`preferred_username`. So what this module reports is not a detail — it decides
+whether an approved participant can ever see their own membership (issue #1).
+
+**This exercises the wire, not a fake client.** The predecessor of this file
+mocked `httpx` and asserted against a Keycloak that behaved the way the measured
+one did; there is no Keycloak here any more, and what replaced it is a contract
+with one service. `respx` in front of the real `celine.sdk.provisioning` client
+is what makes the assertions about that contract — the route shape, the body,
+and which of its status codes means what — rather than about a stub somebody
+wrote to agree with the code.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import httpx
+import pytest
+import respx
+
+from celine.onboarding.services import provisioning as pv
+from celine.onboarding.services.errors import ConfigurationError
+
+PROVISIONING = "http://provisioning.test"
+COMMUNITY = "greenland"
+
+
+def _sub(**overrides):
+    base = dict(
+        ref="20260727-abcd",
+        rec_slug="example",
+        email="Alice.Rossi@example.org",
+        first_name="Alice",
+        last_name="Rossi",
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.fixture()
+def bound(bind_rec):
+    """A REC whose manifest declares the registry community to key accounts on."""
+    manifest = bind_rec("example")
+    manifest["rec_registry"] = {"community": COMMUNITY, "default_area": "north"}
+    return manifest
+
+
+@pytest.fixture()
+def enabled(monkeypatch):
+    """`PROVISIONING_URL` set, and a client that presents a static token.
+
+    The client is built here rather than through `_get_client` so the test does
+    not need an OIDC provider to mint anything — which client is presented is a
+    separate question, asked in `TestWhichIdentityAsksForTheLogin`.
+    """
+    from celine.sdk.provisioning import ProvisioningClient
+
+    monkeypatch.setattr(pv.settings, "provisioning_url", PROVISIONING)
+    pv.reset_client()
+    monkeypatch.setattr(
+        pv,
+        "_client",
+        ProvisioningClient(base_url=PROVISIONING, default_token="service-account-token"),
+    )
+    yield
+    pv.reset_client()
+
+
+@pytest.fixture()
+def api():
+    with respx.mock(base_url=PROVISIONING, assert_all_called=False) as mock:
+        yield mock
+
+
+def upsert_route(api, *, community=COMMUNITY, key="20260727-abcd", **body):
+    payload = {"user_id": "kc-uuid-1", "username": "alice.rossi@example.org", "created": True}
+    payload.update(body)
+    return api.put(f"/participants/{community}/{key}").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+
+def disable_route(api, *, community=COMMUNITY, key="20260727-abcd", **body):
+    payload = {"user_id": "kc-uuid-1", "username": "alice.rossi@example.org", "changed": True}
+    payload.update(body)
+    return api.post(f"/participants/{community}/{key}/disable").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+
+# ── whether a login is provisioned at all ─────────────────────────────────────
+
+
+class TestWhetherThereIsAProvisioningService:
+    """An address is the gate, not a flag beside it.
+
+    The same shape `REC_REGISTRY_URL` and `DS_CONNECTOR_URL` already have here.
+    A flag saying logins are provisioned while no address is configured is not a
+    configuration, it is a contradiction — and it is the one the removed
+    `DATASPACE_KEYCLOAK_ENABLED` could express.
+    """
+
+    def test_no_url_means_no_login(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        assert pv.provisioning_enabled() is False
+
+    def test_whitespace_is_not_an_address(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "   ")
+        assert pv.provisioning_enabled() is False
+
+    def test_an_url_enables_it(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "provisioning_url", PROVISIONING)
+        assert pv.provisioning_enabled() is True
+
+    def test_reading_the_url_without_one_is_a_configuration_error(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        with pytest.raises(ConfigurationError) as exc:
+            pv.provisioning_url()
+        assert "PROVISIONING_URL" in str(exc.value)
+
+    def test_a_trailing_slash_is_dropped(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "http://provisioning:8010/")
+        assert pv.provisioning_url() == "http://provisioning:8010"
+
+    async def test_a_disabled_deployment_provisions_nothing(self, monkeypatch, bound):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        assert await pv.provision_participant(_sub()) is None
+
+
+# ── the community the account is keyed on ─────────────────────────────────────
+
+
+class TestTheCommunity:
+    """`rec_registry.community`, and no second answer to which community.
+
+    The provisioning service files the account into that community's Keycloak
+    organization, and the sweep that later checks the filing reads the
+    community's own id from the registry export. A different alias here would
+    put a participant in an organization nothing looks at.
+    """
+
+    async def test_it_is_the_registry_binding(self, bound):
+        assert await pv.participant_community("example") == COMMUNITY
+
+    async def test_no_registry_block_means_no_community(self, bind_rec):
+        bind_rec("plain")
+        assert await pv.participant_community("plain") is None
+
+    async def test_a_rec_with_no_binding_gets_no_login(self, monkeypatch, bind_rec, enabled):
+        """The narrowing this change makes, asserted rather than implied.
+
+        Revocation resolves `(community, key)` through the registry export, so a
+        login provisioned for a REC with no registry could never be revoked
+        through this seam. A missing login is the better of the two.
+        """
+        bind_rec("plain")
+        assert await pv.provision_participant(_sub(rec_slug="plain")) is None
+
+
+# ── the upsert ────────────────────────────────────────────────────────────────
+
+
+class TestProvisioningAParticipant:
+    async def test_it_puts_the_community_and_the_member_key(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub())
+        assert route.called
+        assert route.calls[0].request.url.path == f"/participants/{COMMUNITY}/20260727-abcd"
+
+    async def test_the_address_is_normalised(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(email="  Alice.Rossi@Example.ORG "))
+        assert json.loads(route.calls[0].request.content)["email"] == "alice.rossi@example.org"
+
+    async def test_the_names_travel(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub())
+        body = json.loads(route.calls[0].request.content)
+        assert body["first_name"] == "Alice"
+        assert body["last_name"] == "Rossi"
+
+    async def test_blank_names_are_omitted_rather_than_sent_empty(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(first_name="  ", last_name=None))
+        body = json.loads(route.calls[0].request.content)
+        assert body.get("first_name") is None
+        assert body.get("last_name") is None
+
+    async def test_the_token_is_presented(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub())
+        assert route.calls[0].request.headers["Authorization"] == "Bearer service-account-token"
+
+    async def test_the_username_comes_back_from_the_service(self, bound, enabled, api):
+        """Read back, never computed.
+
+        An account that already existed may authenticate under a convention
+        nobody here chose — a participant seeded from a registry file, or one
+        made by hand. Computing the name from the address would be right for
+        every account the platform created and silently wrong for every account
+        it adopted, and the value is what reaches `Member.user_id`.
+        """
+        upsert_route(api, username="gl-00001", created=False)
+        result = await pv.provision_participant(_sub())
+        assert result.username == "gl-00001"
+        assert result.created is False
+
+    async def test_the_user_id_is_the_keycloak_uuid(self, bound, enabled, api):
+        upsert_route(api, user_id="3f1c-uuid")
+        result = await pv.provision_participant(_sub())
+        assert result.user_id == "3f1c-uuid"
+
+    async def test_a_submission_with_no_address_cannot_be_provisioned(self, bound, enabled, api):
+        upsert_route(api)
+        with pytest.raises(ValueError) as exc:
+            await pv.provision_participant(_sub(email=""))
+        assert "no email" in str(exc.value)
+
+
+class TestWhenProvisioningRefuses:
+    """Two audiences, and one message would serve neither.
+
+    A missing scope or credential is a platform operator's to fix and reads as
+    an unactionable sentence on a REC operator's screen, so it is raised as
+    `ConfigurationError` — which the enablement runner already keeps out of the
+    step row and puts in the log. An outage is not.
+    """
+
+    async def test_no_scope_is_a_configuration_error(self, bound, enabled, api):
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=httpx.Response(403, json={"detail": "requires scope '…'"})
+        )
+        with pytest.raises(ConfigurationError) as exc:
+            await pv.provision_participant(_sub())
+        assert "provisioning.participants.write" in str(exc.value)
+
+    async def test_a_bad_credential_is_a_configuration_error(self, bound, enabled, api):
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=httpx.Response(401, json={"detail": "invalid token"})
+        )
+        with pytest.raises(ConfigurationError) as exc:
+            await pv.provision_participant(_sub())
+        assert "OIDC_CLIENT_SECRET" in str(exc.value)
+
+    async def test_a_dependency_failure_is_an_ordinary_failure(self, bound, enabled, api):
+        """`502` is Keycloak having failed, not a refusal — and it is the one
+        status here worth retrying, which is what the step row is for."""
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=httpx.Response(502, json={"detail": "keycloak unreachable"})
+        )
+        with pytest.raises(ValueError) as exc:
+            await pv.provision_participant(_sub())
+        assert not isinstance(exc.value, ConfigurationError)
+        assert "502" in str(exc.value)
+
+    async def test_the_refusal_body_is_not_shown_to_the_operator(self, bound, enabled, api, caplog):
+        """It is written for whoever runs the provisioning service.
+
+        The step error reaches every REC operator with a review queue, so what
+        the body says about the realm, the client or the request goes to the log
+        and the status is what somebody can act on.
+        """
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=httpx.Response(502, json={"detail": "realm celine: connection refused"})
+        )
+        with caplog.at_level("WARNING"):
+            with pytest.raises(ValueError) as exc:
+                await pv.provision_participant(_sub())
+        assert "connection refused" not in str(exc.value)
+        assert "connection refused" in caplog.text
+
+
+# ── revocation ────────────────────────────────────────────────────────────────
+
+
+class TestRevokingALogin:
+    async def test_it_posts_the_disable_route(self, bound, enabled, api):
+        route = disable_route(api)
+        await pv.disable_participant(_sub())
+        assert route.called
+        assert route.calls[0].request.url.path == f"/participants/{COMMUNITY}/20260727-abcd/disable"
+
+    async def test_a_revocation_that_happened_says_so(self, bound, enabled, api):
+        disable_route(api, changed=True, username="alice.rossi@example.org")
+        assert "disabled login alice.rossi@example.org" == await pv.disable_participant(_sub())
+
+    async def test_one_already_in_force_is_not_reported_as_new(self, bound, enabled, api):
+        disable_route(api, changed=False, username="alice.rossi@example.org")
+        detail = await pv.disable_participant(_sub())
+        assert "already disabled" in detail
+
+    async def test_no_account_counts_as_done(self, bound, enabled, api):
+        """The same reading `deactivate_member` gives a 404.
+
+        There is nothing left to revoke either way, and refusing would leave the
+        local record claiming something that is no longer true.
+        """
+        api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
+            return_value=httpx.Response(404, json={"detail": "greenland has no member '…'"})
+        )
+        assert await pv.disable_participant(_sub()) == "no account to disable"
+
+    async def test_a_refusal_still_raises(self, bound, enabled, api):
+        api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
+            return_value=httpx.Response(403, json={"detail": "requires scope '…'"})
+        )
+        with pytest.raises(ConfigurationError):
+            await pv.disable_participant(_sub())
+
+    async def test_nothing_to_revoke_without_a_service(self, monkeypatch, bound):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        assert await pv.disable_participant(_sub()) == "no provisioning service is configured"
+
+    async def test_nothing_to_revoke_without_a_binding(self, bind_rec, enabled):
+        bind_rec("plain")
+        detail = await pv.disable_participant(_sub(rec_slug="plain"))
+        assert "no rec_registry binding" in detail
+
+
+# ── the fallback username, and the realm ──────────────────────────────────────
+
+
+class TestTheFallbackUsername:
+    """A proxy for a step running without provisioning in the same pass.
+
+    A retry of registry registration alone has no returned value to use, which
+    is why `member_user_id` falls back to this rather than requiring one.
+    """
+
+    def test_it_is_the_normalised_address(self):
+        assert pv.participant_username(_sub()) == "alice.rossi@example.org"
+
+    def test_no_address_means_no_proxy(self):
+        assert pv.participant_username(_sub(email="")) is None
+
+
+class TestTheRealmTheAccountLivesIn:
+    """Reported, not administered.
+
+    The dataspace step tells the identity registry where to find the account,
+    and the answer has to match where the provisioning service put it.
+    """
+
+    def test_it_defaults_to_the_realm_the_issuer_names(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "dataspace_keycloak_realm", "")
+        monkeypatch.setattr(pv.settings, "oidc_base_url", "http://kc.test/realms/celine")
+        assert pv.keycloak_realm() == "celine"
+
+    def test_an_explicit_realm_wins(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "dataspace_keycloak_realm", "dataspaces")
+        monkeypatch.setattr(pv.settings, "oidc_base_url", "http://kc.test/realms/celine")
+        assert pv.keycloak_realm() == "dataspaces"
+
+    def test_an_issuer_naming_no_realm_needs_one_stated(self, monkeypatch):
+        monkeypatch.setattr(pv.settings, "dataspace_keycloak_realm", "")
+        monkeypatch.setattr(pv.settings, "oidc_base_url", "https://auth.example.com/")
+        with pytest.raises(ConfigurationError) as exc:
+            pv.keycloak_realm()
+        assert "DATASPACE_KEYCLOAK_REALM" in str(exc.value)
+
+
+class TestWhichIdentityAsksForTheLogin:
+    """celine's own client, not the dataspace's.
+
+    They are granted by different people for different things: the dataspace's
+    client carries what a dataspace deployment gives this service, and asking
+    for a login in celine's realm is not one of those. The two are kept apart so
+    that neither grant can be reached with the other's secret.
+
+    Note what this client no longer is. It used to administer the realm under a
+    fine-grained grant over one group, which is why the reader it is fetched
+    with was called `keycloak_admin_token_provider`. It holds no Keycloak right
+    now — only the scope `provisioning.participants.write`.
+    """
+
+    @pytest.fixture()
+    def both_clients(self, monkeypatch):
+        from celine.onboarding.services import service_auth
+
+        service_auth.reset_token_providers()
+        monkeypatch.setattr(service_auth.settings, "oidc_base_url", "http://kc.test/realms/celine")
+        monkeypatch.setattr(service_auth.settings, "oidc_client_id", "svc-onboarding")
+        monkeypatch.setattr(service_auth.settings, "oidc_client_secret", "onboarding-secret")
+        monkeypatch.setattr(service_auth.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
+        monkeypatch.setattr(service_auth.settings, "ds_onboarding_client_secret", "ds-secret")
+        yield service_auth
+        service_auth.reset_token_providers()
+
+    def test_provisioning_uses_celines_client(self, both_clients):
+        # `_client_id` is the SDK provider's own attribute; there is no public
+        # reader for it, and which client is being presented is the whole point.
+        assert both_clients.celine_token_provider()._client_id == "svc-onboarding"
+
+    def test_the_dataspace_keeps_its_own(self, both_clients):
+        assert both_clients.service_token_provider()._client_id == "svc-ds-onboarding"
+
+    def test_they_are_separate_credentials(self, both_clients):
+        assert both_clients.celine_token_provider() is not both_clients.service_token_provider()
+
+    def test_an_unconfigured_issuer_is_a_configuration_error(self, monkeypatch, both_clients):
+        monkeypatch.setattr(both_clients.settings, "oidc_base_url", "")
+        both_clients.reset_token_providers()
+
+        with pytest.raises(ConfigurationError):
+            both_clients.celine_token_provider()
+
+
+class TestNothingHereAdministersKeycloak:
+    """The property the whole change exists to establish, asserted once.
+
+    A fallback path to the Admin API is a grant somebody has to keep granting,
+    so there is none — and this is the test that fails if one comes back.
+    """
+
+    def test_the_admin_api_module_is_gone(self):
+        with pytest.raises(ModuleNotFoundError):
+            import celine.onboarding.services.keycloak_identity  # noqa: F401
+
+    def test_no_source_file_reaches_the_admin_api(self):
+        import pathlib
+
+        root = pathlib.Path(pv.__file__).resolve().parent.parent
+        offenders = [
+            path.relative_to(root)
+            for path in root.rglob("*.py")
+            if "/admin/realms/" in path.read_text()
+        ]
+        assert offenders == []
+
+    def test_the_removed_settings_are_not_readable(self):
+        for name in (
+            "dataspace_keycloak_enabled",
+            "dataspace_keycloak_base_url",
+            "dataspace_keycloak_participants_group",
+            "dataspace_keycloak_update_existing",
+        ):
+            assert not hasattr(pv.settings, name), name

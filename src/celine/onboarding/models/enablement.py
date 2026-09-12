@@ -26,10 +26,20 @@ class EnablementStep(enum.StrEnum):
     """The steps, in the order they must run.
 
     The order is load-bearing, not stylistic. The registry keys a member on
-    `(community, user_id)`, so the Keycloak user has to exist first; the dataspace
+    `(community, user_id)`, so the login has to exist first; the dataspace
     identity is last because it is the one that can be retried afterwards.
+
+    **Undoing them is not this order reversed** — see `enablement.REVOKE_ORDER`,
+    where the login is closed before the member is deactivated.
     """
 
+    #: Still named for Keycloak, and not renamed. The value is **persisted** in
+    #: `submission_enablement_steps.step`, travels in the admin API's enablement
+    #: payload and is what `onboarding-cli admin enablement retry --step` takes,
+    #: so a rename is a migration plus a client change and not a tidy-up. It is
+    #: also still true: the step provisions a Keycloak account. What changed is
+    #: who writes it — `../celine-policies`' provisioning service, not this
+    #: service, which holds no Keycloak grant.
     KEYCLOAK_USER = "keycloak_user"
     REC_REGISTRY_MEMBER = "rec_registry_member"
     DATASPACE_IDENTITY = "dataspace_identity"

@@ -146,15 +146,20 @@ async def _validate_dataspace_config() -> None:
             )
 
 
-def _validate_keycloak_config() -> None:
+def _validate_provisioning_config() -> None:
     """Refuse to start when approving somebody could not give them a login.
 
     Provisioning is step 1 of enablement and fails closed, so a missing setting
     here does not degrade anything — it stops a review, in front of an operator
     who can do nothing about it. Every other outbound dependency is checked at
     boot for that reason and this one was not.
+
+    The settings this used to check are gone with the Admin API calls they
+    configured. What is left is one address, one credential, and the two
+    families of leftover values that must not be allowed to look like
+    configuration.
     """
-    leftovers = [
+    credentials = [
         name
         for name, value in (
             ("DATASPACE_KEYCLOAK_ADMIN_USERNAME", settings.removed_keycloak_admin_username),
@@ -166,51 +171,77 @@ def _validate_keycloak_config() -> None:
         )
         if value
     ]
-    if leftovers:
+    if credentials:
         raise RuntimeError(
             "\n\n"
             "═══════════════════════════════════════════════════════════════\n"
-            f"  {', '.join(leftovers)} is set, and no longer does anything\n"
+            f"  {', '.join(credentials)} is set, and no longer does anything\n"
             "═══════════════════════════════════════════════════════════════\n\n"
             "Participant logins used to be provisioned by logging in as a\n"
             "Keycloak administrator: a person's username and password, against\n"
             "the master realm, in the environment of the service that serves the\n"
-            "public wizard. It is now done with this service's own service\n"
-            "account, which may administer the members of one group and\n"
-            "nothing else in the realm.\n\n"
+            "public wizard. They are now provisioned by celine-policies'\n"
+            "provisioning service, and this service administers no realm at all.\n\n"
             "Nothing reads these any more, and an administrator's password that\n"
             "nothing reads is still an administrator's password in a deployment's\n"
             "environment — so startup refuses it rather than leaving it there.\n\n"
             "  1. Remove them from your .env and environment\n"
             "  2. Rotate the credential: it has been readable by this process\n"
-            "  3. Declare the OIDC_CLIENT_ID service account's rights over the\n"
-            "     participants group in celine-policies' clients.yaml, and sync\n\n"
+            "  3. Set PROVISIONING_URL to reach the provisioning service\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 
-    if not settings.dataspace_keycloak_enabled:
-        return
-
-    from celine.onboarding.services.service_auth import issuer_realm
-
-    if (
-        not settings.dataspace_keycloak_base_url.strip()
-        and "/realms/" not in settings.oidc_base_url
-    ):
+    # The group-scoped grant's own settings. Inert rather than dangerous — but
+    # DATASPACE_KEYCLOAK_ENABLED=true reads as "participants are being given
+    # logins", and with nothing reading it none would be. That is the failure
+    # this refusal exists for, and the other three travel in the same .env.
+    grant = [
+        name
+        for name, value in (
+            ("DATASPACE_KEYCLOAK_ENABLED", settings.removed_keycloak_enabled),
+            ("DATASPACE_KEYCLOAK_BASE_URL", settings.removed_keycloak_base_url),
+            (
+                "DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP",
+                settings.removed_keycloak_participants_group,
+            ),
+            ("DATASPACE_KEYCLOAK_UPDATE_EXISTING", settings.removed_keycloak_update_existing),
+        )
+        if value
+    ]
+    if grant:
         raise RuntimeError(
             "\n\n"
             "═══════════════════════════════════════════════════════════════\n"
-            "  DATASPACE_KEYCLOAK_BASE_URL is required\n"
+            f"  {', '.join(grant)} is set, and no longer does anything\n"
             "═══════════════════════════════════════════════════════════════\n\n"
-            "DATASPACE_KEYCLOAK_ENABLED=true, so approving a participant has to\n"
-            "create their login before anything else can reference it. It is\n"
-            "normally left unset and taken from OIDC_BASE_URL, which here names\n"
-            f"no Keycloak realm: {settings.oidc_base_url!r}.\n\n"
-            "  1. Set DATASPACE_KEYCLOAK_BASE_URL in your .env file\n"
-            "  2. Or set DATASPACE_KEYCLOAK_ENABLED=false, which onboards\n"
-            "     participants without giving them a login\n\n"
+            "This service held a Keycloak grant over one realm group and created\n"
+            "participants into it. It holds no grant now: celine-policies runs a\n"
+            "provisioning service that is the only writer of participant\n"
+            "accounts, and this service calls it — which is also what finally\n"
+            "puts a participant in their community's Keycloak ORGANIZATION, the\n"
+            "claim every org-scoped policy resolves them by. No fine-grained\n"
+            "group permission can do that, which is why the grant went rather\n"
+            "than being narrowed again.\n\n"
+            "DATASPACE_KEYCLOAK_ENABLED=true is the dangerous one to leave: it\n"
+            "reads as 'participants are being given logins' and nothing reads it,\n"
+            "so none would be — silently, one approval at a time.\n\n"
+            "  1. Remove them from your .env and environment\n"
+            "  2. Set PROVISIONING_URL to the provisioning service's INTERNAL\n"
+            "     address (http://provisioning:8010 under compose). It must not\n"
+            "     have a public route: it holds realm-wide administration and is\n"
+            "     safe to hold it only because nothing outside can reach it\n"
+            "  3. Or leave PROVISIONING_URL unset, which onboards participants\n"
+            "     without giving them a login — what ENABLED=false used to mean\n\n"
+            "  DATASPACE_KEYCLOAK_REALM is unaffected and stays. It names the\n"
+            "  realm the account lives in for the dataspace step, and administers\n"
+            "  nothing.\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
+
+    if not settings.provisioning_url.strip():
+        return
+
+    from celine.onboarding.services.service_auth import issuer_realm
 
     if not settings.oidc_client_secret.strip():
         raise RuntimeError(
@@ -218,60 +249,22 @@ def _validate_keycloak_config() -> None:
             "═══════════════════════════════════════════════════════════════\n"
             "  OIDC_CLIENT_SECRET is required\n"
             "═══════════════════════════════════════════════════════════════\n\n"
-            "Provisioning a login is celine's own business, so it is done as\n"
-            "celine's own client rather than the dataspace's — and in place of\n"
-            "the administrator password it used to be done with. Without the\n"
-            "secret there is no token to present to the Admin API.\n\n"
+            "Giving somebody a login in the celine realm is celine's own\n"
+            "business, so the provisioning service is called as celine's own\n"
+            "client rather than the dataspace's. Without the secret there is no\n"
+            "token to present to it.\n\n"
             f"  1. Set OIDC_CLIENT_SECRET for client\n"
             f"     '{settings.oidc_client_id}' in your .env file\n"
-            "  2. Grant that client's service account the members of the\n"
-            f"     participants group ({settings.dataspace_keycloak_participants_group}):\n"
-            "     declare `admin_permissions` for it in celine-policies'\n"
-            "     clients.yaml and run `keycloak sync`\n\n"
+            "  2. Grant that client the scope 'provisioning.participants.write'\n"
+            "     and an audience mapper onto svc-provisioning: celine-policies\n"
+            "     declares both in clients.yaml, then run `keycloak sync`\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 
-    from celine.onboarding.services.keycloak_identity import ROLE_HIERARCHY_GROUPS
-
-    group = settings.dataspace_keycloak_participants_group.strip().rstrip("/")
-    if not group:
-        raise RuntimeError(
-            "\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-            "  DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP is required\n"
-            "═══════════════════════════════════════════════════════════════\n\n"
-            "This service may only create a user inside the group its Keycloak\n"
-            "grant names — creating one in no group at all is a realm-wide act,\n"
-            "and is refused. With no group there is nowhere to put a participant.\n\n"
-            "  1. Set DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP, or unset it to take\n"
-            "     the default of /participants\n"
-            "  2. Or set DATASPACE_KEYCLOAK_ENABLED=false, which onboards\n"
-            "     participants without giving them a login\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-        )
-
-    if group.lstrip("/").lower() in ROLE_HIERARCHY_GROUPS:
-        raise RuntimeError(
-            "\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-            f"  DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP={group} is an operator role\n"
-            "═══════════════════════════════════════════════════════════════\n\n"
-            "admins, managers, editors and viewers are the operator hierarchy,\n"
-            "and this console reads a realm-level admins or managers as a grant\n"
-            "over EVERY community on the deployment — no organization check.\n"
-            "Provisioning into either would make every participant an operator\n"
-            "of every REC.\n\n"
-            "editors and viewers are refused too, though they grant nothing at\n"
-            "realm level today: they are one capability-table edit away from\n"
-            "granting something, and a participant is the person a submission is\n"
-            "about, not somebody who reviews submissions at any tier.\n\n"
-            "  1. Name a group that appears in no capability table — the default\n"
-            "     /participants is one, which is why it is the default\n\n"
-            "═══════════════════════════════════════════════════════════════\n"
-        )
-
-    # An unset DATASPACE_KEYCLOAK_REALM means "the realm the issuer names", so
-    # there is nothing to disagree with — see `keycloak_identity.keycloak_realm`.
+    # The realm is not administered from here, but it is still *reported*: the
+    # dataspace step tells the identity registry which realm the account lives
+    # in, and an unset DATASPACE_KEYCLOAK_REALM means "the realm the issuer
+    # names". A deployment whose issuer names none has to say.
     minting_realm = issuer_realm(settings.oidc_base_url)
     target_realm = settings.dataspace_keycloak_realm.strip()
 
@@ -281,10 +274,12 @@ def _validate_keycloak_config() -> None:
             "═══════════════════════════════════════════════════════════════\n"
             "  DATASPACE_KEYCLOAK_REALM is required\n"
             "═══════════════════════════════════════════════════════════════\n\n"
-            "It is normally left unset, because the realm whose users this\n"
-            "service provisions is the realm OIDC_BASE_URL issues from. That URL\n"
+            "It is normally left unset, because the realm a participant's\n"
+            "account lives in is the realm OIDC_BASE_URL issues from. That URL\n"
             f"names none: {settings.oidc_base_url!r} is not a Keycloak realm\n"
-            "issuer, so the realm has to be stated.\n\n"
+            "issuer, so the realm has to be stated — the dataspace step hands it\n"
+            "to the identity registry, which is how anything finds the account\n"
+            "again.\n\n"
             "  1. Set DATASPACE_KEYCLOAK_REALM in your .env file\n"
             "  2. Or point OIDC_BASE_URL at the realm, e.g.\n"
             "     http://keycloak.example/realms/<realm>\n\n"
@@ -297,18 +292,20 @@ def _validate_keycloak_config() -> None:
             "═══════════════════════════════════════════════════════════════\n"
             f"  Keycloak realms disagree: '{minting_realm}' vs '{target_realm}'\n"
             "═══════════════════════════════════════════════════════════════\n\n"
-            "Provisioning presents this service's own token to the Admin API,\n"
-            f"and OIDC_BASE_URL mints that token in realm '{minting_realm}'. A\n"
-            "client-credentials token administers the realm it was issued by and\n"
-            f"no other, so every call against '{target_realm}' would be refused.\n\n"
-            "The addresses have to agree too: Keycloak checks a token's issuer\n"
-            "against the address the request arrived on, and answers 401 when\n"
-            "they differ. Leaving DATASPACE_KEYCLOAK_BASE_URL unset takes it\n"
-            "from OIDC_BASE_URL, which is always an address that agrees.\n\n"
+            "The argument has changed and the refusal has not. It used to be\n"
+            "that this service presented its own token to the Admin API, and a\n"
+            "client-credentials token administers the realm that minted it and\n"
+            "no other. It administers nothing now — but the two values still\n"
+            "have to agree, for a different reason:\n\n"
+            f"  the provisioning service writes the account into '{minting_realm}',\n"
+            f"  the realm this deployment's own issuer names, and the dataspace\n"
+            f"  step would then tell the identity registry it is in\n"
+            f"  '{target_realm}'. Every lookup that follows looks in the wrong\n"
+            "  realm and finds nothing — with no error, because an absent user\n"
+            "  and a user in another realm are the same answer.\n\n"
             f"  1. Set DATASPACE_KEYCLOAK_REALM={minting_realm}, or unset it — it\n"
             "     defaults to the realm the issuer names\n"
-            "  2. Or point OIDC_BASE_URL at the realm whose users this service\n"
-            "     provisions\n\n"
+            "  2. Or point OIDC_BASE_URL at the realm the participants are in\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 
@@ -449,7 +446,7 @@ async def lifespan(app: FastAPI):
 
     await _validate_dataspace_config()
     _validate_admin_config()
-    _validate_keycloak_config()
+    _validate_provisioning_config()
 
     if settings.require_encryption and not settings.encryption_key:
         raise RuntimeError(

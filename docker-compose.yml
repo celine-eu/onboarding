@@ -51,23 +51,20 @@ services:
       OIDC_BASE_URL: ${OIDC_BASE_URL:-http://host.docker.internal:8080/realms/celine}
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
       DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
-      # Unset means the origin of OIDC_BASE_URL, which is the address Keycloak
-      # will accept the token at. Only override it where Keycloak serves the
-      # same issuer at another address.
-      DATASPACE_KEYCLOAK_BASE_URL: ${DATASPACE_KEYCLOAK_BASE_URL:-}
+      # celine-policies' provisioning service, which is the only writer of
+      # participant accounts in the realm and the only way this service gives
+      # anybody a login — it holds no Keycloak grant of its own. INTERNAL
+      # address only: the service has no public route and must not be given one.
+      # Unset onboards participants without a login, which is supported.
+      PROVISIONING_URL: ${PROVISIONING_URL:-http://provisioning:8010}
       # Admin console. The issuer above is shared: operator tokens and the
       # service's own outbound M2M tokens come from the same realm.
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-svc-onboarding}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-svc-onboarding}
-      # Also the credential Keycloak user provisioning presents: celine's own
-      # client, whose service account may administer the members of the
-      # participants group and nothing else in the realm.
-      # Required when DATASPACE_KEYCLOAK_ENABLED=true.
+      # Also the credential presented to the provisioning service: celine's own
+      # client, carrying the scope `provisioning.participants.write` and no
+      # Keycloak right at all. Required when PROVISIONING_URL is set.
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      # The group that grant is scoped to, and the group participants are
-      # created in — celine-policies declares both. Never one of admins,
-      # managers, editors or viewers: those are operator roles.
-      DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP: ${DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP:-/participants}
       POLICIES_DIR: /app/policies
     env_file:
       - .env

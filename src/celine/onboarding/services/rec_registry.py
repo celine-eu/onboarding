@@ -37,7 +37,7 @@ from typing import Any
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import template_service
-from celine.onboarding.services.keycloak_identity import keycloak_username as _username_from_email
+from celine.onboarding.services.provisioning import participant_username as _username_from_email
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +117,9 @@ def member_user_id(submission: Submission, keycloak_username: str | None = None)
     work.
 
     ``keycloak_username`` is the value provisioning read back, and it wins. The
-    normalised email is the fallback: it is what this service sets as the username
-    on every user it creates, so it is right for all of them and wrong only for a
-    user it adopted from another convention. ``submission.ref`` is the last
+    normalised email is the fallback: it is what the provisioning service names
+    an account it *creates*, so it is right for all of them and wrong only for
+    an account adopted from another convention. ``submission.ref`` is the last
     resort — it is the broken value, kept only because there is nothing better
     when a submission has no email at all, and logged so it is not silent.
     """

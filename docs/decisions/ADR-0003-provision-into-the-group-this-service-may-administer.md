@@ -1,7 +1,7 @@
 # ADR-0003 — Provisioning reaches one group, and finds people by scanning it
 
 **Date:** 2026-09-10
-**Status:** accepted
+**Status:** superseded by [ADR-0004](ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md)
 
 Completes [ADR-0002](ADR-0002-administer-the-realm-as-celines-own-client.md), which chose
 *which* client administers the realm and said the grant should be scoped to a group "where

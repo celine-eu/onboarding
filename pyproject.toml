@@ -25,7 +25,13 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "boto3>=1.35",
-    # 1.17.3 is the first release carrying the JWT claim readers this service's
+    # 1.18.0 is the first release carrying `celine.sdk.provisioning`, which is
+    # the only way this service reaches Keycloak at all: it holds no realm grant
+    # of its own any more and calls `../celine-policies`' provisioning service
+    # instead. There is no fallback path to fall back to, so this is a floor and
+    # not a preference — see docs/decisions/ADR-0004.
+    #
+    # 1.17.3 remains the floor for the JWT claim readers this service's
     # authorization is built on: `realm_groups`, which reads the realm level
     # apart from the organization level, and `Organization.type`/`.groups`,
     # which the access policy checks per community. 1.16.0 resolves and then
@@ -33,7 +39,7 @@ dependencies = [
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
-    "celine-sdk>=1.17.3",
+    "celine-sdk>=1.18.0",
     "phonenumbers>=8.13",
 ]
 
@@ -46,6 +52,19 @@ packages = ["src/celine"]
 
 [tool.hatch.build.sources]
 "src" = ""
+
+# **1.18.0 is not on PyPI yet.** `celine.sdk.provisioning` exists only in the
+# workspace checkout, so until that release is cut the dependency above resolves
+# to nothing and this entry is what satisfies it: the sibling repository, in
+# editable mode, so a fix over there is a fix here without a reinstall.
+#
+# Delete this block the day 1.18.0 is published. It is not a development
+# convenience — it is a pin to whatever is on one machine's disk, and a build
+# that quietly used a colleague's working tree instead of a release is the
+# failure it will cause. `uv sync` re-reads it; `uv lock --upgrade-package
+# celine-sdk` is what moves back to the registry.
+[tool.uv.sources]
+celine-sdk = { path = "../celine-sdk", editable = true }
 
 [project.scripts]
 onboarding-cli = "celine.onboarding.cli.main:app"

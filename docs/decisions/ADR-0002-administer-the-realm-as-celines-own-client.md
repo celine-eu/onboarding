@@ -1,7 +1,7 @@
 # ADR-0002 — The realm is administered by celine's own client, not the dataspace's
 
 **Date:** 2026-09-10
-**Status:** accepted
+**Status:** superseded by [ADR-0004](ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md)
 
 Supersedes [ADR-0001](ADR-0001-provision-logins-as-the-service.md), whose reasoning
 about the administrator credential stands and whose choice of *which* service account

@@ -4,14 +4,14 @@
 
 Dataspace identity provisioning needs **two gates open**: `DATASPACE_ENABLED` for the deployment, and a `dataspace:` block in that community's manifest. A REC without a block gets no credential even when the deployment is enabled — issuing one would hand somebody an identity belonging to no organization, which the consent endpoints refuse to act on anyway.
 
-Keycloak user creation is a **separate** gate (`DATASPACE_KEYCLOAK_ENABLED`), so it can be used on its own: participants get a login, and no dataspace is involved.
+Provisioning a participant's **login** is a separate gate (`PROVISIONING_URL`), so it can be used on its own: participants get a login, and no dataspace is involved. It is not a Keycloak call from here -- see [Participant login settings](#participant-login-settings).
 
 When both gates are open and a submission is approved, the system provisions a dataspace identity for that user. This includes:
 
 - A **DID** (Decentralized Identifier) for the user as a data subject
 - A **Verifiable Credential** (VC) binding the user to a participant organization
 - An **organization membership** registering the DID as a member of the REC in the identity-registry
-- A **Keycloak `dataspace_did` attribute** linking the user's login identity to their DID
+- A **Keycloak `dataspace_did` attribute** linking the user's login identity to their DID (written by the identity registry, not from here)
 - **Data-sharing shares** provisioned to the dataspace connector for the offers the user consented to during onboarding (optional; runs last and is non-fatal)
 
 The membership matters as much as the credential: ds consent endpoints (`/consent/my/shares`) check membership before allowing a data subject to manage sharing preferences. A user with a VC but no membership holds a valid identity that cannot do anything.
@@ -24,22 +24,24 @@ Onboarding stores only the subject ID, DID, credential ID, and issuance timestam
 
 When a submission is approved, `DATASPACE_ENABLED` is true and the REC declares a `dataspace:` block:
 
-1. `provision_keycloak_user()` creates or locates the Keycloak user and returns the `user_id`.
+1. `provision_participant()` asks the provisioning service to ensure the account and returns its Keycloak `user_id` and `username`.
 2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak, then provisions any data-sharing shares to the connector as its last step.
 
 ```mermaid
 sequenceDiagram
     participant Admin
     participant Onboarding
+    participant Prov as provisioning
     participant IdRegistry as identity-registry
     participant KC as Keycloak
     participant Connector as ds-connector
 
     Admin->>Onboarding: PATCH /api/admin/submissions/{id}<br/>status: approved
 
-    Note over Onboarding: provision_keycloak_user()
-    Onboarding->>KC: Create/locate user
-    KC-->>Onboarding: user_id
+    Note over Onboarding: provision_participant()
+    Onboarding->>Prov: PUT /participants/{community}/{key}<br/>{email, first_name, last_name}
+    Prov->>KC: Ensure account, organization, org group
+    Prov-->>Onboarding: {user_id, username, created}
 
     Note over Onboarding: provision_user_identity()
 
@@ -80,7 +82,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 ### Step-by-step
 
-1. **Keycloak user provisioning** -- `provision_keycloak_user()` creates the user in Keycloak (or finds an existing one) and returns the `user_id`. This runs before identity provisioning so the user ID is available for the sync step.
+1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
 
 2. **Subject resolution** -- `GET /users/resolve?email=…&derive=true` asks the identity-registry who this person is. It is the sole authority on the email-to-`subject_id` mapping: an existing one comes back, and a new one is derived deterministically, keyed by the registry's own `ENCRYPTION_KEY`, so first-time issuance has an identifier without onboarding inventing one. A missing mapping is therefore **not** a `404`. Skipped when `DATASPACE_SUBJECT_SOURCE` is `submission_ref`, where the identifier comes from the submission instead.
 
@@ -100,9 +102,9 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
     **No role is sent.** A membership says *where* somebody belongs; what they are there is a `communityRole` claim on their data-subject credential, changed by reissuing it. The registry once accepted a role here and stored it in a column nothing read, and has since dropped the column -- so a manifest's `dataspace.membership_role` recorded nothing while reading as though it did. The key is gone; a manifest that still carries it is ignored rather than rejected.
 
-6. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID.
+6. **Keycloak DID sync** -- `POST /admin/keycloak/sync` tells the identity-registry to push the `dataspace_did` attribute onto the Keycloak user. This links the user's login identity to their dataspace DID. The identity registry writes it, not this service: the attribute is the one Keycloak write in this flow that never went through the participants grant, which is why it survived the grant's removal unchanged.
 
-    It also sends the **username** Keycloak returned at step 1 -- the same value step 2 of enablement wrote into `Member.user_id`. That is what lets a dataspace decision be applied to rows: the connector translates consenting subject DIDs into usernames through this registry (`POST /users/identities`, which reads `KeycloakMapping.username` and falls back to `email`) and hands them to the celine `dataset-api`, which resolves them against `Member.user_id`. Sending it keeps both ends naming one person the same way. Omitting it leaves the email fallback standing, which is correct only while username == email -- this service's own convention for users it creates, and **not** the platform's: `_find_user` also adopts a Keycloak user whose username is something else, and for them the row filter would resolve nobody and the data plane would deny rows a person had consented to. The value is optional because a retry of step 3 alone has no provisioning result to read it from; the key is then omitted rather than sent as null, so a good value already in the registry is never overwritten with nothing.
+    It also sends the **username** Keycloak returned at step 1 -- the same value step 2 of enablement wrote into `Member.user_id`. That is what lets a dataspace decision be applied to rows: the connector translates consenting subject DIDs into usernames through this registry (`POST /users/identities`, which reads `KeycloakMapping.username` and falls back to `email`) and hands them to the celine `dataset-api`, which resolves them against `Member.user_id`. Sending it keeps both ends naming one person the same way. Omitting it leaves the email fallback standing, which is correct only while username == email -- the convention the provisioning service uses for an account it *creates*, and **not** the platform's: it also adopts an account whose username is something else, and for them the row filter would resolve nobody and the data plane would deny rows a person had consented to. The value is optional because a retry of step 3 alone has no provisioning result to read it from; the key is then omitted rather than sent as null, so a good value already in the registry is never overwritten with nothing.
 
 7. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping.
 
@@ -134,115 +136,98 @@ The same token carries **`rec-registry.lookup`** for the other half of that expo
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_ENABLED` | `false` | Deployment-wide gate. When `false`, no dataspace identity provisioning happens anywhere. Keycloak user creation is gated separately by `DATASPACE_KEYCLOAK_ENABLED`, so it can be used on its own to give participants a login without any dataspace. |
+| `DATASPACE_ENABLED` | `false` | Deployment-wide gate. When `false`, no dataspace identity provisioning happens anywhere. Participant logins are gated separately by `PROVISIONING_URL`, so they can be used on their own to give participants a login without any dataspace. |
 | `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service (e.g. `http://identity-registry:8000`). Required when `DATASPACE_ENABLED=true`. |
 | `OIDC_BASE_URL` | *(none)* | OIDC issuer for M2M token acquisition — the **`celine` realm** (e.g. `http://keycloak.celine.localhost/realms/celine`). One realm for every outbound call this app makes; realm alignment converges there, so do not point it at the dataspaces realm. Required when `DATASPACE_ENABLED=true`. |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M authentication. |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M authentication. Required when `DATASPACE_ENABLED=true`. |
 
-### Keycloak user provisioning settings
+### Participant login settings
 
-This service **holds no Keycloak administrator credential**, and a deployment that
-gives it one is refused at boot. The Admin API is called as `OIDC_CLIENT_ID` /
-`OIDC_CLIENT_SECRET` against `OIDC_BASE_URL` -- **celine's own client**, not the
-dataspace's. The two identities this service holds are granted by different people
-for different things, and provisioning a login in celine's realm is celine's
-business:
+This service **holds no Keycloak grant at all**, and a deployment that gives it one is
+refused at boot. Approval asks `celine-policies`' **provisioning service** for the login
+instead -- one service, the only writer of participant accounts in the realm, reachable
+only from inside the network.
+
+It used to administer the realm itself, under a fine-grained admin permission over one
+group (`/participants`). That was the narrowest grant Keycloak can express and it was
+wrong twice over: a service facing the public wizard held admin rights over accounts, and
+it could not finish the job anyway -- a participant's community membership is a Keycloak
+**organization**, which the Organizations API owns and no fine-grained permission reaches.
+Accounts landed in a group and in no organization, which is the claim every org-scoped
+policy resolves them by. See
+[ADR-0004](decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md).
+
+The two identities this service holds are granted by different people for different
+things, and asking for a login in celine's realm is celine's business:
 
 | Identity | Is | Used for |
 |---|---|---|
-| `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Administering the members of the participants group |
+| `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Asking the provisioning service for a login -- a **scope**, not a Keycloak grant |
 | `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Identity registry, connector, registry lookups |
 
-### What it may do, which is one group of the realm
+### The two calls, and what they are keyed on
 
-Its service account holds no realm-management role. It holds a **fine-grained
-admin permission over a single group** -- the one
-`DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP` names, `/participants` by default:
-
-| Scope | What it is for |
+| Call | When |
 |---|---|
-| `manage-members` | Create the participant, refresh their profile, disable them |
-| `manage-membership` | Put them in the group -- creating one takes both scopes |
-| `view-members` | Read a member back, and find one who already has a login |
-| `view` | Resolve the group's own id, which every member call is addressed by |
+| `PUT /participants/{community}/{key}` | enablement step 1, on approval |
+| `POST /participants/{community}/{key}/disable` | revocation |
 
-It is not granted by hand. `celine-policies` declares it in `clients.yaml` under
-`admin_permissions`, and `keycloak sync` creates the group and the permission
-together. **A realm that has not been synced has neither**, and provisioning
-fails there -- see the refusals below, because a missing group and a missing
-grant look identical.
+`community` is the REC manifest's `rec_registry.community` and `key` is `submission.ref`
+-- exactly the pair this service already registers the member under. One alias from one
+place, because the provisioning service files the account into that community's Keycloak
+organization, and the sweep that later checks the filing reads the community's own id from
+the registry export.
 
-**What the service cannot do is the point.** Measured on Keycloak 26.6.0 holding
-exactly that grant: reading the realm's user list, reading or disabling an
-operator's account, resetting anybody's password outside the group, and creating
-a user in *no* group are all `403`. A leaked secret reaches the participants of
-this deployment and nothing else in the realm.
+The scope is `provisioning.participants.write`, declared for `svc-onboarding` in
+`celine-policies`' `clients.yaml` together with the audience mapper onto
+`svc-provisioning`. It is not granted by hand; `keycloak sync` applies it.
 
-Two consequences reach this service's code, and both were measured rather than
-assumed:
+**`username` comes back from the call and is never computed here.** The provisioning
+service reads it off the account, which may authenticate under a convention this platform
+never chose -- a participant seeded from a registry file, or an account made by hand. That
+value is what becomes the registry's `Member.user_id`; the response's `user_id` is the
+Keycloak uuid, which is a different thing with an unfortunately similar name.
 
-- **There is no user search.** `GET /users?username=` needs `Users: view` across
-  the realm. `GET /groups/{id}/members` is permitted, but it *ignores* `search`
-  and `exact` -- it answers 200 with every member however it is called. Finding a
-  participant is therefore a paged scan of the group, matched by this service.
-- **So a creation goes first.** Scanning before every approval would page the
-  whole group to discover what is almost always a new user, so `POST /users` runs
-  first and Keycloak's `409` is what triggers the scan.
+**A REC that declares no `rec_registry` block gets no login**, and step 1 says so.
+Revocation resolves `(community, key)` through the registry export, so a login provisioned
+for such a REC could never be revoked through this seam -- and the community alias would
+have to be invented, creating an organization no reconcile looks at. An unrevokable login
+is worse than an absent one.
 
-**A participant who exists outside the group cannot be adopted.** If the `409`
-turns out to belong to an account that is not in the group -- one made by hand, or
-by `celine-policies`' `sync-users`, which files its users elsewhere -- this
-service can neither read it nor move it, and the enablement step fails saying so.
-Adding that account to the group and retrying is what resolves it.
+**Revocation closes the login before it deactivates the member.** The registry export
+carries only `active` members, so the reverse order would make the disable a `404`: the
+login survives, the participant can still sign in, and the step row reports success
+because nothing failed. `enablement.REVOKE_ORDER` declares the order for that reason.
 
-**The group is not a membership model.** Community membership is the registry's
-`Member` row and the Keycloak organization; this group is a permission boundary.
-It must never be one of the operator role-hierarchy groups (`admins`, `managers`,
-`editors`, `viewers`): `policies/celine/onboarding/access.rego` reads a
-realm-level `admins` or `managers` as a grant over *every* community on the
-deployment, so provisioning into either would make every participant an operator
-everywhere. Startup refuses all four names, not just those two — a group that
-grants nothing today is one capability-table edit away from granting something,
-and a participant is not an operator of any tier.
-
-Both halves of the address are taken from `OIDC_BASE_URL`, and both for the same
-reason -- a token minted there is the only token that works anywhere else:
-
-- **The realm.** A client-credentials token administers the realm that minted it and
-  no other, so `DATASPACE_KEYCLOAK_REALM` defaults to the realm the issuer names, and
-  startup refuses a pair that disagrees.
-- **The host.** Keycloak checks a token's `iss` against the address the request
-  arrived on and answers **401** when they differ -- before it looks at any role. So
-  `DATASPACE_KEYCLOAK_BASE_URL` defaults to the issuer's origin. Override it only
-  where Keycloak is configured to serve the same issuer at the other address.
-
-The two refusals this earns are worth telling apart, and the server log names both:
+### What each refusal means
 
 | | Meaning |
 |---|---|
-| `401` | The address it arrived on is not the one that minted the token |
-| `403` | The token is valid and carries no rights over the participants group -- **or the group does not exist**, which a creation cannot tell apart |
-| `409` | The username or email is taken. By a member: adopted. By anybody else: the step fails, naming what a person has to do |
+| `401` | The credential did not verify. Check `OIDC_CLIENT_SECRET`. Reported as a misconfiguration -- a platform operator's to fix, not the reviewing operator's to read |
+| `403` | It verified and does not carry `provisioning.participants.write`. The `clients.yaml` declaration has not been synced. Also a misconfiguration |
+| `404` | On a revocation: no member under that key, or no account for one. Counted as done, because there is nothing left to revoke |
+| `502` | Keycloak or the registry failed behind the provisioning service. **A dependency, not a refusal** -- the retryable case the step row exists for |
 
-A `404` from `group-by-path` is the one call that distinguishes a missing group
-from a missing grant, and it is reported as a misconfiguration rather than a
-failed step.
+There is no `409` on this surface any more, and nothing to adopt by hand: the provisioning
+service has realm-wide reach, so an account created by anything else is found by address
+and adopted. ADR-0003's unreachable-duplicate case is gone with the grant that caused it.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATASPACE_KEYCLOAK_ENABLED` | `false` | Whether approval provisions a login at all. `false` is a supported deployment: participants are onboarded and given no login. |
-| `DATASPACE_KEYCLOAK_BASE_URL` | *(the origin of `OIDC_BASE_URL`)* | Base URL of the Keycloak whose Admin API is called. |
-| `DATASPACE_KEYCLOAK_REALM` | *(the realm `OIDC_BASE_URL` names)* | The realm users are created in. Set it only where the issuer URL names no realm. |
-| `DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP` | `/participants` | The group participants are created in, and the only part of the realm this service may touch. Must match what `celine-policies` declares, and must not be an operator role-hierarchy group. |
-| `DATASPACE_KEYCLOAK_TEMPORARY_PASSWORD` | `false` | Whether that password must be changed at first login. |
-| `DATASPACE_KEYCLOAK_UPDATE_EXISTING` | `true` | Refresh the profile of a user who already existed. Never their username -- renaming a login changes what they type to sign in and invalidates the `user_id` any registry row holds for them. |
+| `PROVISIONING_URL` | *(none)* | The provisioning service's **internal** address (`http://provisioning:8010` under compose). Unset onboards participants and gives them no login, which is a supported deployment. It has no public route and must not be given one: it holds realm-wide Keycloak administration and is safe to hold it only because nothing outside the network can reach it. |
+| `OIDC_CLIENT_SECRET` | *(none)* | The secret for `OIDC_CLIENT_ID`, presented to the provisioning service. Required when `PROVISIONING_URL` is set. |
+| `DATASPACE_KEYCLOAK_REALM` | *(the realm `OIDC_BASE_URL` names)* | The realm the account **lives in**, which the dataspace step hands to the identity registry. Not an administration setting -- nothing here administers a realm. Set it only where the issuer URL names no realm; startup refuses a pair that disagrees, because the provisioning service writes into the realm this deployment's own issuer names. |
 
-`DATASPACE_KEYCLOAK_ADMIN_USERNAME`, `DATASPACE_KEYCLOAK_ADMIN_PASSWORD` and
-`DATASPACE_KEYCLOAK_ADMIN_CLIENT_SECRET` were the previous password-grant login as a
-realm administrator. **Startup refuses to run with any of them set**: remove them,
-and rotate what they held. See
-[ADR-0001](decisions/ADR-0001-provision-logins-as-the-service.md) and [ADR-0002](decisions/ADR-0002-administer-the-realm-as-celines-own-client.md).
+`DATASPACE_KEYCLOAK_ADMIN_USERNAME`, `_ADMIN_PASSWORD` and `_ADMIN_CLIENT_SECRET` were the
+password-grant login as a realm administrator. `DATASPACE_KEYCLOAK_ENABLED`, `_BASE_URL`,
+`_PARTICIPANTS_GROUP` and `_UPDATE_EXISTING` configured the group-scoped grant and are gone
+with it. **Startup refuses to run with any of them set** -- remove them, rotate what the
+credentials held, and keep `_REALM`. `ENABLED=true` is the one that has to be refused
+rather than warned about: it reads as "participants are being given logins" while nothing
+reads it, so none would be, one approval at a time. See
+[ADR-0001](decisions/ADR-0001-provision-logins-as-the-service.md) through
+[ADR-0004](decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md).
 
 ### Dataspace policy settings
 
@@ -328,9 +313,9 @@ These control provisioning of data-sharing consent to the dataspace connector (s
 
 ## Relation to REC registry registration
 
-Approval provisions three things in order — Keycloak user, REC registry member,
+Approval provisions three things in order — the participant's login, REC registry member,
 dataspace identity — and the order is not cosmetic. The registry keys a member on
-`(community, user_id)`, so the Keycloak user exists first; the dataspace identity
+`(community, user_id)`, so the login exists first; the dataspace identity
 is last because it is the step that can be retried afterwards.
 
 Registry registration **fails closed**, so a dataspace identity is never issued
@@ -369,6 +354,7 @@ The integration follows a **fail-closed** strategy:
 ## Dependencies
 
 - `celine-sdk>=1.13.0` -- provides `celine.sdk.auth.OidcClientCredentialsProvider` for M2M token management
+- `celine-sdk>=1.18.0` -- provides `celine.sdk.provisioning.ProvisioningClient`, which is the only way this service gives a participant a login. `pyproject.toml` carries that floor; there is no fallback path
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
 - **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`

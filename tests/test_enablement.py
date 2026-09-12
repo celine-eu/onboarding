@@ -21,12 +21,12 @@ from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.services import (
     dataspace_identity,
     enablement,
-    keycloak_identity,
+    provisioning,
     rec_registry,
 )
 from celine.onboarding.services.enablement import EnablementError
 from celine.onboarding.services.errors import ConfigurationError
-from celine.onboarding.services.keycloak_identity import KeycloakProvisionResult
+from celine.onboarding.services.provisioning import ParticipantProvisionResult
 
 
 class FakeResult:
@@ -93,7 +93,7 @@ def happy_path(monkeypatch):
 
     async def _kc(sub):
         calls.append("keycloak_user")
-        return KeycloakProvisionResult(user_id="kc-123", username=sub.email, created=True)
+        return ParticipantProvisionResult(user_id="kc-123", username=sub.email, created=True)
 
     async def _registry(sub, *, keycloak_username=None):
         calls.append(f"rec_registry_member(user={keycloak_username})")
@@ -115,7 +115,14 @@ def happy_path(monkeypatch):
         calls.append(f"set_member_did(member={member_key}, did={did})")
         return f"registry member {member_key} holds the dataspace DID"
 
-    monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _kc)
+    # Step 1 checks both gates before it calls, so all three are stubbed: a
+    # community the REC declares, and a provisioning service to call.
+    async def _community(rec_slug):
+        return "rec-a-community"
+
+    monkeypatch.setattr(provisioning, "provisioning_enabled", lambda: True)
+    monkeypatch.setattr(provisioning, "participant_community", _community)
+    monkeypatch.setattr(provisioning, "provision_participant", _kc)
     monkeypatch.setattr(rec_registry, "register_member", _registry)
     monkeypatch.setattr(rec_registry, "set_member_did", _set_did)
     monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
@@ -168,18 +175,18 @@ class TestEnable:
         await enablement.enable(db, submission)
         assert "rec_registry_member(user=member@example.org)" in happy_path
 
-    async def test_the_username_is_the_one_keycloak_reported(
+    async def test_the_username_is_the_one_provisioning_reported(
         self, db, submission, happy_path, monkeypatch
     ):
-        """A user provisioning found rather than created may log in under a name
-        that is not their email, and it is that value the registry needs — not
-        the email we asked by."""
+        """An account provisioning found rather than created may log in under a
+        name that is not their email, and it is that value the registry needs —
+        not the email we asked by."""
 
         async def _kc(sub):
             happy_path.append("keycloak_user")
-            return KeycloakProvisionResult(user_id="kc-123", username="gl-00001", created=False)
+            return ParticipantProvisionResult(user_id="kc-123", username="gl-00001", created=False)
 
-        monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _kc)
+        monkeypatch.setattr(provisioning, "provision_participant", _kc)
 
         await enablement.enable(db, submission)
 
@@ -408,9 +415,9 @@ class TestAMisconfiguredStep:
     @pytest.fixture()
     def keycloak_unconfigured(self, monkeypatch, happy_path):
         async def _boom(sub):
-            raise ConfigurationError("DATASPACE_KEYCLOAK_BASE_URL is required")
+            raise ConfigurationError("PROVISIONING_URL is required")
 
-        monkeypatch.setattr(keycloak_identity, "provision_keycloak_user", _boom)
+        monkeypatch.setattr(provisioning, "provision_participant", _boom)
 
     async def test_it_still_fails_closed(self, db, submission, keycloak_unconfigured):
         with pytest.raises(EnablementError) as exc:
@@ -432,14 +439,14 @@ class TestAMisconfiguredStep:
             await enablement.enable(db, submission)
 
         row = (await enablement.load_steps(db, submission.id))[EnablementStep.KEYCLOAK_USER]
-        assert "DATASPACE_KEYCLOAK_BASE_URL" not in row.last_error
-        assert "DATASPACE_KEYCLOAK_BASE_URL" not in str(exc.value)
+        assert "PROVISIONING_URL" not in row.last_error
+        assert "PROVISIONING_URL" not in str(exc.value)
 
     async def test_the_detail_is_logged(self, db, submission, keycloak_unconfigured, caplog):
         with caplog.at_level("ERROR"), pytest.raises(EnablementError):
             await enablement.enable(db, submission)
 
-        assert "DATASPACE_KEYCLOAK_BASE_URL" in caplog.text
+        assert "PROVISIONING_URL" in caplog.text
 
 
 class TestSoftFailure:
@@ -578,8 +585,11 @@ class TestRevoke:
     def revocations(self, monkeypatch):
         done: list[str] = []
 
-        async def _disable_kc(user_id):
-            done.append(f"keycloak_user:{user_id}")
+        async def _disable_kc(sub):
+            # Addressed by `(community, ref)`, not by the recorded uuid — the
+            # provisioning service's revocation route takes the member key.
+            done.append(f"keycloak_user:{sub.ref}")
+            return "disabled login member@example.org"
 
         async def _deactivate(sub, *, member_key):
             done.append(f"rec_registry_member:{member_key}")
@@ -590,25 +600,41 @@ class TestRevoke:
             sub.dataspace_vc_id = None
             return "revoked"
 
-        monkeypatch.setattr(keycloak_identity, "disable_keycloak_user", _disable_kc)
+        monkeypatch.setattr(provisioning, "disable_participant", _disable_kc)
         monkeypatch.setattr(rec_registry, "deactivate_member", _deactivate)
         monkeypatch.setattr(dataspace_identity, "revoke_user_identity", _revoke_identity)
         return done
 
-    async def test_runs_in_reverse_order(self, db, submission, happy_path, revocations):
+    async def test_the_login_is_closed_before_the_member_is_deactivated(
+        self, db, submission, happy_path, revocations
+    ):
+        """The one place the order is **not** the reverse of the pipeline.
+
+        Revoking a login resolves `(community, key)` through the registry
+        export, and that export carries only `active` members. Deactivating the
+        member first makes the very next call a 404: the login survives, the
+        participant can still sign in, and the step row says the revocation
+        succeeded because nothing failed.
+        """
         await enablement.enable(db, submission)
         await enablement.revoke(db, submission)
 
         assert [d.split(":")[0] for d in revocations] == [
             "dataspace_identity",
-            "rec_registry_member",
             "keycloak_user",
+            "rec_registry_member",
         ]
+
+    async def test_every_step_is_revoked_exactly_once(self):
+        assert set(enablement.REVOKE_ORDER) == {spec.step for spec in enablement.PIPELINE}
+        assert len(enablement.REVOKE_ORDER) == len(enablement.PIPELINE)
 
     async def test_passes_the_recorded_references(self, db, submission, happy_path, revocations):
         await enablement.enable(db, submission)
         await enablement.revoke(db, submission)
-        assert "keycloak_user:kc-123" in revocations
+        # The login is addressed by the member key, the registry member by the
+        # reference the step row recorded.
+        assert "keycloak_user:20260730-test" in revocations
         assert "rec_registry_member:member-key-1" in revocations
 
     async def test_sharing_consent_is_withdrawn_here(
@@ -693,8 +719,11 @@ class TestRevoke:
         rows = await enablement.revoke(db, submission)
         assert rows[EnablementStep.REC_REGISTRY_MEMBER].status == EnablementStatus.FAILED
         assert "registry unreachable" in rows[EnablementStep.REC_REGISTRY_MEMBER].last_error
-        # ...and the Keycloak user, later in the reverse order, was still disabled.
-        assert "keycloak_user:kc-123" in revocations
+        # ...and the login, which the order now puts *before* this step, was
+        # already closed. That is the property worth having: a registry that
+        # cannot be reached leaves a stale member row, not somebody who was
+        # removed from their community and can still sign in.
+        assert "keycloak_user:20260730-test" in revocations
 
     async def test_nothing_to_revoke_is_not_an_error(self, db, submission, revocations):
         rows = await enablement.revoke(db, submission)

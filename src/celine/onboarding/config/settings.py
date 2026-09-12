@@ -150,39 +150,49 @@ class Settings(BaseSettings):
     # this platform is multi-tenant, and a single global alias would file every
     # community's members into one dataspace organisation.
 
-    dataspace_keycloak_enabled: bool = False
-    dataspace_keycloak_base_url: str = ""
-    # The realm whose users this service provisions. Empty means the realm
-    # `OIDC_BASE_URL` issues from, which is the only realm it *can* be: the
-    # Admin API is reached with this service's own service-account token, and a
-    # client-credentials token administers the realm that minted it and no
-    # other. Set it only where the issuer URL names no realm; startup checks the
-    # two agree. A default naming a particular deployment's realm would be wrong
-    # on every other checkout, so there is none.
-    dataspace_keycloak_realm: str = ""
-    # The realm group every participant is created in, and the only part of the
-    # realm this service may touch. It is not a membership model — community
-    # membership is the registry's `Member` row and the Keycloak organization —
-    # but a permission boundary: `../celine-policies` declares `svc-onboarding`'s
-    # rights as a fine-grained permission over this group, so creating a user
-    # *outside* it is refused, and so is reading, disabling or resetting the
-    # password of anyone who is not in it. An operator's account is therefore
-    # unreachable from here, which is the point.
+    # Where `../celine-policies`' provisioning service is, on the internal
+    # network — `http://provisioning:8010` under compose. **Empty disables the
+    # login step**, which is a supported deployment: participants are onboarded
+    # and given no login. Same shape as `rec_registry_url` and
+    # `ds_connector_url` above, and for the same reason — an address is the only
+    # thing that decides whether a dependency is there, so a separate flag could
+    # only ever contradict it.
     #
-    # It must not name one of the role-hierarchy groups (`admins`, `managers`,
-    # `editors`, `viewers`): those are operator roles, and `access.rego` reads a
-    # realm-level `admins` or `managers` as a platform-wide grant. Startup
-    # refuses all four — `editors` and `viewers` grant nothing at realm level
-    # today, but they are operator names and a participant is not an operator.
-    dataspace_keycloak_participants_group: str = "/participants"
+    # There is no default. The service holds realm-wide Keycloak administration
+    # and is safe to hold it only because nothing outside the network can reach
+    # it, so this is a deployment's own internal address and a default naming
+    # somebody's hostname would be wrong on every other checkout.
+    provisioning_url: str = ""
+
+    # The realm the participant's account lives in. **Not an administration
+    # setting any more** — nothing here administers a realm. The dataspace step
+    # tells the identity registry where to find the account, and the answer has
+    # to match where the provisioning service put it: the realm `OIDC_BASE_URL`
+    # issues from, which is the one realm this deployment has. Set it only where
+    # that URL names no realm. A default naming a particular deployment's realm
+    # would be wrong on every other checkout, so there is none.
+    dataspace_keycloak_realm: str = ""
+
+    # `DATASPACE_KEYCLOAK_ENABLED`, `_BASE_URL`, `_PARTICIPANTS_GROUP` and
+    # `_UPDATE_EXISTING` were here and are gone, along with the Admin API calls
+    # they configured. Declared below only so a value left behind is rejected
+    # rather than ignored.
+    removed_keycloak_enabled: str = Field(default="", validation_alias="DATASPACE_KEYCLOAK_ENABLED")
+    removed_keycloak_base_url: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_BASE_URL"
+    )
+    removed_keycloak_participants_group: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP"
+    )
+    removed_keycloak_update_existing: str = Field(
+        default="", validation_alias="DATASPACE_KEYCLOAK_UPDATE_EXISTING"
+    )
     # `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` and `..._TEMPORARY_PASSWORD` were
-    # here and are gone. They set one shared password on every account this
+    # here and went earlier. They set one shared password on every account this
     # service created: a single credential for the whole cohort, readable by
-    # anyone who can read a deployment's environment. This service provisions an
-    # identity and never a credential — how somebody comes to hold a login is the
-    # realm's business, and `../celine-policies` declares the clients and flows
-    # that answer it. Do not reintroduce either name.
-    dataspace_keycloak_update_existing: bool = True
+    # anyone who can read a deployment's environment. Participant credentials
+    # are the provisioning service's to issue, one at a time, temporary. Do not
+    # reintroduce either name.
 
     # `.env` then `.env.local`, and the second wins. `.env` is the deployment's
     # configuration — the file that is written once and shared; `.env.local` is

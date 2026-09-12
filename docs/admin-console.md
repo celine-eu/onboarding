@@ -14,14 +14,20 @@ order:
 
 | # | Step | Where | If it fails |
 |---|---|---|---|
-| 1 | Login identity | Keycloak user | **blocks approval** |
+| 1 | Login identity | provisioning service | **blocks approval** |
 | 2 | Community member | rec-registry | **blocks approval** |
 | 3 | Dataspace identity | identity registry | **blocks approval** |
 | 4 | Standing sharing consent | dataspace connector | approval stands |
 
 The order is load-bearing: the registry keys a member on `(community, user_id)`,
-so the Keycloak user has to exist first, and the dataspace identity is later
-because it is the step that can be retried afterwards.
+so the login has to exist first, and the dataspace identity is later because it
+is the step that can be retried afterwards.
+
+Step 1 is not a Keycloak call from this service. It asks `celine-policies`'
+provisioning service, which is the only writer of participant accounts in the
+realm; this service holds no Keycloak grant. A community that declares no
+registry binding has no community to key the account on, so step 1 is **skipped**
+for it — see [ADR-0004](decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md).
 
 Step 3 does one thing more than its name says: the DID it mints is written back
 onto the member step 2 created. That is the key anything else uses to attribute a
@@ -38,8 +44,8 @@ who gave no sharing consent — is recorded as **skipped**, not silently omitted
 The submission stays **in review**. It is not approved, because the person is not
 enabled.
 
-What the pipeline *did* achieve is kept. If a Keycloak user was created before the
-registry call failed, that user exists — forgetting it locally would orphan it
+What the pipeline *did* achieve is kept. If a login was provisioned before the
+registry call failed, that account exists — forgetting it locally would orphan it
 remotely and the next attempt would create a second one. The step row records the
 error, the attempt count and the external reference, so the remedy is retrying
 that step rather than pressing Approve again and re-running all four.

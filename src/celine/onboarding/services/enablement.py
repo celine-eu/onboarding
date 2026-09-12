@@ -13,6 +13,10 @@ The order is load-bearing. The registry keys a member on `(community, user_id)`,
 so the Keycloak user has to exist first; the dataspace identity is later because
 it is the step that can be retried afterwards.
 
+**Undoing them is not that order reversed**, and the exception is step 1 — see
+`REVOKE_ORDER`. Revoking a login resolves the member through the registry
+export, so it has to happen before the member is deactivated rather than after.
+
 Step 3 does one more thing than its name says: it writes the DID it mints back
 onto the member step 2 created. That is deliberate rather than untidy — the DID
 does not exist any earlier, and it is the key anything else uses to attribute a
@@ -116,14 +120,31 @@ class RunContext:
 
 
 async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
-    from celine.onboarding.services.keycloak_identity import provision_keycloak_user
+    from celine.onboarding.services import provisioning
 
-    result = await provision_keycloak_user(ctx.submission)
+    if not provisioning.provisioning_enabled():
+        return StepOutcome(EnablementStatus.SKIPPED, detail="no provisioning service is configured")
+    if await provisioning.participant_community(ctx.submission.rec_slug) is None:
+        # No community alias to key the account on, so there is nothing to
+        # provision *into* — and a login provisioned here could never be revoked
+        # through this seam, because revocation resolves the member through the
+        # registry export. Stated as its own reason rather than folded into the
+        # one above: an operator seeing this needs to know it is the REC's
+        # manifest and not the deployment.
+        return StepOutcome(
+            EnablementStatus.SKIPPED,
+            detail="this community declares no rec_registry binding",
+        )
+
+    result = await provisioning.provision_participant(ctx.submission)
     if result is None:
-        return StepOutcome(EnablementStatus.SKIPPED, detail="Keycloak provisioning is disabled")
+        # Both reasons are checked above, so this is a configuration that
+        # changed under a running process.
+        return StepOutcome(EnablementStatus.SKIPPED, detail="no login was provisioned")
     # Step 2 registers this as the member's `user_id`, because it is what their
-    # token will carry. Read back from Keycloak rather than assumed: a user that
-    # already existed may authenticate under a username that is not their email.
+    # token will carry. Read back from Keycloak by the provisioning service
+    # rather than assumed: an account that already existed may authenticate
+    # under a username that is not their email.
     ctx.keycloak_username = result.username
     return StepOutcome(
         EnablementStatus.SUCCEEDED,
@@ -133,12 +154,16 @@ async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
 
 
 async def _revoke_keycloak_user(ctx: RunContext, row: SubmissionEnablementStep) -> str:
-    from celine.onboarding.services.keycloak_identity import disable_keycloak_user
+    """Disable the login, addressed by `(community, ref)` rather than by uuid.
 
-    if not row.external_ref:
-        return "no Keycloak user recorded"
-    await disable_keycloak_user(row.external_ref)
-    return f"disabled Keycloak user {row.external_ref}"
+    The recorded `external_ref` is the Keycloak uuid, and it is deliberately not
+    what this sends: nothing here administers the realm any more, and the
+    provisioning service's revocation route takes the community and the member
+    key. The uuid stays on the row because the dataspace step reads it.
+    """
+    from celine.onboarding.services.provisioning import disable_participant
+
+    return await disable_participant(ctx.submission)
 
 
 async def _run_registry_member(ctx: RunContext) -> StepOutcome:
@@ -164,7 +189,7 @@ async def _revoke_registry_member(ctx: RunContext, row: SubmissionEnablementStep
 
 async def _run_dataspace_identity(ctx: RunContext) -> StepOutcome:
     from celine.onboarding.services.dataspace_identity import provision_user_identity
-    from celine.onboarding.services.keycloak_identity import keycloak_realm
+    from celine.onboarding.services.provisioning import keycloak_realm
 
     await provision_user_identity(
         ctx.submission,
@@ -317,6 +342,37 @@ PIPELINE: tuple[StepSpec, ...] = (
 )
 
 SPECS: dict[str, StepSpec] = {spec.step: spec for spec in PIPELINE}
+
+
+#: The order a revocation runs in, which is **not** `reversed(PIPELINE)`.
+#:
+#: It was, and the reversal was right while this service administered Keycloak
+#: directly: it held the account's uuid on the step row and could disable it
+#: whatever the registry said. It does not any more. Revocation now goes through
+#: the provisioning service, which resolves `(community, key)` through the
+#: registry export — and that export carries only `active` members. So
+#: deactivating the member first makes the very next call a `404`: the login
+#: survives, the participant can still sign in, and the step row says the
+#: revocation succeeded because nothing failed.
+#:
+#: The login is therefore closed first and the member deactivated after. The
+#: rest of the order is unchanged and still reversed: the consent share, then
+#: the dataspace identity, then the member.
+#:
+#: Written out rather than derived, because this is the kind of ordering that a
+#: later reader tidies back into `reversed(PIPELINE)` — the list has to be able
+#: to say why it is not that.
+REVOKE_ORDER: tuple[EnablementStep, ...] = (
+    EnablementStep.DATASPACE_SHARE,
+    EnablementStep.DATASPACE_IDENTITY,
+    EnablementStep.KEYCLOAK_USER,
+    EnablementStep.REC_REGISTRY_MEMBER,
+)
+
+# Every step is revoked, and exactly once. A step missing from the order above
+# would never be undone, and nothing else would say so.
+assert set(REVOKE_ORDER) == {spec.step for spec in PIPELINE}
+assert len(REVOKE_ORDER) == len(PIPELINE)
 
 
 def spec_for(step: str) -> StepSpec:
@@ -488,7 +544,8 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
     rows = await ensure_rows(db, submission)
     ctx = RunContext(submission=submission, rows=rows)
 
-    for spec in reversed(PIPELINE):
+    for step in REVOKE_ORDER:
+        spec = SPECS[step]
         row = rows[spec.step]
         if row.status != EnablementStatus.SUCCEEDED:
             continue
