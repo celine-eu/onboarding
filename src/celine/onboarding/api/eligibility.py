@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from celine.onboarding.api.deps import valid_rec_slug
-from celine.onboarding.services.eligibility import geocode_address, get_checker
+from celine.onboarding.services.eligibility import (
+    GeocoderUnavailableError,
+    geocode_address,
+    get_checker,
+    reverse_geocode,
+)
 
 router = APIRouter(tags=["eligibility"])
 
@@ -31,19 +36,33 @@ async def check_eligibility(
     req: EligibilityRequest,
     rec_slug: str = Depends(valid_rec_slug),
 ):
-    if req.lat is not None and req.lng is not None:
-        lat, lng = req.lat, req.lng
-    elif req.address:
-        try:
-            geo = await geocode_address(req.address)
-        except ValueError as e:
-            raise HTTPException(404, str(e))
-        lat, lng = geo.lat, geo.lng
-    else:
-        raise HTTPException(400, "Provide lat/lng or address")
-
     checker = get_checker(rec_slug)
-    result = checker.check(lat, lng)
+
+    # **The address is resolved once, here, and handed to the checker.** An
+    # address request used to be geocoded for its coordinates, which were then
+    # reverse-geocoded back into the address that had just been discarded: two
+    # calls to the same public service per check, and the second one is what
+    # timed out. A community with no coverage rules needs neither.
+    addr = None
+    try:
+        if req.lat is not None and req.lng is not None:
+            lat, lng = req.lat, req.lng
+            if checker.requires_address:
+                addr = await reverse_geocode(lat, lng)
+        elif req.address:
+            addr = await geocode_address(req.address)
+            lat, lng = addr.lat, addr.lng
+        else:
+            raise HTTPException(400, "Provide lat/lng or address")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except GeocoderUnavailableError as e:
+        # Not a 500, and not `eligible: false`. The service this depends on did
+        # not answer; saying the applicant is outside the area would be an
+        # answer nobody computed.
+        raise HTTPException(503, f"Address service unavailable: {e}")
+
+    result = checker.check(addr)
 
     addr = result.address
     return EligibilityResponse(

@@ -175,8 +175,13 @@ class Settings(BaseSettings):
     # refuses all four — `editors` and `viewers` grant nothing at realm level
     # today, but they are operator names and a participant is not an operator.
     dataspace_keycloak_participants_group: str = "/participants"
-    dataspace_keycloak_default_password: str = ""
-    dataspace_keycloak_temporary_password: bool = False
+    # `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` and `..._TEMPORARY_PASSWORD` were
+    # here and are gone. They set one shared password on every account this
+    # service created: a single credential for the whole cohort, readable by
+    # anyone who can read a deployment's environment. This service provisions an
+    # identity and never a credential — how somebody comes to hold a login is the
+    # realm's business, and `../celine-policies` declares the clients and flows
+    # that answer it. Do not reintroduce either name.
     dataspace_keycloak_update_existing: bool = True
 
     # `.env` then `.env.local`, and the second wins. `.env` is the deployment's

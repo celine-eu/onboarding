@@ -235,7 +235,6 @@ failed step.
 | `DATASPACE_KEYCLOAK_BASE_URL` | *(the origin of `OIDC_BASE_URL`)* | Base URL of the Keycloak whose Admin API is called. |
 | `DATASPACE_KEYCLOAK_REALM` | *(the realm `OIDC_BASE_URL` names)* | The realm users are created in. Set it only where the issuer URL names no realm. |
 | `DATASPACE_KEYCLOAK_PARTICIPANTS_GROUP` | `/participants` | The group participants are created in, and the only part of the realm this service may touch. Must match what `celine-policies` declares, and must not be an operator role-hierarchy group. |
-| `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` | *(none)* | Initial password set on users this service creates. Empty means none is set. |
 | `DATASPACE_KEYCLOAK_TEMPORARY_PASSWORD` | `false` | Whether that password must be changed at first login. |
 | `DATASPACE_KEYCLOAK_UPDATE_EXISTING` | `true` | Refresh the profile of a user who already existed. Never their username -- renaming a login changes what they type to sign in and invalidates the `user_id` any registry row holds for them. |
 

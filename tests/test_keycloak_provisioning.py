@@ -28,7 +28,6 @@ def _enabled(monkeypatch):
     monkeypatch.setattr(ki.settings, "dataspace_keycloak_base_url", "http://kc:8080")
     monkeypatch.setattr(ki.settings, "dataspace_keycloak_realm", "celine")
     monkeypatch.setattr(ki.settings, "dataspace_keycloak_participants_group", "/participants")
-    monkeypatch.setattr(ki.settings, "dataspace_keycloak_default_password", "")
     monkeypatch.setattr(ki.settings, "dataspace_keycloak_update_existing", True)
 
     async def _headers():

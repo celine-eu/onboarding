@@ -300,9 +300,7 @@ async def test_membership_is_filed_under_the_owner_id_not_the_alias(
     assert body["organization_alias"] == "example-community"
 
 
-async def test_an_unresolvable_organization_is_filed_verbatim(
-    monkeypatch, submission, _enable_vc
-):
+async def test_an_unresolvable_organization_is_filed_verbatim(monkeypatch, submission, _enable_vc):
     """A registry that cannot answer must not turn an approval into an error.
 
     Filing under the name as written is what happened before the owner id was

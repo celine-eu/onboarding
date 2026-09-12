@@ -90,6 +90,10 @@ into a realm other than its issuer's now fails to start rather than failing at t
 approval. That is the intent, and it is a breaking change for a configuration that could
 never have worked.
 
-**What this does not fix.** `DATASPACE_KEYCLOAK_DEFAULT_PASSWORD` still sets one shared
-initial password on every user this service creates. It is a separate decision and it is
-still open.
+**What this did not fix, and no longer applies — updated 2026-09-11.** This ADR left one
+setting setting a shared initial password on every user this service created: a single
+credential for the whole cohort, readable by anyone who could read a deployment's
+environment. **It and its `temporary` companion are removed.** This service provisions an
+identity and never a credential; how somebody comes to hold a login is the realm's
+business, and `../celine-policies` declares the clients and flows that answer it. An
+account created here has no credential until the realm gives it one.

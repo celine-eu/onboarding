@@ -203,8 +203,6 @@ async def provision_keycloak_user(submission: Submission) -> KeycloakProvisionRe
         user_id = await _create_user(client, headers, submission, email, group)
 
         if user_id is not None:
-            if settings.dataspace_keycloak_default_password:
-                await _set_password(client, headers, user_id)
             return KeycloakProvisionResult(user_id=user_id, username=email, created=True)
 
         # Keycloak says the name or the address is taken. By whom is the whole
@@ -352,8 +350,6 @@ async def _create_user(
     the two it is decides what happens next, and only the caller can find out.
     """
     payload = _user_payload(submission, email, group)
-    if settings.dataspace_keycloak_default_password:
-        payload["credentials"] = [_password_payload()]
 
     response = await client.post(
         f"/admin/realms/{keycloak_realm()}/users",
@@ -434,16 +430,6 @@ async def _update_user(
         raise _refused("user update", response)
 
 
-async def _set_password(client: httpx.AsyncClient, headers: dict[str, str], user_id: str) -> None:
-    response = await client.put(
-        f"/admin/realms/{keycloak_realm()}/users/{user_id}/reset-password",
-        headers=headers,
-        json=_password_payload(),
-    )
-    if response.status_code >= 400:
-        raise _refused("password setup", response)
-
-
 def _user_payload(submission: Submission, email: str, group: str) -> dict[str, object]:
     """The user to create — and the group to create them in.
 
@@ -452,6 +438,13 @@ def _user_payload(submission: Submission, email: str, group: str) -> dict[str, o
     reaches one group. Without this key `POST /users` is 403, and so it is when
     the key names a group the grant does not cover.
     """
+    # **No credential, ever.** This service does not set, generate or transmit a
+    # password. It used to accept one shared secret for every account it created,
+    # which is a single credential for the whole cohort, known to whoever can read
+    # a deployment's environment, and identical on every participant. How somebody
+    # comes to hold a login is the realm's business — `../celine-policies` declares
+    # the clients and flows that answer it — and an account created here simply has
+    # no way in until the realm gives it one.
     payload: dict[str, object] = {
         "username": email,
         "email": email,
@@ -471,14 +464,6 @@ def _user_payload(submission: Submission, email: str, group: str) -> dict[str, o
     if last_name:
         payload["lastName"] = last_name
     return payload
-
-
-def _password_payload() -> dict[str, object]:
-    return {
-        "type": "password",
-        "value": settings.dataspace_keycloak_default_password,
-        "temporary": settings.dataspace_keycloak_temporary_password,
-    }
 
 
 async def disable_keycloak_user(user_id: str) -> None:
