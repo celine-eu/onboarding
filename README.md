@@ -96,10 +96,12 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 ### Setup
 
 ```bash
-# Clone and configure
+# Clone and configure. On the celine-dev workspace you need one setting:
 cp .env.example .env
-# Edit .env — required: DATABASE_URL, OPENAI_API_KEY, ENCRYPTION_KEY
-# For dev without encryption: set REQUIRE_ENCRYPTION=false
+# Edit .env — set ENCRYPTION_KEY (or REQUIRE_ENCRYPTION=false for dev).
+# Every address already defaults to a value that resolves to the same service
+# whether the process runs on the host or in a container, so DATABASE_URL and
+# OIDC_BASE_URL need no entry here. Off this workspace, set them.
 
 # Optional: .env.local for anything true on your machine only — your own
 # service URLs, dev secrets. It is read after .env and wins, and it is
@@ -138,16 +140,46 @@ See `templates/example/` for the manifest format.
 
 ## Environment Variables
 
+### How the defaults are chosen
+
+An address only gets a default if **one string resolves to the same service from
+the host and from inside a container** — otherwise the checkout ends up holding
+two contradictory sets of them, which is what it held until 2026-09-12.
+
+`172.17.0.1` is the docker bridge gateway: the host as seen from a container, a
+local interface as seen from the host. It serves any service published on a host
+port, and it is the workspace convention. Where the string is *compared* rather
+than dialled the default is a hostname instead — `OIDC_BASE_URL` is checked
+against the `iss` claim, and Keycloak mints `iss` from its own hostname whatever
+address the caller used, so `172.17.0.1:8080` reaches the right realm and reports
+the wrong issuer.
+
+An address whose emptiness *disables* a dependency keeps no default, because the
+address is the only thing that says whether the dependency is there:
+`PROVISIONING_URL`, `REC_REGISTRY_URL`, `DS_CONNECTOR_URL`, `DS_NS_URL`,
+`DS_PROVENANCE_URL`, `IDENTITY_REGISTRY_URL`, `DATASPACE_KEYCLOAK_REALM`.
+
 ### Required
 
 | Variable | Description |
 |---|---|
-| `DATABASE_URL` | PostgreSQL async connection string (e.g. `postgresql+asyncpg://user:pass@host:5432/db`) |
-| `OPENAI_API_KEY` | OpenAI API key for bill/ID extraction |
-| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `DPA_SIGNED` | Set to `yes` after signing a DPA with your LLM provider (required when using extraction steps) |
-| `OIDC_BASE_URL` | Keycloak realm issuer for the admin console and outbound M2M (e.g. `http://keycloak.celine.localhost/realms/celine`). Startup refuses without it. |
-| `PROVISIONING_URL` | Internal address of `celine-policies`' provisioning service, which provisions participant logins (e.g. `http://provisioning:8010`). Empty onboards participants without a login. It must have no public route. |
+| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it in development only |
+| `DPA_SIGNED` | Set to `yes` after signing a DPA with your LLM provider (required when a REC uses extraction steps) |
+| `OPENAI_API_KEY` | OpenAI API key — only when you actually exercise bill/ID extraction |
+
+### Defaulted, but wrong off the celine-dev workspace
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:securepassword123@172.17.0.1:15432/rec_onboarding` | The workspace's shared host Postgres, which is also where `docker compose up` puts the database |
+| `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | Keycloak realm issuer for the admin console and outbound M2M. **The one default that is silently wrong rather than merely absent**: elsewhere its JWKS is unreachable and every `/api/admin` request is denied, so the app logs a warning at boot while it is in force |
+| `ONBOARDING_API_URL` | `http://172.17.0.1:8040` | What `onboarding-cli` talks to |
+
+### Not defaulted, on purpose
+
+| Variable | Description |
+|---|---|
+| `PROVISIONING_URL` | Internal address of `celine-policies`' provisioning service, which provisions participant logins (e.g. `http://provisioning:8010`). Empty onboards participants without a login. It must have no public route — which is also why it has no both-sides address to default to |
 
 ### Security
 
@@ -211,7 +243,7 @@ After approval a participant manages and withdraws their sharing decisions in th
 |---|---|---|
 | `DATASPACE_ENABLED` | `false` | Deployment-wide gate for dataspace identity provisioning. A community also needs a `dataspace:` block in its manifest |
 | `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service |
-| `OIDC_BASE_URL` | *(none)* | OIDC issuer URL for M2M token acquisition |
+| `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | OIDC issuer URL for M2M token acquisition — the same issuer the admin console verifies inbound tokens against |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M auth |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M auth |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |

@@ -5,9 +5,30 @@ from pydantic_settings import BaseSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
+# The docker bridge gateway, and the only address that means the same thing from
+# both sides of the container boundary: inside a container it is the host, and on
+# the host it is a local interface, so anything bound to `0.0.0.0` answers on it
+# either way. That is what lets one default serve `task run:api` and
+# `docker compose up` without the checkout holding two contradictory sets of
+# addresses — which is what it held until 2026-09-12, when `backend` pointed at a
+# `postgres` service this compose file does not define.
+#
+# It only works for a service published on a host port. The provisioning service
+# is deliberately not published — its whole safety argument is that a holder of
+# realm-wide Keycloak administration is unreachable from outside the internal
+# network — so it has no both-sides address at all. That is why `provisioning_url`
+# below has no default rather than a worse one.
+#
+# Same convention as `celine-forecasting` and `celine-ai-assistant`.
+DEV_HOST = "172.17.0.1"
+
 
 class Settings(BaseSettings):
-    database_url: str
+    # Dev default: the host Postgres this workspace's stacks share, reachable at
+    # the same address from a container and from the host.
+    database_url: str = (
+        f"postgresql+asyncpg://postgres:securepassword123@{DEV_HOST}:15432/rec_onboarding"
+    )
     openai_api_key: str = ""
     extraction_base_url: str = "https://api.openai.com/v1"
     extraction_model: str = "gpt-5.4"
@@ -61,7 +82,7 @@ class Settings(BaseSettings):
     # --- onboarding-cli ---------------------------------------------------
     # The CLI drives the same HTTP endpoints the console does, with a service
     # account, so it exercises the real authorization and writes real audit rows.
-    onboarding_api_url: str = "http://localhost:8040"
+    onboarding_api_url: str = f"http://{DEV_HOST}:8040"
     onboarding_cli_client_id: str = "svc-onboarding-cli"
     onboarding_cli_client_secret: str = ""
     # `--local` talks to the database directly, bypassing HTTP and therefore
@@ -102,7 +123,21 @@ class Settings(BaseSettings):
 
     dataspace_enabled: bool = False
     identity_registry_url: str = ""
-    oidc_base_url: str = ""
+    # **A hostname, not `DEV_HOST`, and the difference is not cosmetic.** This
+    # value is compared, not just dialled: `security/oidc.py` checks it against
+    # the `iss` claim, and Keycloak mints `iss` from its own `KC_HOSTNAME`
+    # regardless of the address the caller used. Dialling `172.17.0.1:8080`
+    # reaches the same realm and reports `iss` as
+    # `http://keycloak.celine.localhost:8080/realms/celine` — a different string
+    # — so every operator token minted through the proxy would fail
+    # verification. The name below is the both-sides form in its own right:
+    # `/etc/hosts` maps it to the bridge on the host, `extra_hosts:
+    # host-gateway` maps it to the same gateway in a container.
+    #
+    # This is a **development** default. `main.py` warns when it is the value in
+    # force, because it is the one setting here whose default is silently wrong
+    # in production rather than merely absent.
+    oidc_base_url: str = "http://keycloak.celine.localhost/realms/celine"
     ds_onboarding_client_id: str = "svc-ds-onboarding"
     ds_onboarding_client_secret: str = ""
     dataspace_user_role: str = "DataSubject"

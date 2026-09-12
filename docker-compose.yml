@@ -46,9 +46,20 @@ services:
     ports:
       - "8040:8040"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-securepassword123}@${DB_HOST:-postgres}:${DB_PORT:-5432}/rec_onboarding
+      # The same host/port as init-db, migrate and seed-templates above. They
+      # disagreed until 2026-09-12: those three created and migrated a database
+      # on the host Postgres while this one pointed at `postgres:5432`, a service
+      # this file does not define, so `docker compose up` seeded a database the
+      # backend could not reach.
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-securepassword123}@${DB_HOST:-172.17.0.1}:${DB_PORT:-15432}/rec_onboarding
       IDENTITY_REGISTRY_URL: ${IDENTITY_REGISTRY_URL:-http://ds-identity-registry:30005}
-      OIDC_BASE_URL: ${OIDC_BASE_URL:-http://host.docker.internal:8080/realms/celine}
+      # A hostname, not an address: this is compared against the `iss` claim, and
+      # Keycloak mints `iss` from its own hostname whatever the caller dialled.
+      # Reaching the realm on `host.docker.internal:8080` — as this did — yields
+      # an issuer carrying `:8080`, which matches no token minted through the
+      # proxy. `extra_hosts` below resolves it in here and /etc/hosts resolves it
+      # on the host, so one string serves both sides and matches the app's default.
+      OIDC_BASE_URL: ${OIDC_BASE_URL:-http://keycloak.celine.localhost/realms/celine}
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
       DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
       # celine-policies' provisioning service, which is the only writer of
@@ -66,10 +77,16 @@ services:
       # Keycloak right at all. Required when PROVISIONING_URL is set.
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       POLICIES_DIR: /app/policies
+    # `.env` is gitignored, so a fresh checkout has none — and a plain list entry
+    # makes compose refuse to start rather than fall through to the defaults
+    # above. Optional is what lets `docker compose up` work on a clone with no
+    # configuration at all.
     env_file:
-      - .env
+      - path: .env
+        required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "keycloak.celine.localhost:host-gateway"
     volumes:
       - ./data:/app/data
     depends_on:

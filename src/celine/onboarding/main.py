@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
-from celine.onboarding.config.settings import settings
+from celine.onboarding.config.settings import Settings, settings
 from celine.onboarding.security.middleware import AdminAuthMiddleware
 
 logger = logging.getLogger(__name__)
@@ -355,6 +355,22 @@ def _validate_admin_config() -> None:
             f"(resolved issuer={oidc_settings().base_url!r} "
             f"jwks={oidc_settings().jwks_uri!r})\n\n"
             "═══════════════════════════════════════════════════════════════\n"
+        )
+
+    # The issuer has a development default, so the refusal above no longer fires
+    # for a deployment that merely forgot the variable — only for one that set it
+    # empty on purpose. That trade is why this warning exists: an unreachable
+    # JWKS still fails closed on every /api/admin request, but a production
+    # deployment would otherwise learn it one denied operator at a time instead
+    # of at boot. It is the one default here that is silently wrong off this
+    # workspace rather than merely absent.
+    if settings.oidc_base_url == Settings.model_fields["oidc_base_url"].default:
+        logger.warning(
+            "OIDC_BASE_URL is unset, so the development default %r is in force. "
+            "That issuer exists on the celine-dev workspace and nowhere else: off "
+            "it, its JWKS is unreachable and every /api/admin request will be "
+            "denied. Set OIDC_BASE_URL to this deployment's realm.",
+            settings.oidc_base_url,
         )
 
     policy = get_policy()

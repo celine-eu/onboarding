@@ -43,10 +43,14 @@ tasks:
       - uv run --project src alembic revision --autogenerate -m "{{.CLI_ARGS}}"
 
   init-db:
-    desc: Create database and run migrations
+    desc: >-
+      Create the database and run migrations. Postgres is **not** part of this
+      compose file — it is the workspace's shared instance on the host, which
+      `init-db` waits for and creates `rec_onboarding` in. This task used to run
+      `docker compose up -d postgres`, a service that does not exist here, so it
+      failed before it ever reached the migration.
     cmds:
-      - docker compose up -d postgres
-      - sleep 3
+      - docker compose up --exit-code-from init-db init-db
       - task migrate
 
   test:
@@ -56,8 +60,11 @@ tasks:
       - task test:frontend
 
   test:backend:
-    desc: Run backend tests
-    dir: "{{.SRC_DIR}}"
+    desc: >-
+      Run backend tests. From the repository root, not ./src: `testpaths` in
+      pyproject.toml is `tests`, which resolves to a directory that does not
+      exist under src — so running it there collected nothing and reported
+      success, which is the one way a test task can be worse than absent.
     cmds:
       - uv run pytest
 

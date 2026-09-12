@@ -97,16 +97,30 @@ consent:
     version: "1.0"
     file: consent/statute.pdf
     required: true
-  # Data-sharing consent — OPTIONAL. GDPR Art. 7(4): REC membership must never be
-  # conditioned on dataspace sharing, so the wizard permits completion with this
-  # off and can_submit does not list it. No version/file here — the version comes
-  # from each offer's consent_text_version served by the connector, so it cannot
-  # drift from what ds enforces. `offers` is an optional allow-list; omit it to
-  # offer every consent-based offer the connector publishes.
-  data_sharing:
-    required: false
-    offers:
-      - household-energy-flexibility
+  # Data-sharing consent — OPTIONAL, and **off in the default deployment**, which
+  # is why it is commented out rather than merely documented as optional.
+  #
+  # The default flow is: a person preregisters, a REC manager reviews and
+  # accepts, the participant gets a login. No dataspace anywhere in it. Declaring
+  # this block opts the community *in*, and the block is not free: the wizard has
+  # to render the offers from the published vocabulary, so the deployment then
+  # needs DS_NS_URL or DS_CONNECTOR_URL and startup refuses without one. A clone
+  # with no dataspace could not boot while this was live.
+  #
+  # Uncomment it together with `statute` in `steps:` below — the offers render in
+  # that step and nowhere else.
+  #
+  # GDPR Art. 7(4): REC membership must never be conditioned on dataspace
+  # sharing, so the wizard permits completion with this off and can_submit does
+  # not list it. No version/file here — the version comes from each offer's
+  # consent_text_version served by the connector, so it cannot drift from what ds
+  # enforces. `offers` is an optional allow-list; omit it to offer every
+  # consent-based offer the connector publishes.
+  #
+  # data_sharing:
+  #   required: false
+  #   offers:
+  #     - household-energy-flexibility
 
 # REC registry binding — OPTIONAL, per community. Omit it and approved
 # participants are not registered as community members; the wizard still works.
@@ -188,12 +202,15 @@ notifications:
   #   secret: "${WEBHOOK_SECRET}"
 
 steps:
-  # `statute` is not optional where `consent.data_sharing` is declared above.
-  # The wizard renders the sharing offers **in this step and nowhere else**;
-  # drop it and the statute checkbox quietly falls back into `consents` while
-  # the offers disappear, so every submission records a declined sharing
-  # consent nobody was ever shown. It sits after the data steps on purpose —
-  # consent asked before the data exists is uninformed.
+  # `statute` is here for the statute consent document, which is required and has
+  # nothing to do with the dataspace.
+  #
+  # It becomes **mandatory** the moment `consent.data_sharing` above is
+  # uncommented: the wizard renders the sharing offers in this step and nowhere
+  # else, so dropping it then lets the statute checkbox quietly fall back into
+  # `consents` while the offers disappear — and every submission records a
+  # declined sharing consent nobody was ever shown. It sits after the data steps
+  # on purpose: consent asked before the data exists is uninformed.
   - consents
   - personal
   - phone_verify

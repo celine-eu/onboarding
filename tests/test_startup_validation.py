@@ -231,6 +231,36 @@ def test_unconfigured_oidc_refuses_to_start(monkeypatch, _oidc_configured):
         app_main._validate_admin_config()
 
 
+def test_the_development_issuer_default_warns_rather_than_passing_quietly(
+    monkeypatch, _oidc_configured, caplog
+):
+    """The issuer has a default now, so the refusal above can no longer fire for
+    a deployment that simply forgot the variable — only for one that emptied it
+    deliberately. The warning is what keeps that from being a silent regression:
+    an unreachable JWKS still fails closed on every /api/admin request, but
+    without this a production deployment would learn it one denied operator at a
+    time instead of at boot."""
+    default = app_main.Settings.model_fields["oidc_base_url"].default
+    monkeypatch.setattr(app_main.settings, "oidc_base_url", default)
+    from celine.onboarding.security import oidc
+
+    oidc.oidc_settings.cache_clear()
+
+    with caplog.at_level("WARNING"):
+        app_main._validate_admin_config()
+
+    assert any("OIDC_BASE_URL is unset" in r.message for r in caplog.records)
+
+
+def test_a_configured_issuer_does_not_warn(_oidc_configured, caplog):
+    """`_oidc_configured` sets a realm of its own, which is what a deployment
+    does. The warning must not cry wolf at one that got it right."""
+    with caplog.at_level("WARNING"):
+        app_main._validate_admin_config()
+
+    assert not any("OIDC_BASE_URL is unset" in r.message for r in caplog.records)
+
+
 def test_jwks_uri_is_derived_from_the_issuer(_oidc_configured):
     """Set only OIDC_BASE_URL and the realm's certs endpoint is assumed."""
     from celine.onboarding.security.oidc import oidc_settings
