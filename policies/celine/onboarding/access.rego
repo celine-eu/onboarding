@@ -40,6 +40,15 @@ import rego.v1
 # An action name that appears in neither table is denied. Adding an endpoint
 # without adding its capability here therefore fails closed.
 #
+# A **delegated** action is a third case, and neither subject type reaches it on
+# its own. It is allowed only to a service holding its scope that also presents
+# the verified token of the operator it acts for, and only when that operator
+# holds a group granting the action by the rules above. The operator is
+# `input.environment.actor`: the SDK's engine serialises a fixed input shape, and
+# `environment` is its free-form request slot. So a manager's own token cannot
+# call it, and neither can a service alone, `onboarding.admin` included: email
+# follows a person's decision, taken on the community dashboard.
+#
 # =============================================================================
 
 default allow := false
@@ -63,6 +72,8 @@ required_groups := {
 	# are deliberately not reachable through `submissions.review`.
 	"submissions.purge": {"admins"},
 	"enablement.revoke": {"admins"},
+	# Delegated: the group is the acting operator's, never the caller's.
+	"members.invite": {"admins", "managers"},
 }
 
 # Which of those groups mean anything at **realm** level. A realm badge is a
@@ -100,20 +111,33 @@ required_scopes := {
 	"enablement.revoke": {"onboarding.enablement.revoke"},
 	"audit.read": {"onboarding.audit.read"},
 	"export": {"onboarding.export"},
+	"members.invite": {"onboarding.members.invite"},
 }
 
+# Actions reachable only by a service acting for a verified operator. See the
+# header.
+delegated_actions := {"members.invite"}
+
 known_action if required_groups[input.action.name]
+
+is_delegated if input.action.name in delegated_actions
 
 # ── subject helpers ──────────────────────────────────────────────────────────
 
 is_service if data.celine.scopes.is_service
 
+# The operator a delegated call acts for, built from their verified token by the
+# same code that builds `input.subject`.
+actor := input.environment.actor
+
+has_actor if actor.type == "user"
+
 # A realm-level group grants the action everywhere, so no organization check —
 # and for that reason only a platform group qualifies.
-granted_by_realm_group if {
+realm_group_grants(principal) if {
 	some g in required_groups[input.action.name]
 	g in platform_groups
-	g in input.subject.groups
+	g in principal.groups
 }
 
 # An organization-level group grants the action only for that organization's
@@ -122,29 +146,54 @@ granted_by_realm_group if {
 # `claims.org_groups` holds that organization's groups only, and `claims.org_type`
 # its type attribute — read from the flattened `type` key a real token carries,
 # falling back to the nested `attributes.type` a fixture may use.
-granted_by_org_group if {
-	input.subject.claims.organization != null
-	input.subject.claims.organization == input.resource.attributes.organization
-	input.subject.claims.org_type == rec_organization_type
+org_group_grants(principal) if {
+	principal.claims.organization != null
+	principal.claims.organization == input.resource.attributes.organization
+	principal.claims.org_type == rec_organization_type
 	some g in required_groups[input.action.name]
-	g in input.subject.claims.org_groups
+	g in principal.claims.org_groups
+}
+
+granted_by_realm_group if realm_group_grants(input.subject)
+
+granted_by_org_group if org_group_grants(input.subject)
+
+# The acting operator is judged by exactly the rules the caller would be.
+actor_granted if {
+	has_actor
+	realm_group_grants(actor)
+}
+
+actor_granted if {
+	has_actor
+	org_group_grants(actor)
 }
 
 # ── rules ────────────────────────────────────────────────────────────────────
 
 allow if {
 	not is_service
+	not is_delegated
 	granted_by_realm_group
 }
 
 allow if {
 	not is_service
+	not is_delegated
 	granted_by_org_group
 }
 
 allow if {
 	is_service
+	not is_delegated
 	data.celine.scopes.has_any_scope(required_scopes[input.action.name])
+}
+
+allow if {
+	is_service
+	is_delegated
+	data.celine.scopes.has_any_scope(required_scopes[input.action.name])
+	actor_granted
 }
 
 # ── reasons ──────────────────────────────────────────────────────────────────
@@ -154,10 +203,16 @@ allow if {
 
 reason := "granted by realm group" if {
 	not is_service
+	not is_delegated
 	granted_by_realm_group
 } else := "granted by organization group" if {
 	not is_service
+	not is_delegated
 	granted_by_org_group
+} else := "granted by service scope, acting for an operator" if {
+	is_service
+	is_delegated
+	allow
 } else := "granted by service scope" if {
 	is_service
 	allow
@@ -167,6 +222,15 @@ reason := "granted by realm group" if {
 	not known_action
 } else := "service is missing a scope granting this action" if {
 	is_service
+	not data.celine.scopes.has_any_scope(required_scopes[input.action.name])
+} else := "a delegated action is reachable only through a service acting for an operator" if {
+	is_delegated
+	not is_service
+} else := "a delegated action needs an acting operator" if {
+	is_delegated
+	not has_actor
+} else := "the acting operator holds no group granting this action" if {
+	is_delegated
 } else := "a realm group is not a platform-wide grant — only admins and managers are" if {
 	some g in required_groups[input.action.name]
 	g in input.subject.groups

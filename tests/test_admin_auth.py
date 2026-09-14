@@ -167,6 +167,23 @@ class TestMe:
         body = client.get("/api/admin/me", headers=auth(operator_token(ORG, "admins"))).json()
         assert "orphan" not in [r["slug"] for r in body["recs"]]
 
+    def test_the_delegated_invitation_capability_is_never_listed(
+        self, client, operator_token, service_token
+    ):
+        """`members.invite` is reachable only through a service acting for someone.
+
+        So nobody holds it alone, and the console, which reads this list, shows no
+        button for it.
+        """
+        for token in (
+            operator_token(ORG, "managers", realm=("admins",)),
+            service_token("onboarding.admin"),
+        ):
+            body = client.get("/api/admin/me", headers=auth(token)).json()
+            assert body["recs"]
+            for rec in body["recs"]:
+                assert "members.invite" not in rec["capabilities"]
+
     def test_service_account_is_reported_as_such(self, client, service_token):
         body = client.get("/api/admin/me", headers=auth(service_token("onboarding.admin"))).json()
         assert body["subject_type"] == "service"

@@ -225,6 +225,13 @@ disables the account, and neither answer re-enables it. `send_failed` is the one
 outcome a retry that names `keycloak_user` re-runs although the step succeeded;
 `cooldown` and `no_email` are not re-run.
 
+The provisioning service is also called a second way, from outside approval. A community
+manager's "Send invitation" and "Reset password" on the `celine-community` dashboard reach
+`POST /participants/{community}/{key}/invitation` through this service's member-keyed routes.
+Those calls name the intent, pass every code through, and touch no step row. See
+[api-reference.md](api-reference.md) and
+[ADR-0005](decisions/ADR-0005-onboarding-is-the-one-caller-of-the-provisioning-service.md).
+
 ### What each refusal means
 
 | | Meaning |
@@ -240,7 +247,7 @@ Every refusal carries `{"detail": {"code", "message"}}` since the provisioning s
 1.2.0 contract, and this service branches on the `code` (`ProvisioningApiError.code`),
 never on the message. The message goes to the log.
 
-There is no `409` on this surface any more, and nothing to adopt by hand: the provisioning
+Enablement sees no `409` any more, and nothing to adopt by hand: the provisioning
 service has realm-wide reach, so an account created by anything else is found by address
 and adopted. ADR-0003's unreachable-duplicate case is gone with the grant that caused it.
 

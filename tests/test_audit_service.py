@@ -41,6 +41,10 @@ class TestActor:
             Actor.from_user(
                 JwtUser(sub="s", email="op@example.org", claims={"email": "op@example.org"})
             ),
+            Actor.delegated(
+                JwtUser(sub="s", email="op@example.org", claims={"azp": "oauth2_proxy"}),
+                JwtUser(sub="svc", claims={"client_id": "svc-community"}),
+            ),
             Actor.local_cli(),
             Actor.system("scheduled-retry"),
             Actor.shared_token(),

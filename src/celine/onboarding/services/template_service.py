@@ -143,6 +143,32 @@ def recs_for_organization(alias: str) -> list[str]:
     return [slug for slug in get_slugs() if organization_for(slug) == alias]
 
 
+def registry_community_for(rec_slug: str) -> str:
+    """The manifest's ``rec_registry.community``, or ``""`` when it declares none.
+
+    Read leniently, without :func:`rec_registry_binding`'s validation: resolving
+    one community must not fail because another REC's block is malformed. That
+    block is refused where it is used.
+    """
+    block = load_manifest(rec_slug).get("rec_registry")
+    if not isinstance(block, dict):
+        return ""
+    return str(block.get("community") or "").strip()
+
+
+def recs_for_registry_community(community: str) -> list[str]:
+    """Slugs of every active REC whose members the registry files under *community*.
+
+    The reverse of :func:`registry_community_for`, as :func:`recs_for_organization`
+    is of :func:`organization_for`. More than one is an authoring error, and the
+    caller says so rather than choosing: two manifests filing into one registry
+    community would give one member two sets of operators.
+    """
+    if not community:
+        return []
+    return [slug for slug in get_slugs() if registry_community_for(slug) == community]
+
+
 def _templates_dir() -> Path:
     p = Path(settings.templates_dir)
     if not p.is_absolute():

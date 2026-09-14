@@ -26,6 +26,10 @@ EDITOR = VIEWER | {"submissions.reveal", "submissions.write"}
 MANAGER = EDITOR | {"submissions.review", "enablement.retry", "export"}
 ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 
+# Reachable only by a service acting for an operator, so no caller holds it alone
+# and no capability set below contains it.
+DELEGATED = {"members.invite"}
+
 TIERS = {"viewers": VIEWER, "editors": EDITOR, "managers": MANAGER, "admins": ADMIN}
 
 # Which tiers mean anything at *realm* level. A realm badge grants its actions on
@@ -239,9 +243,9 @@ def test_non_platform_realm_denial_says_so(policy):
 # ---------------------------------------------------------------------------
 
 
-def test_service_admin_scope_grants_everything(policy):
+def test_service_admin_scope_grants_everything_but_delegated_actions(policy):
     caps = policy.capabilities(service("onboarding.admin"), organization=ORG)
-    assert caps == {c.value for c in ALL_CAPABILITIES}
+    assert caps == {c.value for c in ALL_CAPABILITIES} - DELEGATED
 
 
 def test_service_with_no_scope_gets_nothing(policy):
@@ -305,6 +309,136 @@ def test_group_named_scope_does_not_authorise_a_service(policy):
     # Typed as a user because groups are present; the realm admins group is what
     # grants it — not the scope.
     assert policy.capabilities(hybrid, organization=ORG) == ADMIN
+
+
+# ---------------------------------------------------------------------------
+# Delegated — a service acting for a verified operator
+# ---------------------------------------------------------------------------
+
+INVITE = Capability.MEMBERS_INVITE
+
+
+def community_service(*scopes: str) -> JwtUser:
+    return service(*scopes or ("onboarding.members.invite",))
+
+
+def test_a_service_acting_for_a_manager_of_the_rec_is_allowed(policy):
+    decision = policy.allow(
+        community_service(),
+        INVITE,
+        organization=ORG,
+        actor=operator(org=ORG, groups=("managers",)),
+    )
+    assert decision.allowed
+    assert decision.reason == "granted by service scope, acting for an operator"
+
+
+def test_an_org_admin_actor_is_allowed(policy):
+    actor = operator(org=ORG, groups=("admins",))
+    assert policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
+
+
+def test_acting_for_a_manager_of_another_organization_is_denied(policy):
+    decision = policy.allow(
+        community_service(),
+        INVITE,
+        organization=ORG,
+        actor=operator(org=OTHER_ORG, groups=("managers",)),
+    )
+    assert not decision.allowed
+    assert decision.reason == "the acting operator holds no group granting this action"
+
+
+def test_a_realm_manager_actor_is_allowed(policy):
+    actor = operator(realm=("managers",))
+    assert policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
+
+
+@pytest.mark.parametrize("tier", NON_PLATFORM_TIERS)
+def test_an_org_editor_or_viewer_actor_is_denied(policy, tier):
+    actor = operator(org=ORG, groups=(tier,))
+    assert not policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
+
+
+def test_a_realm_editor_actor_is_denied(policy):
+    actor = operator(realm=("editors",))
+    assert not policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
+
+
+def test_an_actor_in_an_untyped_organization_is_denied(policy):
+    actor = operator(org=ORG, groups=("managers",), org_type=None)
+    assert not policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
+
+
+def test_a_service_with_the_scope_and_no_actor_is_denied(policy):
+    decision = policy.allow(community_service(), INVITE, organization=ORG)
+    assert not decision.allowed
+    assert decision.reason == "a delegated action needs an acting operator"
+
+
+def test_a_service_actor_is_not_an_operator(policy):
+    """Another service's token in the actor slot names nobody's decision."""
+    decision = policy.allow(
+        community_service(), INVITE, organization=ORG, actor=service("onboarding.admin")
+    )
+    assert not decision.allowed
+    assert decision.reason == "a delegated action needs an acting operator"
+
+
+def test_onboarding_admin_needs_an_actor_too(policy):
+    admin = service("onboarding.admin")
+    manager = operator(org=ORG, groups=("managers",))
+    assert policy.allow(admin, INVITE, organization=ORG, actor=manager).allowed
+    assert not policy.allow(admin, INVITE, organization=ORG).allowed
+
+
+def test_a_service_without_the_scope_is_denied_even_with_an_actor(policy):
+    decision = policy.allow(
+        service("onboarding.submissions.review"),
+        INVITE,
+        organization=ORG,
+        actor=operator(org=ORG, groups=("managers",)),
+    )
+    assert not decision.allowed
+    assert "missing a scope" in (decision.reason or "")
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        operator(org=ORG, groups=("managers",)),
+        operator(org=ORG, groups=("admins",)),
+        operator(realm=("admins",)),
+    ],
+    ids=["org-manager", "org-admin", "realm-admin"],
+)
+def test_a_managers_own_token_is_denied(policy, caller):
+    """The dashboard is the one path, so the community's own audit row always exists."""
+    decision = policy.allow(caller, INVITE, organization=ORG)
+    assert not decision.allowed
+    assert "only through a service" in (decision.reason or "")
+
+
+def test_an_operator_acting_for_themselves_is_still_denied(policy):
+    manager = operator(org=ORG, groups=("managers",))
+    assert not policy.allow(manager, INVITE, organization=ORG, actor=manager).allowed
+
+
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_no_operator_lists_the_delegated_capability(policy, tier):
+    user = operator(org=ORG, groups=(tier,), realm=(tier,))
+    assert DELEGATED.isdisjoint(policy.capabilities(user, organization=ORG))
+
+
+def test_the_actor_does_not_widen_a_non_delegated_action(policy):
+    """A service without a scope stays denied, whoever it claims to act for."""
+    decision = policy.allow(
+        community_service(),
+        Capability.SUBMISSIONS_PURGE,
+        organization=ORG,
+        actor=operator(realm=("admins",)),
+    )
+    assert not decision.allowed
 
 
 # ---------------------------------------------------------------------------

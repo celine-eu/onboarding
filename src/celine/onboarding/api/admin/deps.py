@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Path segments the admin router uses literally, which therefore cannot also be a
 # REC slug at this prefix. Checked at startup so the collision is a boot failure
-# rather than a REC that mysteriously 404s.
-RESERVED_SLUGS = frozenset({"recs", "me", "ping"})
+# rather than a REC that mysteriously 404s. `communities` is the member-keyed
+# surface in `api/admin/members.py`, addressed by registry community, not by slug.
+RESERVED_SLUGS = frozenset({"recs", "me", "ping", "communities"})
 
 
 def _extract_token(request: Request) -> str | None:

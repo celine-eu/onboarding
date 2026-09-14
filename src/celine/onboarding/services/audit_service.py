@@ -68,6 +68,25 @@ class Actor:
         )
 
     @classmethod
+    def delegated(cls, user, service) -> Actor:
+        """An operator acting through another service, both tokens verified.
+
+        The person is the actor: `sub` and `email` come from *their* token. The
+        client id is the **calling service's**, so the row reads "this manager,
+        through the community dashboard". `from_user` would record the operator
+        token's own `azp`, which names the browser client (`oauth2_proxy`) and
+        not the service that asked.
+        """
+        claims = getattr(service, "claims", None) or {}
+        client_id = claims.get("client_id") or claims.get("azp")
+        return cls(
+            type="user",
+            sub=user.sub,
+            email=user.email,
+            client_id=str(client_id) if client_id else None,
+        )
+
+    @classmethod
     def local_cli(cls) -> Actor:
         """`onboarding-cli --local`, the break-glass path with no token at all.
 

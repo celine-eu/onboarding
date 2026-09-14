@@ -16,6 +16,7 @@ from celine.onboarding.api.admin import (
     enablement,
     exports,
     me,
+    members,
     recs,
     stats,
     submissions,
@@ -31,6 +32,8 @@ def create_admin_router() -> APIRouter:
     # actually named "recs" is a boot failure rather than a silent 404.
     router.include_router(me.router)
     router.include_router(recs.router)
+    # Keyed on the registry community, not on a slug. `communities` is reserved.
+    router.include_router(members.router)
 
     router.include_router(submissions.router)
     router.include_router(verifications.router)

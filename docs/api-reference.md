@@ -111,4 +111,67 @@ endpoint needs is in brackets.
 | `POST` | `/api/admin/{rec}/exports/csv` | Streamed CSV; naming a recipient records a `DataDisclosed` event [`export`] |
 | `POST` | `/api/admin/{rec}/exports/pod-list` | Consented supply points for one offer [`export`] |
 | `GET` | `/api/admin/{rec}/audit-logs` | This community's trail only [`audit.read`] |
+| `POST` | `/api/admin/communities/{community}/members/{member_key}/invitation` | Email a registry member an invitation to set a password. **Delegated**, see below [`members.invite`] |
+| `POST` | `/api/admin/communities/{community}/members/{member_key}/password-reset` | Email a registry member a password reset. **Delegated**, see below [`members.invite`] |
+
+**Member-keyed, delegated (`/api/admin/communities/**`):**
+
+These two routes are how a community manager's "Send invitation" and "Reset password"
+buttons on the `celine-community` dashboard reach the provisioning service. This service is
+the provisioning service's only caller. Unlike the rest of the admin surface, they are keyed
+on the registry's own pair, not on a REC slug and a submission. A member imported into the
+registry is therefore as reachable as one onboarded here.
+
+- `{community}` is the **registry community key**: the manifest's `rec_registry.community`,
+  not the slug. It resolves to exactly one REC. A key that no manifest declares is
+  `404 community_not_served`. A key that two manifests declare is `409 community_ambiguous`,
+  and it is logged as an authoring error.
+- `{member_key}` is the registry member key. Both values reach the provisioning service
+  unchanged.
+- **No request body.** The route is the intent, so the reset route cannot send an invitation.
+- **No submission is read and nothing local changes** except one audit row.
+
+**Two tokens, both verified.** The caller is a service holding `onboarding.members.invite`,
+presented in `Authorization: Bearer`. It forwards the manager's own access token in
+`X-Acting-User-Token`. The policy allows the call only when the service holds the scope
+**and** the manager holds `admins` or `managers` on the REC's organization, or at realm
+level. A manager's token alone is refused, and so is any service alone, `onboarding.admin`
+included. See [authorization.md](authorization.md#delegated-actions).
+
+- A request that also carries `x-auth-request-access-token` is refused, because it came
+  through the public ingress.
+- Call these routes on the internal address only.
+
+A `200` is `{"code", "kind", "lifespanSeconds"}`:
+- `code` is `sent`, or `not_on_dev_list` when dev email mode held the email back;
+- `kind` is `invitation` or `password_reset`.
+
+Every refusal is `{"detail": {"code", "message"}}`. **Branch on `code`.** The message is
+English, for logs, and never relays the provisioning service's own words.
+
+| Status | `code` | From |
+|---|---|---|
+| `401` | `invalid_token` (the service token), `actor_token_invalid` (missing or invalid `X-Acting-User-Token`), `proxy_token_refused` | here |
+| `403` | `forbidden`; the message is the policy's reason | here |
+| `404` | `community_not_served` | here |
+| `404` | `community_not_found`, `member_not_found`, `account_not_found` | provisioning, passed through |
+| `409` | `community_ambiguous` | here |
+| `409` | `account_disabled`, `no_email` (nothing sent), `has_password` (on an invitation), `no_password` (on a reset) | provisioning, passed through |
+| `429` | `cooldown`, with `retryAfterSeconds` and a `Retry-After` header | provisioning, passed through |
+| `502` | `send_failed` (retryable: a failed send starts no cooldown), `registry_unavailable`, `provisioning_failed` | provisioning, passed through |
+| `502` | `provisioning_refused`: the provisioning service refused **this** service's credential, or it could not get one. A deployment fault, logged at `ERROR` | here |
+| `503` | `provisioning_not_configured` (`PROVISIONING_URL` is empty), `provisioning_unavailable` (timeout or connection error), `admin_not_configured` | here |
+
+A code not listed keeps its status and its code. A provisioning refusal that carries no code
+arrives as `http_<status>`.
+
+Every request that passes authorisation writes one audit row, including one the provisioning
+service refused:
+- `action` is `member_invitation` or `member_password_reset`;
+- `entity_type` is `registry_member`, and `entity_id` is the member key;
+- `actor_*` holds the **manager's** `sub` and email, and the **calling service's** client id;
+- `detail` is `community=… code=… status=…`. The status is `none` when the provisioning
+  service did not answer.
+
+A denied request is logged and is not audited.
 

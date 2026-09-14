@@ -323,9 +323,10 @@ def test_permissive_flag_allows_boot_without_policies(
         policy_module.get_policy.cache_clear()
 
 
-def test_reserved_rec_slug_refuses_to_start(seed_rec, _oidc_configured):
-    """A REC named `recs` could never be addressed under /api/admin."""
-    seed_rec("recs", organization="community-a")
+@pytest.mark.parametrize("slug", ["recs", "communities"])
+def test_reserved_rec_slug_refuses_to_start(seed_rec, _oidc_configured, slug):
+    """A REC named `recs` or `communities` could never be addressed under /api/admin."""
+    seed_rec(slug, organization="community-a")
 
     with pytest.raises(RuntimeError, match="reserved by the admin API"):
         app_main._validate_admin_config()

@@ -326,6 +326,22 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
     )
 
 
+async def send_member_email(community: str, member_key: str, *, intent: str):
+    """Ask the provisioning service to email a registry member the email *intent* names.
+
+    ``invitation`` or ``password_reset``. The service checks the intent against
+    the account and refuses a mismatch rather than sending the other email.
+
+    Keyed on the registry's own pair, passed through unchanged: no submission is
+    read, so a member imported from the registry and one onboarded here are the
+    same request. Refusals propagate as ``ProvisioningApiError`` and a transport
+    failure as ``httpx.TransportError``; what each means to the caller is decided
+    by the route, in ``api/admin/members.py``. No retry: sending again is a
+    person's decision, and the service's cooldown is the only rate guard.
+    """
+    return await _get_client().send_invitation(community, member_key, intent=intent)
+
+
 async def disable_participant(submission: Submission) -> str:
     """Revoke this participant's access, without destroying anything.
 

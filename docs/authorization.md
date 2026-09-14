@@ -21,6 +21,8 @@ organization, so a scope is the only way for it to express intent — and, becau
 there is no organization to check, a scoped service can act on any community.
 That is why a narrow scope matters more for a service than for a person.
 
+**A delegated action needs both.** See [Delegated actions](#delegated-actions).
+
 Subject type is decided by **organization/group presence first**, falling back to
 `is_service_account()`. The heuristic alone misfires on a user JWT that carries a
 `scope` claim but no `groups`.
@@ -81,6 +83,44 @@ has no typed organization and its operators are refused** — visibly, with a re
 naming the type, rather than silently. That is deliberate: tolerating a missing
 attribute would make the check bypassable by leaving it off.
 
+## Delegated actions
+
+`members.invite` is the one capability that neither subject type reaches alone. It covers
+the two member-keyed routes that email a registry member
+([api-reference.md](api-reference.md)). It is allowed only when **both** of these hold:
+
+1. **The caller is a service holding `onboarding.members.invite`**, presented in
+   `Authorization`.
+2. **It forwards a verified operator token** in `X-Acting-User-Token`, and that operator
+   holds `admins` or `managers` on the REC's organization, or at realm level. The rules are
+   exactly the ones above, applied to the operator instead of the caller.
+
+What follows from that:
+- **A manager's own token is refused**, even a realm `admins`. The community dashboard is the
+  one path, so its own audit row always exists.
+- **No service can send alone.** That includes `onboarding.admin`, which otherwise satisfies
+  every scope. An email to a member only ever follows a person's decision.
+- **`/api/admin/me` never lists `members.invite`.** Nobody holds it alone, so the console has
+  no button for it.
+
+**The operator's identity is a token, not a header naming them.** Onboarding verifies it
+with the same JWKS, issuer and `svc-onboarding` audience check as a console request. A
+manager's oauth2-proxy token already carries that audience. So the policy judges real
+claims, and the audit row records a signed `sub`, not a string some caller asserted.
+
+**The delegated dependency never reads `x-auth-request-access-token`, and it refuses a
+request that carries it.** Everywhere else that header is read first. Here it would
+authenticate the request as the manager and skip the scope check.
+
+In the rego the operator is `input.environment.actor`. The SDK's engine serialises a fixed
+input shape, and `environment` is its free-form slot. `security/policy.py` builds it with
+the same code that builds `input.subject`. So the realm and organization levels stay apart,
+and only the organization matching this REC is passed.
+
+Two policies check the same manager: `celine-community`'s on its community, and this one on
+the REC's organization. Both read the same Keycloak organization membership. That is defence
+in depth, not a second source of truth.
+
 ## Tenancy
 
 A REC's manifest names the Keycloak organization that owns it:
@@ -110,7 +150,11 @@ onboarding.submissions.read     onboarding.enablement.revoke
 onboarding.submissions.reveal   onboarding.audit.read
 onboarding.submissions.write    onboarding.export
 onboarding.submissions.review   onboarding.submissions.purge
+onboarding.members.invite
 ```
+
+`onboarding.members.invite` is for `celine-community` alone, and it is useless without a
+manager's token. See [Delegated actions](#delegated-actions).
 
 ## How a request is decided
 
@@ -141,7 +185,7 @@ onboarding.submissions.review   onboarding.submissions.purge
 Startup refuses four configurations in which the console would *appear* guarded
 and not be: `ADMIN_TOKEN` still set, no OIDC issuer, unloadable policies without
 the permissive flag, and a REC whose slug collides with a literal admin path
-(`recs`, `me`, `ping`).
+(`recs`, `me`, `ping`, `communities`).
 
 ## Ingress
 

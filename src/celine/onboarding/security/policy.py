@@ -48,6 +48,10 @@ class Capability(enum.StrEnum):
     ENABLEMENT_REVOKE = "enablement.revoke"
     AUDIT_READ = "audit.read"
     EXPORT = "export"
+    #: Delegated: allowed only to a service acting for a verified operator, so a
+    #: person evaluating it alone is always denied and `/api/admin/me` never lists
+    #: it. See `delegated_actions` in the rego.
+    MEMBERS_INVITE = "members.invite"
 
 
 ALL_CAPABILITIES: tuple[Capability, ...] = tuple(Capability)
@@ -114,8 +118,13 @@ class OnboardingAccessPolicy:
         capability: Capability | str,
         *,
         organization: str | None,
+        actor: JwtUser | None = None,
     ) -> Decision:
-        """Decide whether *user* may perform *capability* on *organization*'s REC."""
+        """Decide whether *user* may perform *capability* on *organization*'s REC.
+
+        *actor* is the operator a service acts for, from their own verified token.
+        Only a delegated capability reads it; every other one ignores it.
+        """
         action = capability.value if isinstance(capability, Capability) else str(capability)
 
         if self._engine is None:
@@ -130,7 +139,7 @@ class OnboardingAccessPolicy:
             return Decision(False, "authorization unavailable")
 
         try:
-            policy_input = self._policy_input(user, action, organization)
+            policy_input = self._policy_input(user, action, organization, actor=actor)
             result = self._engine.evaluate_decision(_PACKAGE, policy_input)
             decision = Decision(allowed=bool(result.allowed), reason=result.reason or None)
         except Exception as exc:
@@ -140,18 +149,21 @@ class OnboardingAccessPolicy:
             logger.exception("Policy evaluation failed for %s: %s", action, exc)
             return Decision(False, "authorization error")
 
+        acting = actor.sub if actor is not None else None
         if decision.allowed:
             logger.debug(
-                "Allowed sub=%s action=%s org=%s reason=%s",
+                "Allowed sub=%s actor=%s action=%s org=%s reason=%s",
                 user.sub,
+                acting,
                 action,
                 organization,
                 decision.reason,
             )
         else:
             logger.warning(
-                "Denied sub=%s action=%s org=%s reason=%s",
+                "Denied sub=%s actor=%s action=%s org=%s reason=%s",
                 user.sub,
+                acting,
                 action,
                 organization,
                 decision.reason,
@@ -172,62 +184,26 @@ class OnboardingAccessPolicy:
 
     # -- input construction ------------------------------------------------
 
-    def _policy_input(self, user: JwtUser, action: str, organization: str | None):
-        from celine.sdk.policies import (
-            Action,
-            PolicyInput,
-            Resource,
-            ResourceType,
-            Subject,
-            SubjectType,
-        )
+    def _policy_input(
+        self,
+        user: JwtUser,
+        action: str,
+        organization: str | None,
+        *,
+        actor: JwtUser | None = None,
+    ):
+        from celine.sdk.policies import Action, PolicyInput, Resource, ResourceType
 
-        claims = user.claims or {}
-        aliases = user.organization_aliases
-        realm = realm_groups(claims)
-
-        # Prefer organization/group presence as the authoritative signal for
-        # "this is a human". `is_service_account()` can misfire on a user JWT
-        # that carries a `scope` claim but no `groups` — the same trap
-        # celine-grid documents.
-        if aliases or realm:
-            subject_type = SubjectType.USER
-        elif user.is_service_account:
-            subject_type = SubjectType.SERVICE
-        else:
-            subject_type = SubjectType.USER
-
-        scope_claim = claims.get("scope") or ""
-        scopes = scope_claim.split() if isinstance(scope_claim, str) else list(scope_claim)
-
-        # Only the organization matching *this* request is passed through, along
-        # with that organization's groups and type. The rego therefore cannot
-        # compare a group from one community against another community's REC,
-        # and it can ask what kind of organization this is: the console
-        # administers RECs, so one the realm does not type as a REC authorises
-        # nothing here — see `granted_by_org_group` in the rego.
-        #
-        # `JwtUser.organizations` is parsed by `from_token`, which is the only
-        # way this service ever builds one. The SDK reads the organization's
-        # attributes flattened-first, which is the shape a real Keycloak token
-        # carries; a policy written against `attributes.type` matches nothing.
-        matched_org = user.get_organization(organization) if organization else None
-        matched = matched_org.alias if matched_org else None
-        org_groups = matched_org.groups if matched_org else []
-        org_type = matched_org.type if matched_org else None
+        # The acting operator goes in `environment`, because the SDK's engine
+        # serialises a fixed shape with no top-level slot for a second principal.
+        # It is built by the same code as the subject, so the rego judges it by the
+        # same rules and it cannot carry a group from another community either.
+        environment = {}
+        if actor is not None:
+            environment["actor"] = _subject(actor, organization).model_dump(mode="json")
 
         return PolicyInput(
-            subject=Subject(
-                id=user.sub,
-                type=subject_type,
-                groups=realm,
-                scopes=scopes,
-                claims={
-                    "organization": matched,
-                    "org_groups": org_groups,
-                    "org_type": org_type,
-                },
-            ),
+            subject=_subject(user, organization),
             resource=Resource(
                 # USERDATA is a generic stand-in: access.rego inspects only
                 # resource.attributes, never resource.type, and the SDK's
@@ -237,7 +213,59 @@ class OnboardingAccessPolicy:
                 attributes={"organization": organization},
             ),
             action=Action(name=action),
+            environment=environment,
         )
+
+
+def _subject(user: JwtUser, organization: str | None):
+    """The policy's view of one principal, against one REC's organization."""
+    from celine.sdk.policies import Subject, SubjectType
+
+    claims = user.claims or {}
+    aliases = user.organization_aliases
+    realm = realm_groups(claims)
+
+    # Prefer organization/group presence as the authoritative signal for
+    # "this is a human". `is_service_account()` can misfire on a user JWT
+    # that carries a `scope` claim but no `groups` — the same trap
+    # celine-grid documents.
+    if aliases or realm:
+        subject_type = SubjectType.USER
+    elif user.is_service_account:
+        subject_type = SubjectType.SERVICE
+    else:
+        subject_type = SubjectType.USER
+
+    scope_claim = claims.get("scope") or ""
+    scopes = scope_claim.split() if isinstance(scope_claim, str) else list(scope_claim)
+
+    # Only the organization matching *this* request is passed through, along
+    # with that organization's groups and type. The rego therefore cannot
+    # compare a group from one community against another community's REC,
+    # and it can ask what kind of organization this is: the console
+    # administers RECs, so one the realm does not type as a REC authorises
+    # nothing here — see `org_group_grants` in the rego.
+    #
+    # `JwtUser.organizations` is parsed by `from_token`, which is the only
+    # way this service ever builds one. The SDK reads the organization's
+    # attributes flattened-first, which is the shape a real Keycloak token
+    # carries; a policy written against `attributes.type` matches nothing.
+    matched_org = user.get_organization(organization) if organization else None
+    matched = matched_org.alias if matched_org else None
+    org_groups = matched_org.groups if matched_org else []
+    org_type = matched_org.type if matched_org else None
+
+    return Subject(
+        id=user.sub,
+        type=subject_type,
+        groups=realm,
+        scopes=scopes,
+        claims={
+            "organization": matched,
+            "org_groups": org_groups,
+            "org_type": org_type,
+        },
+    )
 
 
 @lru_cache(maxsize=1)

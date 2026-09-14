@@ -42,3 +42,4 @@ edited to say something else.
 | [0002](ADR-0002-administer-the-realm-as-celines-own-client.md) | The realm is administered by celine's own client, not the dataspace's — supersedes 0001 |
 | [0003](ADR-0003-provision-into-the-group-this-service-may-administer.md) | Participants are created into the one group this service may administer, and found by scanning it — completes 0002 |
 | [0004](ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md) | This service holds no Keycloak grant and asks celine-policies' provisioning service for a login — supersedes 0003 |
+| [0005](ADR-0005-onboarding-is-the-one-caller-of-the-provisioning-service.md) | Every send to the provisioning service goes through this service, by member-keyed routes a service calls on a manager's behalf — builds on 0004 |

@@ -111,10 +111,18 @@ the **one exception** to "a succeeded step is not re-run": naming step 1 in a re
 re-runs it. "Retry all" does not, and neither does pressing Approve again, so an email
 is never re-sent by accident.
 
-**There is no re-send or password-reset button in this console.** A community
-manager's re-send and reset are planned to reach the provisioning service through new
-member-keyed admin routes in this service, which are not built yet. Until they are,
-the only send this console can cause besides Approve is the retry of a failed one.
+**There is no re-send or password-reset button in this console, by design.** A
+community manager sends an invitation or a password reset from the `celine-community`
+dashboard. That call reaches the provisioning service through this service's member-keyed
+routes, `POST /api/admin/communities/{community}/members/{key}/invitation` and
+`…/password-reset` ([api-reference.md](api-reference.md)). Those routes accept only a
+service acting for a manager, so no one holds that capability alone, and this console, which
+shows only what `/api/admin/me` lists, has no button for it. The only send this console can
+cause besides Approve is the retry of a failed one.
+
+A send from the dashboard changes no step row here. A submission whose step 1 says
+`send_failed` still says so after a manager has sent from the dashboard. Nothing links a
+registry member back to a submission.
 
 Step 3 does one thing more than its name says: the DID it mints is written back
 onto the member step 2 created. That is the key anything else uses to attribute a
@@ -249,3 +257,11 @@ supply point and consumption history; listing filenames is not.
 
 An attempted approval that a blocking step refused is recorded as
 `transition_failed`. The step rows say what broke; only the trail says who tried.
+
+A manager's send from the `celine-community` dashboard appears in this REC's trail too, as
+`member_invitation` or `member_password_reset`:
+- `entity_type` is `registry_member`, and `entity_id` is the member key;
+- the actor is the manager, and the client id is the community service they came through;
+- `detail` carries the provisioning service's code.
+
+The dashboard keeps its own row for the same press. Each service records its own act.
