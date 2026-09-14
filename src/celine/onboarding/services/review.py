@@ -13,6 +13,7 @@ import logging
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission, SubmissionStatus
 from celine.onboarding.services import audit_service, enablement
 from celine.onboarding.services.audit_service import Actor
@@ -21,17 +22,51 @@ from celine.onboarding.workflows.engine import can_submit, validate_transition
 logger = logging.getLogger(__name__)
 
 
+def _phone_unverified_where_required(submission: Submission) -> bool:
+    from celine.onboarding.services import template_service
+
+    manifest = template_service.load_manifest(submission.rec_slug)
+    return "phone_verify" in manifest.get("steps", []) and not submission.phone_verified
+
+
+def phone_verification_waived(submission: Submission) -> bool:
+    """Whether approval skips a phone verification this deployment cannot perform.
+
+    The REC asks for `phone_verify`, the phone is unverified, and verification is
+    switched off. Holding approval for it would block every such community
+    outright, so the gate steps aside — and says so, on the submission and in the
+    approval's audit row, so an unverified phone is never mistaken for a skipped
+    step.
+    """
+    return not settings.phone_verification_enabled and _phone_unverified_where_required(submission)
+
+
 def _assert_phone_verified(submission: Submission) -> None:
     """Block approval when the REC requires phone verification and it is missing.
 
     Only enforced for RECs whose manifest lists the `phone_verify` step, so RECs
-    that never opted into SMS verification are unaffected.
+    that never opted into SMS verification are unaffected, and only while the
+    deployment can verify a phone at all (see `phone_verification_waived`).
     """
-    from celine.onboarding.services import template_service
-
-    manifest = template_service.load_manifest(submission.rec_slug)
-    if "phone_verify" in manifest.get("steps", []) and not submission.phone_verified:
+    if phone_verification_waived(submission):
+        return
+    if _phone_unverified_where_required(submission):
         raise ValueError("Cannot approve: phone number is not verified")
+
+
+def _assert_verified(submission: Submission) -> None:
+    """Block approval until the REC has recorded how it verified the person.
+
+    Not a document requirement: the community may check offline. What approval
+    needs is that somebody vouched, said how, and is on record — that is what the
+    credential's `verificationMethod` and the registry member then carry. A
+    submission with no `verifications` attribute at all is refused, not waved
+    through.
+    """
+    if getattr(submission, "verification", None) is None:
+        raise ValueError(
+            "Cannot approve: no verification of the participant's identity and POD is recorded"
+        )
 
 
 def check(submission: Submission, target: SubmissionStatus) -> None:
@@ -49,6 +84,7 @@ def check(submission: Submission, target: SubmissionStatus) -> None:
 
     if target == SubmissionStatus.APPROVED:
         _assert_phone_verified(submission)
+        _assert_verified(submission)
 
 
 async def transition(
@@ -71,6 +107,7 @@ async def transition(
     """
     previous = submission.status
     check(submission, target)
+    waived = target == SubmissionStatus.APPROVED and phone_verification_waived(submission)
 
     if target == SubmissionStatus.APPROVED:
         # The status is deliberately not set yet: the person is not enabled, so
@@ -99,6 +136,8 @@ async def transition(
     detail = f"{previous.value} -> {target.value}"
     if reason:
         detail = f"{detail} — {reason}"
+    if waived:
+        detail = f"{detail} (phone verification waived: disabled on this deployment)"
     audit_service.record(
         db,
         action="transition",

@@ -1022,14 +1022,43 @@ class TestTheCredentialSaysHowThePersonWasChecked:
         assert bodies[0]["verified_by"] == "did:web:rec.example"
         assert bodies[0]["verification_method"] == "submission-review"
 
-    async def test_both_doors_record_the_same_method(self):
-        """The operator's answer, asserted so a later reader cannot re-split it.
+    async def test_the_bare_value_is_still_submission_review(self):
+        """The prefix every value keeps, and the whole value where nothing was recorded.
 
-        The two entrypoints are the same check performed in different places —
-        so the credential records the assurance and not the door. A constant
-        rather than a setting for the same reason.
+        Until 2026-09-14 both doors sent exactly this. The requester then asked for
+        the credential to say how the REC checked; the approval door appends the
+        recorded method, and a reader matching on the prefix still recognises it.
         """
         assert di.VERIFICATION_METHOD == "submission-review"
+
+    @pytest.mark.parametrize(
+        ("method", "expected"),
+        [
+            ("offline", "submission-review:offline"),
+            ("uploaded-document", "submission-review:uploaded-document"),
+        ],
+    )
+    async def test_the_funnel_sends_the_recorded_method(
+        self, monkeypatch, submission, _enable_vc, bind_rec, method, expected
+    ):
+        from types import SimpleNamespace
+
+        from celine.onboarding.models.verification import VerificationMethod
+
+        submission.verification = SimpleNamespace(verification_method=VerificationMethod(method))
+        di._token_provider = _mock_token_provider()
+        bodies: list[dict] = []
+
+        def handler(req):
+            if "users/resolve" in str(req.url):
+                return httpx.Response(200, json=DERIVE_RESPONSE)
+            bodies.append(json.loads(req.content))
+            return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+        _patch_httpx(monkeypatch, handler)
+        await di.provision_user_identity(submission)
+
+        assert bodies[0]["verification_method"] == expected
 
     async def test_a_rec_with_no_organization_did_sends_no_authority(
         self, monkeypatch, submission, _enable_vc

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from celine.onboarding.models.document import DocumentType
 from celine.onboarding.models.submission import ParticipantLocale, SubmissionStatus
+from celine.onboarding.models.verification import VerificationMethod
 from celine.onboarding.validators.fiscal_code import validate_fiscal_code
 from celine.onboarding.validators.pod_code import validate_pod_code
 
@@ -155,6 +156,28 @@ class SubmissionCreatedRead(SubmissionRead):
     session_token: str
 
 
+class VerificationCreate(BaseModel):
+    """How the REC verified the participant's identity and that they hold the POD."""
+
+    method: VerificationMethod
+    # Required for `uploaded-document`, refused for `offline`.
+    document_id: uuid.UUID | None = None
+    note: str | None = Field(None, max_length=1000)
+
+
+class VerificationRead(BaseModel):
+    id: uuid.UUID
+    method: VerificationMethod
+    document_id: uuid.UUID | None
+    note: str | None
+    actor_type: str
+    actor_sub: str | None
+    actor_email: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class SubmissionAdminRead(SubmissionRead):
     consent_ip: str
     dataspace_subject_id: str | None
@@ -166,6 +189,12 @@ class SubmissionAdminRead(SubmissionRead):
     # only in a log and the person's decision is quietly not in force. Review is
     # the one moment a human looks at this submission.
     data_sharing_issues: list[str] = []
+    # The REC asks for a verified phone, it is not verified, and this deployment
+    # cannot verify one, so approval does not wait for it. Set by the admin API.
+    phone_verification_waived: bool = False
+    # The REC's verification in force, if any. Approval refuses without one; the
+    # full history is at `.../verifications`.
+    verification: VerificationRead | None = None
 
     @model_validator(mode="after")
     def explain_unprovisioned_share(self) -> "SubmissionAdminRead":

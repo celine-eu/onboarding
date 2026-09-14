@@ -92,6 +92,11 @@ def upsert_route(api, *, community=COMMUNITY, key="20260727-abcd", **body):
     )
 
 
+def error(status: int, code: str, message: str) -> httpx.Response:
+    """The service's error body since its 1.2.0 contract: `detail` is `{code, message}`."""
+    return httpx.Response(status, json={"detail": {"code": code, "message": message}})
+
+
 def disable_route(api, *, community=COMMUNITY, key="20260727-abcd", **body):
     payload = {"user_id": "kc-uuid-1", "username": "alice.rossi@example.org", "changed": True}
     payload.update(body)
@@ -233,6 +238,9 @@ class TestTheUpsertAsksForAnInvitation:
             ("not_on_dev_list", False),
             ("account_disabled", False),
             ("not_requested", False),
+            ("cooldown", False),
+            ("send_failed", False),
+            ("no_email", False),
         ],
     )
     async def test_the_outcome_comes_back_as_a_plain_code(self, bound, enabled, api, code, invited):
@@ -243,6 +251,15 @@ class TestTheUpsertAsksForAnInvitation:
         assert result.invitation == code
         assert isinstance(result.invitation, str)
         assert result.invited is invited
+
+    @pytest.mark.parametrize("code", ["cooldown", "send_failed", "no_email"])
+    async def test_an_email_that_did_not_go_out_is_not_a_failure(self, bound, enabled, api, code):
+        """`200` with the code: the account exists, so step 1 succeeds and says so."""
+        upsert_route(api, created=True, invitation=code, invited=False)
+        result = await pv.provision_participant(_sub())
+        assert result.user_id == "kc-uuid-1"
+        assert result.invitation == code
+        assert result.invited is False
 
     async def test_a_disabled_account_is_not_a_failure(self, bound, enabled, api):
         """Re-approval after revocation: `200` with `account_disabled` (O3). The
@@ -383,7 +400,7 @@ class TestWhenProvisioningRefuses:
 
     async def test_no_scope_is_a_configuration_error(self, bound, enabled, api):
         api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
-            return_value=httpx.Response(403, json={"detail": "requires scope '…'"})
+            return_value=error(403, "insufficient_scope", "requires scope '…'")
         )
         with pytest.raises(ConfigurationError) as exc:
             await pv.provision_participant(_sub())
@@ -391,7 +408,7 @@ class TestWhenProvisioningRefuses:
 
     async def test_a_bad_credential_is_a_configuration_error(self, bound, enabled, api):
         api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
-            return_value=httpx.Response(401, json={"detail": "invalid token"})
+            return_value=error(401, "invalid_token", "invalid token")
         )
         with pytest.raises(ConfigurationError) as exc:
             await pv.provision_participant(_sub())
@@ -401,12 +418,51 @@ class TestWhenProvisioningRefuses:
         """`502` is Keycloak having failed, not a refusal — and it is the one
         status here worth retrying, which is what the step row is for."""
         api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
-            return_value=httpx.Response(502, json={"detail": "keycloak unreachable"})
+            return_value=error(502, "provisioning_failed", "keycloak unreachable")
         )
         with pytest.raises(ValueError) as exc:
             await pv.provision_participant(_sub())
         assert not isinstance(exc.value, ConfigurationError)
         assert "502" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("code", "says"),
+        [
+            ("registry_unavailable", "could not reach the REC registry"),
+            ("provisioning_failed", "Keycloak failed behind the provisioning service"),
+            ("send_failed", "Keycloak could not send the email"),
+        ],
+    )
+    async def test_each_dependency_failure_says_which_and_to_retry(
+        self, bound, enabled, api, code, says
+    ):
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=error(502, code, "realm celine: connection refused")
+        )
+        with pytest.raises(ValueError) as exc:
+            await pv.provision_participant(_sub())
+        assert not isinstance(exc.value, ConfigurationError)
+        assert says in str(exc.value)
+        assert code in str(exc.value)
+        assert "retry" in str(exc.value)
+        assert "connection refused" not in str(exc.value)
+
+    async def test_an_unknown_community_is_a_configuration_error(self, bound, enabled, api):
+        """The manifest binds a community the registry does not hold: no retry fixes it."""
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=error(404, "community_not_found", "no community 'greenland'")
+        )
+        with pytest.raises(ConfigurationError) as exc:
+            await pv.provision_participant(_sub())
+        assert COMMUNITY in str(exc.value)
+        assert "rec_registry.community" in str(exc.value)
+
+    async def test_an_unknown_code_is_shown_beside_the_status(self, bound, enabled, api):
+        api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
+            return_value=error(502, "something_new", "…")
+        )
+        with pytest.raises(ValueError, match=r"\(502 something_new\)"):
+            await pv.provision_participant(_sub())
 
     async def test_the_refusal_body_is_not_shown_to_the_operator(self, bound, enabled, api, caplog):
         """It is written for whoever runs the provisioning service.
@@ -416,7 +472,7 @@ class TestWhenProvisioningRefuses:
         and the status is what somebody can act on.
         """
         api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
-            return_value=httpx.Response(502, json={"detail": "realm celine: connection refused"})
+            return_value=error(502, "provisioning_failed", "realm celine: connection refused")
         )
         with caplog.at_level("WARNING"):
             with pytest.raises(ValueError) as exc:
@@ -444,20 +500,84 @@ class TestRevokingALogin:
         detail = await pv.disable_participant(_sub())
         assert "already disabled" in detail
 
-    async def test_no_account_counts_as_done(self, bound, enabled, api):
+    @pytest.mark.parametrize(
+        ("code", "detail"),
+        [
+            ("account_not_found", "no account to disable"),
+            ("member_not_found", "no member to disable"),
+        ],
+    )
+    async def test_no_member_or_no_account_counts_as_done(self, bound, enabled, api, code, detail):
         """The same reading `deactivate_member` gives a 404.
 
-        There is nothing left to revoke either way, and refusing would leave the
-        local record claiming something that is no longer true.
+        The service resolved the lookup and there is nothing left to revoke, and
+        refusing would leave the local record claiming something that is no
+        longer true.
         """
         api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
-            return_value=httpx.Response(404, json={"detail": "greenland has no member '…'"})
+            return_value=error(404, code, "greenland has no member '…'")
         )
-        assert await pv.disable_participant(_sub()) == "no account to disable"
+        assert await pv.disable_participant(_sub()) == detail
+
+    async def test_an_unknown_community_fails_the_revocation(self, bound, enabled, api):
+        """`community_not_found` is not "nothing to revoke".
+
+        The service could not look the member up, so it cannot say whether a login
+        exists. Reporting success would mark the row revoked while the person can
+        still sign in.
+        """
+        api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
+            return_value=error(404, "community_not_found", "no community 'greenland'")
+        )
+        with pytest.raises(ConfigurationError) as exc:
+            await pv.disable_participant(_sub())
+        assert "revoking a login" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            # FastAPI's own unrouted 404, which a wrong PROVISIONING_URL produces.
+            httpx.Response(404, json={"detail": "Not Found"}),
+            httpx.Response(404, json={"detail": {"code": "something_new", "message": "…"}}),
+            httpx.Response(404, text="not json"),
+        ],
+    )
+    async def test_a_404_without_a_known_code_fails_the_revocation(
+        self, bound, enabled, api, response
+    ):
+        api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(return_value=response)
+        with pytest.raises(ValueError, match="revoking a login"):
+            await pv.disable_participant(_sub())
+
+    async def test_a_revocation_that_cannot_find_the_community_leaves_the_row_unrevoked(
+        self, bound, enabled, api
+    ):
+        """Through the runner: the login row is `failed`, not back to `pending`."""
+        from test_enablement import FakeDb, FakeSubmission
+
+        from celine.onboarding.models.enablement import EnablementStatus, EnablementStep
+        from celine.onboarding.services import enablement
+
+        api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
+            return_value=error(404, "community_not_found", "no community 'greenland'")
+        )
+        db = FakeDb()
+        submission = FakeSubmission(ref="20260727-abcd", rec_slug="example")
+        rows = await enablement.ensure_rows(db, submission)
+        login = rows[EnablementStep.KEYCLOAK_USER]
+        login.status = EnablementStatus.SUCCEEDED
+        login.external_ref = "kc-uuid-1"
+        login.invitation = "sent"
+
+        await enablement.revoke(db, submission)
+
+        assert login.status == EnablementStatus.FAILED
+        assert login.external_ref == "kc-uuid-1"
+        assert "revoke failed" in login.last_error
 
     async def test_a_refusal_still_raises(self, bound, enabled, api):
         api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
-            return_value=httpx.Response(403, json={"detail": "requires scope '…'"})
+            return_value=error(403, "insufficient_scope", "requires scope '…'")
         )
         with pytest.raises(ConfigurationError):
             await pv.disable_participant(_sub())

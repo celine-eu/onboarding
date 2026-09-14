@@ -92,7 +92,7 @@ fails.
 | `BREVO_API_KEY` | *(none)* | Brevo API key. Required for `brevo`. |
 | `BREVO_SMS_SENDER` | *(none)* | Alphanumeric sender id (≤11 chars) or E.164. Required for `brevo`. |
 | `SMS_OTP_TEMPLATE` | `Il tuo codice di verifica e' {code}` | Message body. Must contain `{code}`. |
-| `DPA_SMS_SIGNED` | `false` | Must be `yes` for any non-`log` provider — the app refuses to start otherwise (GDPR Art. 28). |
+| `DPA_SMS_SIGNED` | `false` | Required for a real provider (GDPR Art. 28). Without it, phone verification is off — see [When verification is off](#when-verification-is-off). |
 | `OTP_CODE_LENGTH` | `6` | Number of digits. |
 | `OTP_TTL_SECONDS` | `600` | Code validity window. |
 | `OTP_MAX_ATTEMPTS` | `3` | Wrong guesses before lockout. |
@@ -102,8 +102,9 @@ fails.
 ## GDPR
 
 Sending a phone number to an SMS gateway makes that gateway a data processor
-under GDPR Art. 28, exactly like the LLM extraction provider. The app enforces a
-signed DPA via `DPA_SMS_SIGNED=yes` before it will start with a real provider.
+under GDPR Art. 28, exactly like the extraction provider. The app uses a real
+provider only with `DPA_SMS_SIGNED=yes`; without it, verification is switched off
+rather than the service refusing to start.
 The legal basis for the processing is **legitimate interest (Art. 6(1)(f))** —
 identity verification for REC enrolment and prevention of fraudulent
 applications.
@@ -159,7 +160,25 @@ transition to `APPROVED` unless `phone_verified=true` — the attempt raises
 `Cannot approve: phone number is not verified`. RECs that do not list the step
 are unaffected: approval behaves exactly as before, and the verification
 endpoints remain callable but optional. This gate is enforced in
-`submission_service._assert_phone_verified`.
+`services/review.py`, `_assert_phone_verified`.
+
+## When verification is off
+
+Verification is on for a development provider (`log`, `console`, `dev`), and for
+`brevo` only with `DPA_SMS_SIGNED=yes`. Anything else switches it off, and the
+app logs one warning at startup naming the reason. Off:
+
+- `GET /api/{rec}/config` reports `features.phone_verification: false`, and the
+  wizard leaves a `phone_verify` step out of the steps it shows;
+- `POST /api/{rec}/submissions/{id}/verify-phone` and `/confirm-phone` answer
+  **403** with `{"detail": {"code": "phone_verification_disabled", ...}}`;
+- the approval gate above steps aside for a community that lists `phone_verify`,
+  since no phone could be verified. The admin submission carries
+  `phone_verification_waived: true`, the console says so beside the phone number,
+  and the approval's audit row ends with
+  `(phone verification waived: disabled on this deployment)`.
+
+A phone verified while verification was on stays verified.
 
 ## Wizard integration
 

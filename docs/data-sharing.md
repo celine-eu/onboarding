@@ -282,11 +282,11 @@ they had no dataspace identity.
 
 `GET /api/me/data-sharing` provisions one. Where the member's community takes
 part and they hold no presentable credential, it issues on the strength of that
-preregistration and re-resolves. The credential records **the same assurance the
-approval path records** — `verification_method: submission-review`, `verified_by`
-the REC's `organization_did`. The two doors are the same check performed in
-different places; where the check happened is not a property of the person's
-identity and is deliberately not in their credential.
+preregistration and re-resolves. The credential records `verification_method:
+submission-review` and `verified_by` the REC's `organization_did`. The approval path
+adds the method the operator recorded (`submission-review:offline`,
+`submission-review:uploaded-document`); this door has no recorded verification and
+sends the bare value.
 
 Four things constrain it:
 

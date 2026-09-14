@@ -68,6 +68,22 @@ test.describe('Operator console', () => {
 		await expect(page.getByText('Membro della comunità')).toBeVisible();
 	});
 
+	test('an unverified phone says approval does not wait for it when SMS is off', async ({
+		page
+	}) => {
+		// scripts/e2e.sh seeds a community asking for `phone_verify` and runs with a
+		// real SMS provider and no DPA_SMS_SIGNED, so no phone can be verified.
+		await signedIn(page);
+		await page.goto(`/admin/${REC}`);
+		await page.locator('tbody tr a').first().click();
+
+		await expect(
+			page.getByText('la verifica del telefono è disattivata su questa installazione', {
+				exact: false
+			})
+		).toBeVisible();
+	});
+
 	test('the invitation outcome is shown translated, never as the English detail', async ({
 		page
 	}) => {
@@ -101,6 +117,48 @@ test.describe('Operator console', () => {
 		).toBeVisible();
 	});
 
+	test('only a failed invitation send offers a retry on a succeeded login step', async ({
+		page
+	}) => {
+		await signedIn(page);
+		// Intercepted for the same reason as above: no provisioning service runs
+		// under e2e. The code is swapped between loads.
+		let code = 'send_failed';
+		await page.route('**/enablement', async (route) => {
+			const response = await route.fetch({
+				headers: { ...route.request().headers(), authorization: `Bearer ${TOKEN}` }
+			});
+			const body = await response.json();
+			body.steps[0] = {
+				...body.steps[0],
+				status: 'succeeded',
+				last_error: null,
+				detail: 'created, invitation not sent',
+				invitation: code
+			};
+			await route.fulfill({ response, json: body });
+		});
+		await page.goto(`/admin/${REC}`);
+		await page.locator('tbody tr a').first().click();
+
+		const loginStep = page.locator('ul.steps li').first();
+		await expect(
+			loginStep.getByText("Invito non inviato: non è stato possibile inviare l'email.", {
+				exact: false
+			})
+		).toBeVisible();
+		await expect(loginStep.getByRole('button', { name: 'Ritenta questo passo' })).toBeVisible();
+
+		for (const other of ['cooldown', 'no_email']) {
+			code = other;
+			await page.reload();
+			await expect(page.locator(`[data-invitation="${other}"]`)).toBeVisible();
+			await expect(
+				page.locator('ul.steps li').first().getByRole('button', { name: 'Ritenta questo passo' })
+			).toHaveCount(0);
+		}
+	});
+
 	test('the chosen language applies to the console and survives a reload', async ({ page }) => {
 		await signedIn(page);
 		await page.goto(`/admin/${REC}`);
@@ -127,6 +185,33 @@ test.describe('Operator console', () => {
 			await page.getByLabel('Motivo del rifiuto').fill('POD di un\'altra fornitura');
 			await expect(confirm).toBeEnabled();
 		}
+	});
+
+	test('approval waits for a recorded verification, then goes through', async ({ page }) => {
+		// The seeded submissions are under review with nothing recorded. The last row,
+		// because other tests open the first.
+		await signedIn(page);
+		await page.goto(`/admin/${REC}`);
+		await page.locator('tbody tr a').last().click();
+
+		const approve = page.getByRole('button', { name: 'Approva' });
+		await expect(approve).toBeDisabled();
+		await expect(page.getByText('Nessuna verifica registrata.', { exact: false })).toBeVisible();
+
+		// No document is uploaded, so only the offline check can be chosen.
+		await expect(page.getByLabel('Verificato su un documento caricato qui')).toBeDisabled();
+		await page.getByLabel('Verificato dalla comunità fuori dalla piattaforma').check();
+		await page.getByLabel('Nota (facoltativa)').fill('Documento visto in sede');
+		await page.getByRole('button', { name: 'Registra verifica' }).click();
+
+		await expect(page.getByText('Verifica registrata.')).toBeVisible();
+		await expect(page.locator('ol.verifications li')).toHaveCount(1);
+		await expect(approve).toBeEnabled();
+
+		await approve.click();
+		await expect(page.locator('.status')).toHaveText('Approvata');
+		// Decided: the verification can no longer change.
+		await expect(page.getByRole('button', { name: /Registra (una nuova )?verifica/ })).toHaveCount(0);
 	});
 
 	test('the audit trail lists this community only', async ({ page }) => {

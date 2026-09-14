@@ -150,8 +150,8 @@ class OpenAIExtractor:
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ) -> tuple[dict, dict]:
-        if not settings.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
+        if not settings.extraction_api_key:
+            raise RuntimeError("EXTRACTION_API_KEY is not set")
 
         content: list = []
         for i, (data, declared_mime) in enumerate(pages):
@@ -191,7 +191,7 @@ class OpenAIExtractor:
         content.append({"type": "text", "text": user_prompt or EXTRACTION_USER_PROMPT})
 
         client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
+            api_key=settings.extraction_api_key,
             base_url=settings.extraction_base_url,
         )
 

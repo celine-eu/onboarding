@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
-from celine.onboarding.config.settings import Settings, settings
+from celine.onboarding.config.settings import REAL_SMS_PROVIDERS, Settings, settings
 from celine.onboarding.security.middleware import AdminAuthMiddleware
 
 logger = logging.getLogger(__name__)
@@ -153,14 +153,32 @@ def _warn_document_processing() -> None:
     switch off the one feature that sends identity documents to a third party,
     not to take the whole onboarding down: the wizard works from the fields the
     participant types, and the API refuses the document routes on its own.
+
+    It also names `DPA_SIGNED` and `OPENAI_API_KEY` when a deployment still sets
+    them: they were renamed, and a leftover would otherwise look like the reason
+    scanning is on.
     """
+    renamed = [
+        f"{old} (now {new})"
+        for old, new, value in (
+            ("DPA_SIGNED", "EXTRACTION_ENABLED", settings.removed_dpa_signed),
+            ("OPENAI_API_KEY", "EXTRACTION_API_KEY", settings.removed_openai_api_key),
+        )
+        if value
+    ]
+    if renamed:
+        logger.warning(
+            "%s set, and no longer read: the document scanning switch was renamed. "
+            "Set the new names to enable it.",
+            ", ".join(renamed),
+        )
     if settings.document_processing_enabled:
         return
     missing = [
         name
         for name, present in (
-            ("DPA_SIGNED", settings.dpa_signed),
-            ("OPENAI_API_KEY", bool(settings.openai_api_key)),
+            ("EXTRACTION_ENABLED", settings.extraction_enabled),
+            ("EXTRACTION_API_KEY", bool(settings.extraction_api_key)),
         )
         if not present
     ]
@@ -168,10 +186,38 @@ def _warn_document_processing() -> None:
         "Document upload and scanning are disabled: %s not set. The wizard collects "
         "personal data without a bill or ID card, and the upload and extraction "
         "endpoints answer 403. Scanning sends identity documents to the extraction "
-        "provider (%s), so enable it only under a data processing agreement with "
-        "that provider (GDPR Art. 28).",
+        "endpoint (%s), so enable it only when that endpoint is operated in-house or "
+        "covered by a processing agreement keeping processing in the EU (GDPR Art. 28).",
         " and ".join(missing),
         settings.extraction_base_url,
+    )
+
+
+def _warn_phone_verification() -> None:
+    """Say once, at boot, that phone verification is off, and why.
+
+    This used to refuse to start. A real SMS gateway receives the participant's
+    phone number, so without a processing agreement it must not be used — but
+    that is a reason to switch verification off, not to take onboarding down.
+    Off, the wizard drops the `phone_verify` step, the phone endpoints answer
+    403, and approval no longer waits for a verification that cannot happen.
+    """
+    if settings.phone_verification_enabled:
+        return
+    name = settings.sms_provider.strip().lower()
+    if name in REAL_SMS_PROVIDERS:
+        why = (
+            f"SMS_PROVIDER={settings.sms_provider} is a real gateway and DPA_SMS_SIGNED is not set"
+        )
+    else:
+        why = f"SMS_PROVIDER={settings.sms_provider!r} is not a known provider"
+    logger.warning(
+        "Phone verification is disabled: %s. The wizard skips the phone_verify step, "
+        "the verify-phone and confirm-phone endpoints answer 403, and approval does "
+        "not require a verified phone. A real gateway receives participants' phone "
+        "numbers, so enable it only under a data processing agreement with that "
+        "provider (GDPR Art. 28).",
+        why,
     )
 
 
@@ -466,25 +512,7 @@ async def lifespan(app: FastAPI):
     await load_recs_from_db()
 
     _warn_document_processing()
-
-    # A real SMS gateway receives the participant's phone number, making it a
-    # processor under GDPR Art. 28 exactly as the extraction provider is.
-    sms_is_real = settings.sms_provider.strip().lower() not in {"log", "console", "dev"}
-    if sms_is_real and not settings.dpa_sms_signed:
-        raise RuntimeError(
-            f"\n\n"
-            f"═══════════════════════════════════════════════════════════════\n"
-            f"  DPA_SMS_SIGNED=yes is required in .env\n"
-            f"═══════════════════════════════════════════════════════════════\n\n"
-            f"SMS_PROVIDER={settings.sms_provider} sends participant phone\n"
-            f"numbers to an external SMS gateway.\n\n"
-            f"GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
-            f"with your provider before processing personal data.\n\n"
-            f"  1. Sign the DPA with your SMS provider\n"
-            f"  2. Set DPA_SMS_SIGNED=yes in your .env file\n\n"
-            f"For development, use SMS_PROVIDER=log instead.\n\n"
-            f"═══════════════════════════════════════════════════════════════\n"
-        )
+    _warn_phone_verification()
 
     await _validate_dataspace_config()
     _validate_admin_config()
@@ -528,8 +556,10 @@ def create_app() -> FastAPI:
         # no consumer can tell that anything moved — see the SDK's
         # `regenerating-clients` playbook, which treats that as a defect to
         # report. Moved to 0.2.0 for the member's self-service surface
-        # (`/api/me/data-sharing`) and the `identity` block on its response.
-        version="0.2.0",
+        # (`/api/me/data-sharing`) and the `identity` block on its response; to
+        # 0.3.0 for the enablement step's `invitation`, the submission's `locale`,
+        # the submission's phone-verification waiver and its identity verification.
+        version="0.3.0",
         lifespan=lifespan,
     )
 

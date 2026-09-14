@@ -25,6 +25,12 @@ export interface AdminSubmission extends SubmissionResponse {
 	dataspace_did?: string | null;
 	dataspace_vc_id?: string | null;
 	dataspace_vc_issued_at?: string | null;
+	phone_verified?: boolean;
+	/** The community asks for a verified phone, this one is not, and the deployment
+	 *  cannot verify phones — so approval does not wait for it. */
+	phone_verification_waived?: boolean;
+	/** Approval is refused while this is null. */
+	verification?: AdminVerification | null;
 }
 
 export class ValidationError extends Error {
@@ -123,7 +129,7 @@ export interface SiteConfig {
 	login_invitation?: boolean;
 	/** What this deployment allows, which the manifest cannot know. Absent means
 	 *  off: the wizard never offers a control the API would refuse. */
-	features?: { document_upload: boolean; document_scan: boolean };
+	features?: { document_upload: boolean; document_scan: boolean; phone_verification?: boolean };
 }
 
 export interface SharingOffer {
@@ -237,7 +243,8 @@ export interface EnablementStep {
 	detail: string | null;
 	/** Login step only: the provisioning service's invitation reason code
 	 *  (`sent`, `has_password`, `not_on_dev_list`, `account_disabled`,
-	 *  `not_requested`). Translated by key; `detail` is the CLI's English. */
+	 *  `not_requested`, `cooldown`, `send_failed`, `no_email`). Translated by
+	 *  key; `detail` is the CLI's English. */
 	invitation?: string | null;
 	started_at: string | null;
 	completed_at: string | null;
@@ -268,6 +275,18 @@ export interface RecStats {
 	rec_slug: string;
 	by_status: Record<string, number>;
 	submissions_with_failed_steps: number;
+}
+
+/** How the REC verified the participant's identity and POD. The newest is in force. */
+export interface AdminVerification {
+	id: string;
+	method: 'offline' | 'uploaded-document';
+	document_id: string | null;
+	note: string | null;
+	actor_type: string;
+	actor_sub: string | null;
+	actor_email: string | null;
+	created_at: string;
 }
 
 export interface AdminDocument {
@@ -403,6 +422,18 @@ export function createRecAdminApi(recSlug: string) {
 
 		documents: (id: string) =>
 			adminRequest<AdminDocument[]>(`${base}/submissions/${id}/documents`),
+
+		verifications: (id: string) =>
+			adminRequest<AdminVerification[]>(`${base}/submissions/${id}/verifications`),
+
+		recordVerification: (
+			id: string,
+			body: { method: AdminVerification['method']; document_id?: string; note?: string }
+		) =>
+			adminRequest<AdminVerification>(`${base}/submissions/${id}/verifications`, {
+				method: 'POST',
+				body: JSON.stringify(body)
+			}),
 
 		documentUrl: (id: string, documentId: string) =>
 			`${base}/submissions/${id}/documents/${documentId}`,

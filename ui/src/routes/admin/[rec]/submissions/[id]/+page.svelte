@@ -5,6 +5,7 @@
 		AdminDeniedError,
 		type AdminDocument,
 		type AdminSubmission,
+		type AdminVerification,
 		type AuditEntry,
 		type Enablement
 	} from '$lib/api/client';
@@ -47,6 +48,15 @@
 	let successMsg = $state('');
 	let rejectReason = $state('');
 	let showReject = $state(false);
+	let verifications = $state<AdminVerification[]>([]);
+	let verifyMethod = $state<AdminVerification['method']>('offline');
+	let verifyDocument = $state('');
+	let verifyNote = $state('');
+
+	// A verification is evidence for a pending decision; the API refuses one after.
+	const verifiable = $derived(
+		submission?.status === 'submitted' || submission?.status === 'under_review'
+	);
 
 	async function refresh() {
 		submission = await api.getSubmission(id, revealed);
@@ -55,6 +65,11 @@
 			enablement = await api.enablement(id);
 		} catch {
 			enablement = null;
+		}
+		try {
+			verifications = await api.verifications(id);
+		} catch {
+			verifications = [];
 		}
 	}
 
@@ -122,6 +137,22 @@
 			enablement = await api.revokeEnablement(id);
 		});
 
+	const recordVerification = () =>
+		act('verify', async () => {
+			await api.recordVerification(id, {
+				method: verifyMethod,
+				...(verifyMethod === 'uploaded-document' ? { document_id: verifyDocument } : {}),
+				...(verifyNote.trim() ? { note: verifyNote.trim() } : {})
+			});
+			await refresh();
+			verifyNote = '';
+			successMsg = $t('admin.detail.verification_recorded');
+		});
+
+	function documentName(documentId: string | null): string {
+		return documents.find((d) => d.id === documentId)?.original_filename ?? '—';
+	}
+
 	const saveNotes = () =>
 		act('notes', async () => {
 			submission = await api.updateSubmission(id, { notes });
@@ -184,9 +215,15 @@
 							{$t(action.label)}
 						</button>
 					{:else}
+						<!-- Approval waits for the REC's recorded verification; the API refuses
+						     without one, so the button says why instead of offering a 422. -->
 						<button
 							class={action.tone}
-							disabled={busy !== null}
+							disabled={busy !== null ||
+								(action.target === 'approved' && !submission.verification)}
+							title={action.target === 'approved' && !submission.verification
+								? $t('admin.detail.verification_needed_to_approve')
+								: undefined}
 							onclick={() => transition(action.target)}
 						>
 							{busy === action.target ? '…' : $t(action.label)}
@@ -197,6 +234,10 @@
 			<a class="secondary button" href={api.pdfUrl(id)}>PDF</a>
 		</div>
 	</header>
+
+	{#if submission.status === 'under_review' && !submission.verification && can('submissions.review')}
+		<p class="message notice">{$t('admin.detail.verification_needed_to_approve')}</p>
+	{/if}
 
 	{#if showReject}
 		<form
@@ -238,6 +279,7 @@
 					<dd>
 						{submission.phone ?? '—'}
 						{#if submission.phone_verified}<span class="ok">{$t('admin.detail.verified')}</span>{/if}
+						{#if submission.phone_verification_waived}<span class="waived">{$t('admin.detail.phone_verification_waived')}</span>{/if}
 					</dd>
 					<dt>{$t('admin.detail.fiscal_code')}</dt>
 					<dd class="mono">{submission.fiscal_code ?? '—'}</dd>
@@ -285,6 +327,85 @@
 							</li>
 						{/each}
 					</ul>
+				{/if}
+			</section>
+
+			<section class="panel verification">
+				<h2>{$t('admin.detail.verification')}</h2>
+				<p class="hint">{$t('admin.detail.verification_hint')}</p>
+
+				{#if verifications.length === 0}
+					<p class="muted">{$t('admin.detail.verification_none')}</p>
+				{:else}
+					<ol class="verifications">
+						{#each [...verifications].reverse() as v, i (v.id)}
+							<li data-current={i === 0}>
+								<strong>{$t(`admin.detail.verification_${v.method.replace('-', '_')}`)}</strong>
+								{#if i > 0}<span class="muted small">{$t('admin.detail.verification_superseded')}</span>{/if}
+								<span class="muted small">
+									{v.actor_email ?? v.actor_sub ?? v.actor_type} · {formatDate(v.created_at)}
+								</span>
+								{#if v.document_id}
+									<span class="small">{$t('admin.detail.verification_document')}: {documentName(v.document_id)}</span>
+								{/if}
+								{#if v.note}<span class="small">{v.note}</span>{/if}
+							</li>
+						{/each}
+					</ol>
+				{/if}
+
+				{#if can('submissions.review') && verifiable}
+					<form
+						class="verify"
+						onsubmit={(e) => {
+							e.preventDefault();
+							void recordVerification();
+						}}
+					>
+						<fieldset>
+							<legend>{$t('admin.detail.verification_method')}</legend>
+							<label>
+								<input type="radio" bind:group={verifyMethod} value="offline" />
+								{$t('admin.detail.verification_offline')}
+							</label>
+							<label>
+								<input
+									type="radio"
+									bind:group={verifyMethod}
+									value="uploaded-document"
+									disabled={documents.length === 0}
+								/>
+								{$t('admin.detail.verification_uploaded_document')}
+							</label>
+						</fieldset>
+						{#if verifyMethod === 'uploaded-document'}
+							<label>
+								<span>{$t('admin.detail.verification_document')}</span>
+								<select bind:value={verifyDocument} required>
+									<option value="">—</option>
+									{#each documents as doc (doc.id)}
+										<option value={doc.id}>{doc.original_filename}</option>
+									{/each}
+								</select>
+							</label>
+						{/if}
+						<label>
+							<span>{$t('admin.detail.verification_note')}</span>
+							<textarea bind:value={verifyNote} rows="2" maxlength="1000"></textarea>
+						</label>
+						<button
+							type="submit"
+							class="secondary small"
+							disabled={busy !== null ||
+								(verifyMethod === 'uploaded-document' && !verifyDocument)}
+						>
+							{busy === 'verify'
+								? '…'
+								: submission.verification
+									? $t('admin.detail.verification_record_new')
+									: $t('admin.detail.verification_record')}
+						</button>
+					</form>
 				{/if}
 			</section>
 
@@ -336,7 +457,9 @@
 								{:else if step.detail}
 									<p class="muted small">{step.detail}</p>
 								{/if}
-								{#if step.status === 'failed' && can('enablement.retry')}
+								<!-- A failed send is the one succeeded step a named retry re-runs, so the
+								     operator can send it again; a cooldown or a missing address is not. -->
+								{#if (step.status === 'failed' || (step.step === 'keycloak_user' && step.status === 'succeeded' && step.invitation === 'send_failed')) && can('enablement.retry')}
 									<button
 										class="secondary small"
 										disabled={busy !== null}
@@ -480,6 +603,13 @@
 		margin-left: 0.375rem;
 	}
 
+	.waived {
+		display: block;
+		color: var(--celine-text-secondary);
+		font-size: 0.75rem;
+		line-height: 1.4;
+	}
+
 	.actions,
 	.step-actions {
 		display: flex;
@@ -619,6 +749,68 @@
 		gap: 0.625rem;
 	}
 
+	.verifications {
+		list-style: none;
+		margin: 0 0 0.75rem;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.verifications li {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+		padding: 0.5rem 0.625rem;
+		border: 1px solid var(--celine-border);
+		border-radius: var(--celine-radius-sm);
+		font-size: 0.875rem;
+	}
+
+	.verifications li[data-current='false'] {
+		opacity: 0.7;
+	}
+
+	.verify {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.verify fieldset {
+		border: 0;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.875rem;
+	}
+
+	.verify legend,
+	.verify label > span {
+		font-size: 0.75rem;
+		font-weight: 600;
+	}
+
+	.verify fieldset input {
+		width: auto;
+		min-height: 0;
+		margin-right: 0.375rem;
+	}
+
+	.verify select {
+		width: 100%;
+		min-height: 2.25rem;
+		border: 1px solid var(--celine-border);
+		border-radius: var(--celine-radius-sm);
+		background: var(--celine-bg-elevated);
+		color: var(--celine-text);
+		font: inherit;
+		font-size: 0.875rem;
+	}
+
 	.docs li {
 		display: flex;
 		justify-content: space-between;
@@ -689,5 +881,10 @@
 	.message.success {
 		background: #dcfce7;
 		color: #166534;
+	}
+
+	.message.notice {
+		background: #fef9c3;
+		color: #854d0e;
 	}
 </style>

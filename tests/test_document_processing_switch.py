@@ -1,8 +1,8 @@
 """Document upload and scanning are a feature switch, not a condition for starting.
 
 Scanning sends a participant's bill and identity document to the extraction
-provider. Without a processing agreement with that provider (`DPA_SIGNED`) and a
-key to call it with, the feature is off: the service still starts and onboards
+endpoint. Without the operator switching it on (`EXTRACTION_ENABLED`) and a key to
+call it with (`EXTRACTION_API_KEY`), the feature is off: the service still starts and onboards
 people from the fields they type, `/config` tells the wizard so, and the API
 refuses every route that would store a document for scanning or read one.
 """
@@ -27,8 +27,10 @@ def switch(monkeypatch):
     """Set the two inputs of the switch; returns a setter."""
 
     def _set(*, dpa: bool, key: str):
-        monkeypatch.setattr(settings, "dpa_signed", dpa)
-        monkeypatch.setattr(settings, "openai_api_key", key)
+        monkeypatch.setattr(settings, "extraction_enabled", dpa)
+        monkeypatch.setattr(settings, "extraction_api_key", key)
+        monkeypatch.setattr(settings, "removed_dpa_signed", "")
+        monkeypatch.setattr(settings, "removed_openai_api_key", "")
 
     return _set
 
@@ -122,8 +124,38 @@ def test_the_warning_names_what_is_missing(switch, caplog):
     with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
         app_main._warn_document_processing()
 
-    assert "DPA_SIGNED not set" in caplog.text
-    assert "OPENAI_API_KEY" not in caplog.text
+    assert "EXTRACTION_ENABLED not set" in caplog.text
+    assert "EXTRACTION_API_KEY" not in caplog.text
+
+
+def test_the_old_names_are_reported_and_do_not_switch_it_on(switch, monkeypatch, caplog):
+    """Renamed on 2026-09-14, with no alias: a leftover leaves the feature off, and says so."""
+    switch(dpa=False, key="")
+    monkeypatch.setattr(settings, "removed_dpa_signed", "yes")
+    monkeypatch.setattr(settings, "removed_openai_api_key", "sk-test")
+
+    with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
+        app_main._warn_document_processing()
+
+    assert settings.document_processing_enabled is False
+    assert "DPA_SIGNED (now EXTRACTION_ENABLED)" in caplog.text
+    assert "OPENAI_API_KEY (now EXTRACTION_API_KEY)" in caplog.text
+    assert "Document upload and scanning are disabled" in caplog.text
+
+
+def test_the_old_names_are_read_from_the_environment_under_their_own_names(monkeypatch):
+    from celine.onboarding.config.settings import Settings
+
+    monkeypatch.setenv("DPA_SIGNED", "yes")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("EXTRACTION_ENABLED", raising=False)
+    monkeypatch.delenv("EXTRACTION_API_KEY", raising=False)
+    fresh = Settings(_env_file=None)
+
+    assert fresh.removed_dpa_signed == "yes"
+    assert fresh.removed_openai_api_key == "sk-test"
+    assert fresh.extraction_enabled is False
+    assert fresh.extraction_api_key == ""
 
 
 def test_no_warning_when_the_switch_is_on(switch, caplog):
@@ -141,7 +173,8 @@ def test_no_warning_when_the_switch_is_on(switch, caplog):
 def test_config_reports_the_switch(switch, client, dpa, key, enabled):
     switch(dpa=dpa, key=key)
     features = client.get("/api/rec-a/config").json()["features"]
-    assert features == {"document_upload": enabled, "document_scan": enabled}
+    assert features["document_upload"] is enabled
+    assert features["document_scan"] is enabled
 
 
 # ── the API refuses ───────────────────────────────────────────────────────────

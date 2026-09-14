@@ -192,4 +192,7 @@ def submission():
     sub.dataspace_subject_id = None
     sub.dataspace_did = None
     sub.dataspace_vc_issued_at = None
+    # No recorded verification, as for a submission approved before they existed.
+    # Set explicitly: a MagicMock would otherwise invent one.
+    sub.verification = None
     return sub

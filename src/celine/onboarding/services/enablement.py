@@ -131,15 +131,27 @@ INVITATION_DETAIL: dict[str, str] = {
     "not_on_dev_list": "invitation not sent (provisioning email mode)",
     "account_disabled": "invitation not sent: account is disabled",
     "not_requested": "no invitation requested",
+    "cooldown": "invitation not sent: this account was emailed moments ago",
+    "send_failed": "invitation not sent: the email could not be sent",
+    "no_email": "invitation not sent: the account has no email address",
 }
+
+#: The invitation outcomes a **named** retry of step 1 re-runs although the step
+#: `succeeded`. Only a failed send: the operator is repairing an email that did not
+#: go out, which is a decision somebody took. `cooldown` is not here, because the
+#: person already has a recent email and a retry after the cooldown would be a
+#: second one nobody decided on; `no_email` is not here, because no retry can ever
+#: send to an account without an address.
+RESENDABLE_INVITATIONS: frozenset[str] = frozenset({"send_failed"})
 
 
 def login_detail(created: bool, invitation: str | None) -> str:
     """Step 1's `detail`: whether the account is new, and whether it can sign in.
 
     Every outcome is a success. An invitation that did not go out is not a
-    failed login: the account exists, and a manager can re-send from
-    `celine-community`. Failing closed would block an approval over an email.
+    failed login: the account exists, and failing closed would block an approval
+    over an email. A `send_failed` is repaired by retrying step 1 by name (see
+    :data:`RESENDABLE_INVITATIONS`); nothing else here sends one.
 
     An unknown code is kept visible rather than dropped, so a code the service
     adds later still reaches the operator.
@@ -519,6 +531,18 @@ async def _run_one(db: AsyncSession, ctx: RunContext, spec: StepSpec) -> Submiss
     return row
 
 
+def _resend_requested(spec: StepSpec, row: SubmissionEnablementStep) -> bool:
+    """Whether a step named in a retry is re-run although it `succeeded`.
+
+    Step 1 whose invitation failed to send, and nothing else.
+    """
+    return (
+        spec.step == EnablementStep.KEYCLOAK_USER
+        and row.status == EnablementStatus.SUCCEEDED
+        and row.invitation in RESENDABLE_INVITATIONS
+    )
+
+
 async def enable(
     db: AsyncSession, submission: Submission, *, only: str | None = None
 ) -> dict[str, SubmissionEnablementStep]:
@@ -527,6 +551,13 @@ async def enable(
     Raises `EnablementError` when a fail-closed step does not succeed, having
     first committed everything that did. A step already `succeeded` or `skipped`
     is not re-run: retry means "finish what is unfinished", not "do it all again".
+
+    **One exception**, and only when the step is named: step 1 whose invitation
+    came back `send_failed` is re-run, so the operator can resend an email that
+    did not go out. An unnamed run still skips it, so neither approval nor "retry
+    all" re-sends by accident. Re-running it is safe because the upsert is
+    idempotent on `(community, key)` and the provisioning service applies its
+    send rule again.
     """
     rows = await ensure_rows(db, submission)
     ctx = RunContext(submission=submission, rows=rows)
@@ -536,7 +567,9 @@ async def enable(
             continue
 
         row = rows[spec.step]
-        if row.status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED):
+        if row.status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED) and not (
+            only is not None and _resend_requested(spec, row)
+        ):
             continue
 
         row = await _run_one(db, ctx, spec)
@@ -553,6 +586,9 @@ async def retry(
     db: AsyncSession, submission: Submission, *, step: str | None = None
 ) -> dict[str, SubmissionEnablementStep]:
     """Re-run the failed steps, or one named step.
+
+    Naming `keycloak_user` also re-runs a step 1 that succeeded with a
+    `send_failed` invitation; see :func:`enable`.
 
     Unlike `enable` this never raises on a fail-closed failure: the submission is
     already approved, so there is no decision to block — the operator asked to

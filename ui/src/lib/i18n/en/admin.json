@@ -97,6 +97,7 @@
 		"email": "Email",
 		"phone": "Phone",
 		"verified": "verified",
+		"phone_verification_waived": "not verified — phone verification is disabled on this deployment, so approval does not require it",
 		"fiscal_code": "Fiscal code",
 		"pod": "POD",
 		"supply_municipality": "Supply municipality",
@@ -125,7 +126,20 @@
 		"revoke": "Revoke enablement",
 		"revoke_confirm": "Revoke enablement? The data-sharing consent and the dataspace credential will be withdrawn, the login disabled and the community membership deactivated.",
 		"enablement_unavailable": "Status unavailable.",
-		"history": "History"
+		"history": "History",
+		"verification": "Verification",
+		"verification_hint": "Before approving, record how the community verified that the participant is who they declare and holds the declared POD. Documents are not required here: a check done by the community outside the platform counts. The method is recorded in the participant's credential and registry entry.",
+		"verification_none": "No verification recorded. The application cannot be approved until one is.",
+		"verification_offline": "Checked by the community outside the platform",
+		"verification_uploaded_document": "Checked against a document uploaded here",
+		"verification_document": "Document",
+		"verification_superseded": "superseded",
+		"verification_method": "How was the participant verified?",
+		"verification_note": "Note (optional)",
+		"verification_record": "Record verification",
+		"verification_record_new": "Record a new verification",
+		"verification_recorded": "Verification recorded.",
+		"verification_needed_to_approve": "Record how the participant was verified before approving."
 	},
 	"enablement_state": {
 		"not_started": "not started",
@@ -151,7 +165,10 @@
 		"has_password": "The account already has a password: no invitation needed.",
 		"not_on_dev_list": "Invitation not sent: this environment only emails the addresses on its recipient list.",
 		"account_disabled": "Invitation not sent: the account is disabled.",
-		"not_requested": "No invitation was requested."
+		"not_requested": "No invitation was requested.",
+		"cooldown": "Invitation not sent: this account was emailed moments ago, so a second one was not sent.",
+		"send_failed": "Invitation not sent: the email could not be sent. Retry this step to try again.",
+		"no_email": "Invitation not sent: the account has no email address, so no invitation can reach it."
 	},
 	"subject_type": {
 		"user": "user",

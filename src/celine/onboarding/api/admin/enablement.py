@@ -38,7 +38,8 @@ class StepRead(BaseModel):
     last_error: str | None
     detail: str | None
     # Step 1 only: the provisioning service's invitation reason code
-    # (`not_requested | sent | has_password | not_on_dev_list | account_disabled`),
+    # (`not_requested | sent | has_password | not_on_dev_list | account_disabled |
+    # cooldown | send_failed | no_email`),
     # which the console translates. `detail` is the English sentence for the CLI.
     invitation: str | None = None
     started_at: datetime | None

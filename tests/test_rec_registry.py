@@ -833,3 +833,31 @@ class TestSupplyPointsByDid:
 
         with pytest.raises(RecRegistryApiError, match="403"):
             await rr.supply_points_by_did(["did:web:users.example:alice"], rec_slug="example")
+
+
+class TestTheMemberCarriesTheVerification:
+    """How the REC verified the person, for whoever joins on the member."""
+
+    def test_the_recorded_method_travels_as_its_own_key(self):
+        from datetime import UTC, datetime
+
+        from celine.onboarding.models.verification import VerificationMethod
+
+        at = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+        current = SimpleNamespace(
+            verification_method=VerificationMethod.UPLOADED_DOCUMENT, created_at=at
+        )
+
+        payload = rr.build_member_payload(_sub(verification=current), BINDING)
+
+        # A top-level key: the registry stores unknown keys directly in `extra`,
+        # so this lands as `extra.identity_verification`.
+        assert payload["identity_verification"] == {
+            "method": "submission-review:uploaded-document",
+            "verified_at": "2026-09-14T12:00:00+00:00",
+        }
+
+    def test_nothing_is_claimed_where_nothing_was_recorded(self):
+        assert "identity_verification" not in rr.build_member_payload(
+            _sub(verification=None), BINDING
+        )

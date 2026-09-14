@@ -40,12 +40,17 @@
 	// and a `utility` step, which is a bill upload and nothing else, is dropped.
 	let documentUpload = $derived(config?.features?.document_upload === true);
 	let documentScan = $derived(config?.features?.document_scan === true);
+	// Same for SMS: a real gateway needs an agreement, and without one the step
+	// could never be completed, so it is left out rather than shown and failing.
+	let phoneVerification = $derived(config?.features?.phone_verification === true);
 
 	let steps = $derived(
 		(config
 			? config.steps.map((s) => (typeof s === 'string' ? s : s.custom))
 			: ['consents', 'personal', 'review']
-		).filter((s) => documentUpload || s !== 'utility')
+		)
+			.filter((s) => documentUpload || s !== 'utility')
+			.filter((s) => phoneVerification || s !== 'phone_verify')
 	);
 
 	let stepLabelOverrides = $derived<Record<string, string>>(

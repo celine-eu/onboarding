@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators work in the console at `/admin`, signing in with their Keycloak identity; what they may do is decided by their organization and group (see [Authorization](docs/authorization.md)). They can work the queue, open a submission in full — consents, documents, extracted data, enablement — change status, repair a failed enablement step, and export to CSV. The same flow is available from the terminal with `onboarding-cli admin`; see [Operator console](docs/admin-console.md). Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
 
-Approval enables a participant in three steps, in order: a **login**, a **member in the REC registry**, then a **dataspace identity**. The login is provisioned by asking `celine-policies`' provisioning service (`PROVISIONING_URL`) — this service holds no Keycloak grant of its own; see [ADR-0004](docs/decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md). Approval also asks for an invitation: Keycloak emails the participant a link to set their password, valid for 7 days, in the language they last used in the wizard. Whether it is sent is the provisioning service's decision (not for an account that already has a password, nor for a disabled one), and the outcome is shown on the step in the console and by `onboarding-cli admin enablement status`; see [Operator console](docs/admin-console.md#what-approval-actually-does). Without `PROVISIONING_URL`, or for a community with no `rec_registry:` block, that step is skipped and the participant is onboarded without a login, or an invitation, and the wizard does not promise one. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
+Approval enables a participant in three steps, in order: a **login**, a **member in the REC registry**, then a **dataspace identity**. The login is provisioned by asking `celine-policies`' provisioning service (`PROVISIONING_URL`) — this service holds no Keycloak grant of its own; see [ADR-0004](docs/decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md). Approval also asks for an invitation: Keycloak emails the participant a link to set their password, valid for 7 days, in the language they last used in the wizard. Whether it is sent is the provisioning service's decision (not for an account that already has a password, nor for a disabled one, nor twice within a short per-account cooldown), and the outcome is shown on the step in the console and by `onboarding-cli admin enablement status`; see [Operator console](docs/admin-console.md#what-approval-actually-does). Without `PROVISIONING_URL`, or for a community with no `rec_registry:` block, that step is skipped and the participant is onboarded without a login, or an invitation, and the wizard does not promise one. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
 
 When dataspace provisioning is enabled (`DATASPACE_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried from the console or via `POST /api/admin/{rec}/submissions/{id}/enablement/retry`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
@@ -79,7 +79,7 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
 - Right to erasure: `DELETE /api/admin/{rec}/submissions/{id}` removes files from disk and all DB records
 - Audit trail: all admin operations logged with action, entity, IP, detail **and the operator who performed them**
-- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `DPA_SIGNED=yes` and `OPENAI_API_KEY` are both set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). A real SMS provider still refuses to start without `DPA_SMS_SIGNED=yes`
+- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `EXTRACTION_ENABLED=yes` and `EXTRACTION_API_KEY` are both set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). Phone verification follows the same pattern: a real SMS provider without `DPA_SMS_SIGNED=yes` starts with verification **off** (see [Phone Verification](#phone-verification-sms-otp))
 - CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins
 - Markdown content sanitized with DOMPurify to prevent XSS
@@ -181,7 +181,7 @@ address is the only thing that says whether the dependency is there:
 
 ### Document upload and scanning
 
-Off by default. Scanning sends a participant's utility bill and identity document to the extraction provider, which makes that provider a processor under GDPR Art. 28. Both variables must be set to switch it on; with either missing the app still starts, logs one warning naming what is missing, and runs without the feature:
+Off by default. Scanning sends a participant's utility bill and identity document to the extraction endpoint at `EXTRACTION_BASE_URL`, any OpenAI-compatible API. Unless the deployment's own operator runs that endpoint, its provider is a processor under GDPR Art. 28. Both variables must be set to switch it on; with either missing the app still starts, logs one warning naming what is missing, and runs without the feature:
 
 - the wizard offers no upload on any step and drops a `utility` step, so the participant types their personal data;
 - `POST /api/{rec}/extract`, `/extract-id`, `/documents/{id}/extract`, `/extractions/{id}/confirm`, and a `utility_bill` or `id_card` upload to `/submissions/{id}/documents`, answer **403** with `detail.code` `document_processing_disabled`;
@@ -189,8 +189,10 @@ Off by default. Scanning sends a participant's utility bill and identity documen
 
 | Variable | Default | Description |
 |---|---|---|
-| `DPA_SIGNED` | `false` | Set to `yes` only once a Data Processing Agreement with the extraction provider is signed and on file |
-| `OPENAI_API_KEY` | *(none)* | Key for the extraction provider at `EXTRACTION_BASE_URL` |
+| `EXTRACTION_ENABLED` | `false` | Set to `yes` only once the endpoint at `EXTRACTION_BASE_URL` is operated by this deployment's own operator, or covered by a processing agreement that keeps processing in the EU |
+| `EXTRACTION_API_KEY` | *(none)* | Key for the endpoint at `EXTRACTION_BASE_URL`. An in-house server is started with a key too (for vLLM, `--api-key`) |
+
+`DPA_SIGNED` and `OPENAI_API_KEY` were renamed to these on 2026-09-14 and are no longer read. A deployment still setting them starts with scanning off and logs the rename.
 
 ### Security
 
@@ -227,7 +229,9 @@ The defaults are for development: they point at the Mailpit that `celine-policie
 
 ### Phone Verification (SMS OTP)
 
-Optional. When a REC manifest's `steps` includes `phone_verify`, participants verify their phone via an SMS one-time code, and approval is gated on successful verification. Defaults to a `log` provider (prints the code) for local dev; any real provider requires a signed DPA. See [docs/phone-verification.md](docs/phone-verification.md).
+Optional. When a REC manifest's `steps` includes `phone_verify`, participants verify their phone via an SMS one-time code, and approval is gated on successful verification. Defaults to a `log` provider (prints the code) for local dev.
+
+A real provider receives participants' phone numbers, so it is used only with `DPA_SMS_SIGNED=yes`. Without it — or with an unknown `SMS_PROVIDER` — the app still starts and logs one warning, and phone verification is **off**: the wizard leaves the `phone_verify` step out, `verify-phone` and `confirm-phone` answer 403 with `detail.code` `phone_verification_disabled`, `GET /api/{rec}/config` reports `features.phone_verification: false`, and approval does not wait for a verification that cannot happen. The console shows that on the submission and the approval's audit row records the waiver. See [docs/phone-verification.md](docs/phone-verification.md).
 
 | Variable | Default | Description |
 |---|---|---|
@@ -235,7 +239,7 @@ Optional. When a REC manifest's `steps` includes `phone_verify`, participants ve
 | `BREVO_API_KEY` | *(none)* | Required for `brevo` |
 | `BREVO_SMS_SENDER` | *(none)* | Alphanumeric sender id or E.164; required for `brevo` |
 | `SMS_OTP_TEMPLATE` | `Il tuo codice di verifica e' {code}` | Message body (must contain `{code}`) |
-| `DPA_SMS_SIGNED` | `false` | Must be `yes` for any non-`log` provider (GDPR Art. 28) |
+| `DPA_SMS_SIGNED` | `false` | Set to `yes` only once a Data Processing Agreement with the SMS provider is signed (GDPR Art. 28). Without it a real provider leaves phone verification off |
 | `OTP_CODE_LENGTH` | `6` | Digits in the code |
 | `OTP_TTL_SECONDS` | `600` | Code validity |
 | `OTP_MAX_ATTEMPTS` | `3` | Wrong guesses before lockout |

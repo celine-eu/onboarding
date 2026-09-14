@@ -90,7 +90,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 3. **Credential issuance** -- `POST /admin/credentials/data-subject` sends the subject id, role, allowed actions, TTL and the REC's `linked_participant_did` to the identity-registry. The registry derives the user's DID, issues a Verifiable Credential, and returns `{subjectDid, credentialId, generatedAt}`.
 
-    It also sends **`verified_by` and `verification_method`** -- who established this person's identity, and how. The dataspace layer does no KYC by design; whoever runs onboarding does, and the credential records it rather than implying an assurance level nobody established. `verified_by` is the REC's `dataspace.organization_did`, omitted when the manifest declares none, because naming an empty authority is worse than naming none. `verification_method` is always `submission-review`, and deliberately a constant rather than a setting: a deployment able to edit it could make the credential claim a check that never happened.
+    It also sends **`verified_by` and `verification_method`** -- who established this person's identity, and how. The dataspace layer does no KYC by design; whoever runs onboarding does, and the credential records it rather than implying an assurance level nobody established. `verified_by` is the REC's `dataspace.organization_did`, omitted when the manifest declares none, because naming an empty authority is worse than naming none. `verification_method` is `submission-review` followed by the method the operator recorded before approving — `submission-review:offline` or `submission-review:uploaded-document` (see [Operator console](admin-console.md#before-approving-the-recs-verification)). It is never a setting: a deployment able to edit it could make the credential claim a check that never happened. A submission approved before verifications were recorded, whose enablement is retried, sends the bare `submission-review`. The value is plain text in `credentialSubject.verificationMethod`; the word is also the W3C DID-document term, with a different meaning.
 
     **Issuance is idempotent per role.** The registry reuses the subject DID -- one human keeps one identifier across organisations -- and a repeat call for somebody who already holds an active credential *in the same role* returns that credential's id and re-delivers it to the custodian, rather than minting a second one and spending a status-list index that is never recovered. A different role does mint, because roles are additive. This was **not** true when the two doors below were written -- every call minted -- and both guards remain correct for reasons that have moved.
 
@@ -205,8 +205,9 @@ because nothing failed. `enablement.REVOKE_ORDER` declares the order for that re
 Every upsert from step 1 carries `invite: true`, including a retry. This service
 cannot see credentials, so it does not decide whether an account needs an
 invitation: the provisioning service sends one only to an account created in that
-call or one without a password, which is also what makes a retry safe. Keycloak
-writes the email; nothing here sends one about the login.
+call or one without a password, and at most one email per account within its
+cooldown, which is also what makes a retry safe. Keycloak writes the email; nothing
+here sends one about the login.
 
 `locale` is the submission's own (the language the person last used in the wizard),
 then the REC manifest's `locale`, then absent, which leaves the realm default. Both
@@ -216,11 +217,13 @@ approval over a language tag. A manifest saying `it-IT` therefore gets the realm
 default, which is the email Keycloak would have sent anyway.
 
 The answer's `invitation` is `sent`, `has_password`, `not_on_dev_list`,
-`account_disabled` or `not_requested`, and none of them fails the step. It is stored
-on the step row beside `detail`, and the console translates it
-([Operator console](admin-console.md#what-approval-actually-does)).
+`account_disabled`, `not_requested`, `cooldown`, `send_failed` or `no_email`, and none
+of them fails the step. It is stored on the step row beside `detail`, and the console
+translates it ([Operator console](admin-console.md#the-invitation-for-the-operator)).
 `account_disabled` is a participant approved again after revocation: revocation
-disables the account, and neither answer re-enables it.
+disables the account, and neither answer re-enables it. `send_failed` is the one
+outcome a retry that names `keycloak_user` re-runs although the step succeeded;
+`cooldown` and `no_email` are not re-run.
 
 ### What each refusal means
 
@@ -228,8 +231,14 @@ disables the account, and neither answer re-enables it.
 |---|---|
 | `401` | The credential did not verify. Check `OIDC_CLIENT_SECRET`. Reported as a misconfiguration -- a platform operator's to fix, not the reviewing operator's to read |
 | `403` | It verified and does not carry `provisioning.participants.write`. The `clients.yaml` declaration has not been synced. Also a misconfiguration |
-| `404` | On a revocation: no member under that key, or no account for one. Counted as done, because there is nothing left to revoke |
-| `502` | Keycloak or the registry failed behind the provisioning service. **A dependency, not a refusal** -- the retryable case the step row exists for |
+| `404` `member_not_found`, `account_not_found` | On a revocation: no member under that key, or no account for one. Counted as done, because there is nothing left to revoke |
+| `404` `community_not_found` | The REC manifest's `rec_registry.community` names a community the registry does not hold. Reported as a misconfiguration, and on a revocation it **fails the step**: the service could not look the member up, so a login may still be enabled |
+| `404` with any other code, or none | Fails the step. A codeless `404` is as likely a wrong `PROVISIONING_URL` as a missing member, so it is never read as "nothing to revoke" |
+| `502` `registry_unavailable`, `provisioning_failed`, `send_failed` | The registry or Keycloak failed behind the provisioning service. **A dependency, not a refusal** -- the retryable case the step row exists for, and the step error names which |
+
+Every refusal carries `{"detail": {"code", "message"}}` since the provisioning service's
+1.2.0 contract, and this service branches on the `code` (`ProvisioningApiError.code`),
+never on the message. The message goes to the log.
 
 There is no `409` on this surface any more, and nothing to adopt by hand: the provisioning
 service has realm-wide reach, so an account created by anything else is found by address

@@ -146,6 +146,18 @@ class Submission(Base):
 
     documents: Mapped[list["Document"]] = relationship(back_populates="submission")
 
+    # How the REC verified the person and their POD, oldest first; the last is in
+    # force. Loaded with every submission (`selectin`) because approval checks it
+    # synchronously and an async session cannot lazy-load. Cascade-deleted with the
+    # submission, like the rest of what is known about the person.
+    verifications: Mapped[list["SubmissionVerification"]] = relationship(  # noqa: F821
+        back_populates="submission",
+        order_by="SubmissionVerification.created_at",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     # What approval did, step by step. Cascade-deleted with the submission so a
     # GDPR erasure leaves no trace of the person's provisioning either.
     enablement_steps: Mapped[list["SubmissionEnablementStep"]] = relationship(  # noqa: F821
@@ -153,3 +165,8 @@ class Submission(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+    @property
+    def verification(self) -> "SubmissionVerification | None":  # noqa: F821
+        """The verification in force: the newest one, or None."""
+        return self.verifications[-1] if self.verifications else None

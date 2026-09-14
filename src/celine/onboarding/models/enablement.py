@@ -83,7 +83,8 @@ class SubmissionEnablementStep(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The provisioning service's reason code for the invitation step 1 asked for:
-    # `not_requested | sent | has_password | not_on_dev_list | account_disabled`.
+    # `not_requested | sent | has_password | not_on_dev_list | account_disabled |
+    # cooldown | send_failed | no_email`.
     # A code beside `detail` rather than inside it, because the console translates
     # it and `detail` is an English sentence for the CLI and the log. `None` for
     # every other step, and for a login provisioned before invitations existed.

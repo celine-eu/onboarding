@@ -97,6 +97,7 @@
 		"email": "Correo electrónico",
 		"phone": "Teléfono",
 		"verified": "verificado",
+		"phone_verification_waived": "no verificado — la verificación del teléfono está desactivada en esta instalación, por lo que la aprobación no la requiere",
 		"fiscal_code": "Código fiscal",
 		"pod": "POD",
 		"supply_municipality": "Municipio de suministro",
@@ -125,7 +126,20 @@
 		"revoke": "Revocar habilitación",
 		"revoke_confirm": "¿Revocar la habilitación? Se retirarán el consentimiento para compartir datos y la credencial del dataspace, se desactivará el acceso y se dará de baja la pertenencia a la comunidad.",
 		"enablement_unavailable": "Estado no disponible.",
-		"history": "Historial"
+		"history": "Historial",
+		"verification": "Verificación",
+		"verification_hint": "Antes de aprobar, registra cómo verificó la comunidad que el participante es quien declara y que es titular del POD indicado. Aquí no se exigen documentos: cuenta también una verificación hecha por la comunidad fuera de la plataforma. El método queda reflejado en la credencial y en la ficha del registro del participante.",
+		"verification_none": "No hay ninguna verificación registrada. La solicitud no puede aprobarse hasta que se registre una.",
+		"verification_offline": "Verificado por la comunidad fuera de la plataforma",
+		"verification_uploaded_document": "Verificado con un documento subido aquí",
+		"verification_document": "Documento",
+		"verification_superseded": "sustituida",
+		"verification_method": "¿Cómo se verificó al participante?",
+		"verification_note": "Nota (opcional)",
+		"verification_record": "Registrar verificación",
+		"verification_record_new": "Registrar una nueva verificación",
+		"verification_recorded": "Verificación registrada.",
+		"verification_needed_to_approve": "Registra cómo se verificó al participante antes de aprobar."
 	},
 	"enablement_state": {
 		"not_started": "no iniciada",
@@ -151,7 +165,10 @@
 		"has_password": "La cuenta ya tiene contraseña: no hace falta invitación.",
 		"not_on_dev_list": "Invitación no enviada: este entorno solo envía correos a las direcciones de su lista de destinatarios.",
 		"account_disabled": "Invitación no enviada: la cuenta está deshabilitada.",
-		"not_requested": "No se solicitó ninguna invitación."
+		"not_requested": "No se solicitó ninguna invitación.",
+		"cooldown": "Invitación no enviada: a esta cuenta se le envió un correo hace unos instantes, así que no se ha enviado un segundo.",
+		"send_failed": "Invitación no enviada: no se ha podido enviar el correo. Reintenta este paso para volver a intentarlo.",
+		"no_email": "Invitación no enviada: la cuenta no tiene dirección de correo electrónico, así que ninguna invitación puede llegarle."
 	},
 	"subject_type": {
 		"user": "usuario",

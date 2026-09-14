@@ -15,6 +15,7 @@ limiter = Limiter(key_func=get_remote_address)
 SESSION_TTL_SECONDS = 600
 
 DOCUMENT_PROCESSING_DISABLED = "document_processing_disabled"
+PHONE_VERIFICATION_DISABLED = "phone_verification_disabled"
 
 
 async def require_document_processing() -> None:
@@ -40,6 +41,23 @@ async def valid_rec_slug(rec_slug: str) -> str:
     if rec_slug not in template_service.get_slugs():
         raise HTTPException(404, f"REC '{rec_slug}' not found")
     return rec_slug
+
+
+async def require_phone_verification() -> None:
+    """Refuse to send or confirm an SMS code while phone verification is off.
+
+    Same shape as `require_document_processing`: the routes stay registered, the
+    refusal carries a stable ``code``, and the wizard has already dropped the
+    step because ``/config`` said so. See ``Settings.phone_verification_enabled``.
+    """
+    if not settings.phone_verification_enabled:
+        raise HTTPException(
+            403,
+            {
+                "code": PHONE_VERIFICATION_DISABLED,
+                "message": "Phone verification is not enabled on this deployment.",
+            },
+        )
 
 
 async def require_session(

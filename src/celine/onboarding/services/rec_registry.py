@@ -197,6 +197,18 @@ def build_member_payload(
     if declared:
         payload["extra"] = {"declared_at_onboarding": declared}
 
+    # How the REC verified this person and their POD before approving, for whoever
+    # joins on the member — the DSO sharing their data among them. The same value
+    # the dataspace credential carries as `verificationMethod`. Who recorded it
+    # stays in onboarding's audit trail. A top-level key, because the registry
+    # stores every key it has no column for directly in the member's `extra`.
+    current = getattr(submission, "verification", None)
+    if current is not None:
+        payload["identity_verification"] = {
+            "method": current.verification_method.credential_value,
+            "verified_at": current.created_at.isoformat(),
+        }
+
     return payload
 
 

@@ -192,6 +192,24 @@ class TestMasking:
 
 
 class TestApproval:
+    def test_approval_waits_for_a_recorded_verification(
+        self, client: httpx.Client, idp, submission
+    ):
+        made = submission(REC, verified=False)
+        headers = auth(idp.operator(ORG, "managers"))
+        url = f"/api/admin/{REC}/submissions/{made['id']}"
+
+        refused = client.post(f"{url}/transition", headers=headers, json={"target": "approved"})
+        assert refused.status_code == 422
+        assert "no verification" in refused.text
+
+        recorded = client.post(f"{url}/verifications", headers=headers, json={"method": "offline"})
+        assert recorded.status_code == 201, recorded.text
+        assert client.get(url, headers=headers).json()["verification"]["method"] == "offline"
+
+        approved = client.post(f"{url}/transition", headers=headers, json={"target": "approved"})
+        assert approved.status_code == 200, approved.text
+
     def test_approval_records_every_step(self, client: httpx.Client, idp, submission):
         made = submission(REC)
         headers = auth(idp.operator(ORG, "managers"))

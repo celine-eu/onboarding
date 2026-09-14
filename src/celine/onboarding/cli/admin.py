@@ -135,6 +135,16 @@ def _print_submission(row: dict) -> None:
     ):
         if key in row:
             typer.echo(f"{key:<24} {row[key]}")
+    current = row.get("verification")
+    typer.echo(
+        f"{'verification':<24} "
+        + (
+            f"{current['method']} by {current.get('actor_email') or current.get('actor_sub')} "
+            f"at {current['created_at']}"
+            if current
+            else "none recorded — approval is refused until one is"
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +239,46 @@ def review_show(
         finally:
             await transport.aclose()
         _emit(row, as_json, _print_submission)
+
+    _run(_go())
+
+
+@review_app.command("verify")
+def review_verify(
+    ref: str = typer.Argument(..., help="Submission reference"),
+    rec: str = typer.Option(..., "--rec", "-r"),
+    method: str = typer.Option(
+        ...,
+        "--method",
+        help="offline (the REC checked documents outside the platform) or "
+        "uploaded-document (a document stored on the submission; give --document)",
+    ),
+    document: str = typer.Option(None, "--document", help="Document id, for uploaded-document"),
+    note: str = typer.Option(None, "--note", help="Optional note, stored encrypted"),
+    local: bool = _LOCAL,
+    api_url: str = _API_URL,
+    token: str = _TOKEN,
+    as_json: bool = _JSON,
+):
+    """Record how the REC verified the person's identity and POD. Needed to approve.
+
+    A second verification supersedes the first; both stay on record.
+    """
+    if method not in ("offline", "uploaded-document"):
+        typer.secho("--method must be offline or uploaded-document", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    async def _go():
+        transport = build(local, api_url=api_url, token=token)
+        try:
+            found = await _resolve(transport, rec, ref)
+            row = await transport.verify(rec, found["id"], method, document, note)
+        finally:
+            await transport.aclose()
+        if as_json:
+            typer.echo(json.dumps(row, indent=2))
+        else:
+            typer.secho(f"{found['ref']}: verified ({row['method']})", fg=typer.colors.GREEN)
 
     _run(_go())
 
@@ -338,14 +388,16 @@ def enablement_retry(
         None,
         "--step",
         help="keycloak_user | rec_registry_member | dataspace_identity | "
-        "dataspace_share. Omit to re-run everything unfinished.",
+        "dataspace_share. Omit to re-run everything unfinished. Naming "
+        "keycloak_user also re-runs a succeeded login step whose invitation "
+        "is send_failed, to send it again.",
     ),
     local: bool = _LOCAL,
     api_url: str = _API_URL,
     token: str = _TOKEN,
     as_json: bool = _JSON,
 ):
-    """Re-run the steps that have not succeeded."""
+    """Re-run the steps that have not succeeded, or resend a failed invitation."""
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)

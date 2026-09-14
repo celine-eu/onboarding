@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import limiter, valid_rec_slug
+from celine.onboarding.api.deps import limiter, require_phone_verification, valid_rec_slug
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
@@ -15,7 +15,11 @@ from celine.onboarding.services import otp as otp_service
 from celine.onboarding.services.sms import SmsDeliveryError
 from celine.onboarding.validators.phone import InvalidPhoneNumberError, normalize_mobile
 
-router = APIRouter(prefix="/submissions", tags=["phone-verification"])
+router = APIRouter(
+    prefix="/submissions",
+    tags=["phone-verification"],
+    dependencies=[Depends(require_phone_verification)],
+)
 
 
 def _resolve_phone(raw: str | None, submission) -> str:

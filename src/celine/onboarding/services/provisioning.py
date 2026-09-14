@@ -64,8 +64,9 @@ class ParticipantProvisionResult:
     created: bool
     #: The provisioning service's reason code for the invitation this call asked
     #: for: ``not_requested | sent | has_password | not_on_dev_list |
-    #: account_disabled``. Recorded verbatim on the step row, where the console
-    #: translates it. ``None`` only for a result built without one (tests).
+    #: account_disabled | cooldown | send_failed | no_email``. Recorded verbatim
+    #: on the step row, where the console translates it. ``None`` only for a
+    #: result built without one (tests).
     invitation: str | None = None
 
     @property
@@ -304,7 +305,7 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
             invite=True,
         )
     except ProvisioningApiError as exc:
-        raise _refused("provisioning a login", exc) from exc
+        raise _refused("provisioning a login", exc, community=community) from exc
 
     # A plain `Enum` in the generated schema, so the value is read rather than
     # compared: `account.invitation == "sent"` is always false.
@@ -353,18 +354,25 @@ async def disable_participant(submission: Submission) -> str:
     try:
         result = await _get_client().disable(community, submission.ref)
     except ProvisioningApiError as exc:
-        if exc.status_code == 404:
+        code = exc.code
+        if exc.status_code == 404 and code in NOTHING_TO_REVOKE:
             # No member under that key, or no account for one. Either way there
             # is nothing left to revoke, and refusing would leave the local
             # record claiming something that is no longer true — the same
             # reading `rec_registry.deactivate_member` gives a 404.
             logger.info(
-                "Provisioning has no account for %s/%s; nothing to disable",
+                "Provisioning has no account for %s/%s (%s); nothing to disable",
                 community,
                 submission.ref,
+                code,
             )
-            return "no account to disable"
-        raise _refused("revoking a login", exc) from exc
+            return NOTHING_TO_REVOKE[code]
+        # Every other 404 fails, `community_not_found` above all: the service
+        # could not look the member up, so it cannot say whether a login exists,
+        # and reading that as "nothing to revoke" would mark the row revoked while
+        # the person can still sign in. A 404 with no code is not read as done
+        # either — it is as likely a wrong `PROVISIONING_URL` as a missing member.
+        raise _refused("revoking a login", exc, community=community) from exc
 
     return (
         f"disabled login {result.username}"
@@ -375,7 +383,16 @@ async def disable_participant(submission: Submission) -> str:
     )
 
 
-def _refused(action: str, exc: Any) -> Exception:
+#: The `404` codes on a revocation that mean there is nothing to revoke, and what
+#: the step row says for each. Only these two: the service resolved the lookup and
+#: found no member, or a member with no account.
+NOTHING_TO_REVOKE: dict[str, str] = {
+    "member_not_found": "no member to disable",
+    "account_not_found": "no account to disable",
+}
+
+
+def _refused(action: str, exc: Any, *, community: str | None = None) -> Exception:
     """Turn a provisioning refusal into something the right person can act on.
 
     Two audiences and one message would serve neither. A **misconfiguration**
@@ -385,9 +402,16 @@ def _refused(action: str, exc: Any) -> Exception:
     knows to keep out of the step row and put in the log. Anything else is an
     outage or a bad submission: the status is what somebody can act on, and the
     service's own sentence goes to the log.
+
+    Since the service's 1.2.0 contract every refusal carries a machine-readable
+    ``code`` (``ProvisioningApiError.code``), and the branches read it rather
+    than the message: ``community_not_found`` is the REC manifest binding a
+    community the registry does not hold, so a configuration error; the ``502``
+    codes are a dependency behind the service, so worth a retry.
     """
     status = getattr(exc, "status_code", None)
-    logger.warning("Provisioning refused %s (%s): %s", action, status, exc)
+    code = getattr(exc, "code", None)
+    logger.warning("Provisioning refused %s (%s %s): %s", action, status, code, exc)
 
     if status in (401, 403):
         return ConfigurationError(
@@ -398,4 +422,24 @@ def _refused(action: str, exc: Any) -> Exception:
             f"Check OIDC_CLIENT_SECRET too: a 401 is a credential the realm "
             f"would not read, a 403 one it read and found without the scope."
         )
-    return ValueError(f"Provisioning refused {action} ({status})")
+    if code == "community_not_found":
+        # The manifest binds a community the registry does not hold. Nothing the
+        # reviewing operator can change, and nothing a retry fixes.
+        return ConfigurationError(
+            f"The provisioning service found no community {community!r} in the REC "
+            f"registry while {action}. The REC manifest's rec_registry.community "
+            f"must name a community the registry holds."
+        )
+    if code in _DEPENDENCY_FAILURES:
+        return ValueError(f"{_DEPENDENCY_FAILURES[code]} while {action} ({status} {code}); retry")
+    return ValueError(f"Provisioning refused {action} ({status}{f' {code}' if code else ''})")
+
+
+#: The `502` codes: a dependency behind the provisioning service failed. Worth a
+#: retry, which is what the step row is for, and said in words an operator can act
+#: on. The service's own message stays in the log.
+_DEPENDENCY_FAILURES: dict[str, str] = {
+    "registry_unavailable": "The provisioning service could not reach the REC registry",
+    "provisioning_failed": "Keycloak failed behind the provisioning service",
+    "send_failed": "Keycloak could not send the email",
+}

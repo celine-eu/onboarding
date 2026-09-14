@@ -46,6 +46,15 @@ class Transport(Protocol):
         self, rec: str, submission_id: str, target: str, reason: str | None
     ) -> dict: ...
 
+    async def verify(
+        self,
+        rec: str,
+        submission_id: str,
+        method: str,
+        document_id: str | None,
+        note: str | None,
+    ) -> dict: ...
+
     async def enablement(self, rec: str, submission_id: str) -> dict: ...
 
     async def retry(self, rec: str, submission_id: str, step: str | None) -> dict: ...
@@ -144,6 +153,20 @@ class ApiTransport:
             await self._request(
                 "POST",
                 f"/api/admin/{rec}/submissions/{submission_id}/transition",
+                json=body,
+            )
+        ).json()
+
+    async def verify(self, rec, submission_id, method, document_id, note):
+        body: dict[str, Any] = {"method": method}
+        if document_id:
+            body["document_id"] = document_id
+        if note:
+            body["note"] = note
+        return (
+            await self._request(
+                "POST",
+                f"/api/admin/{rec}/submissions/{submission_id}/verifications",
                 json=body,
             )
         ).json()
@@ -331,6 +354,27 @@ class LocalTransport:
             except KeyError as exc:
                 raise CliError(str(exc)) from exc
             return await self._render_enablement(submission.id, rows)
+
+    async def verify(self, rec, submission_id, method, document_id, note):
+        from celine.onboarding.models.schemas import VerificationRead
+        from celine.onboarding.models.verification import VerificationMethod
+        from celine.onboarding.services import verification
+
+        async with await self._session() as db:
+            submission = await self._load(db, rec, submission_id)
+            try:
+                row = await verification.record(
+                    db,
+                    submission,
+                    method=VerificationMethod(method),
+                    document_id=uuid.UUID(document_id) if document_id else None,
+                    note=note,
+                    actor=self._actor,
+                    rec_slug=rec,
+                )
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+            return VerificationRead.model_validate(row).model_dump(mode="json")
 
     async def revoke(self, rec, submission_id):
         from celine.onboarding.services import enablement as service

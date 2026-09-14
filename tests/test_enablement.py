@@ -9,6 +9,7 @@ retry that finishes the job rather than restarting it.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from celine.onboarding.models.enablement import (
     SubmissionEnablementStep,
 )
 from celine.onboarding.models.submission import SubmissionStatus
+from celine.onboarding.models.verification import VerificationMethod
 from celine.onboarding.services import (
     dataspace_identity,
     enablement,
@@ -63,6 +65,10 @@ class FakeDb:
         return FakeResult(self.rows)
 
 
+#: What a recorded offline verification looks like to the code that reads it.
+OFFLINE = SimpleNamespace(method="offline", verification_method=VerificationMethod.OFFLINE)
+
+
 class FakeSubmission:
     def __init__(self, **kwargs):
         self.id = uuid.uuid4()
@@ -73,6 +79,8 @@ class FakeSubmission:
         self.dataspace_vc_id = None
         self.dataspace_did = None
         self.share_provisioned = False
+        # Approved before verifications were recorded, unless a test says otherwise.
+        self.verification = None
         self.__dict__.update(kwargs)
 
 
@@ -161,6 +169,17 @@ class TestTheLoginStepReportsTheInvitation:
                 "already existed, invitation not sent: account is disabled",
             ),
             (True, "not_requested", "created, no invitation requested"),
+            (
+                False,
+                "cooldown",
+                "already existed, invitation not sent: this account was emailed moments ago",
+            ),
+            (True, "send_failed", "created, invitation not sent: the email could not be sent"),
+            (
+                False,
+                "no_email",
+                "already existed, invitation not sent: the account has no email address",
+            ),
             # A code the service adds later is shown, not dropped.
             (True, "rate_limited", "created, invitation: rate_limited"),
             # No code at all: the sentence the step wrote before invitations.
@@ -187,7 +206,17 @@ class TestTheLoginStepReportsTheInvitation:
         return outcome
 
     @pytest.mark.parametrize(
-        "code", ["sent", "has_password", "not_on_dev_list", "account_disabled", "not_requested"]
+        "code",
+        [
+            "sent",
+            "has_password",
+            "not_on_dev_list",
+            "account_disabled",
+            "not_requested",
+            "cooldown",
+            "send_failed",
+            "no_email",
+        ],
     )
     async def test_every_code_is_a_success_and_is_recorded(self, db, submission, invitation, code):
         invitation["code"] = code
@@ -209,7 +238,15 @@ class TestTheLoginStepReportsTheInvitation:
     def test_invited_means_sent(self):
         result = ParticipantProvisionResult(user_id="u", username="n", created=True)
         assert result.invited is False
-        for code in ("has_password", "not_on_dev_list", "account_disabled", "not_requested"):
+        for code in (
+            "has_password",
+            "not_on_dev_list",
+            "account_disabled",
+            "not_requested",
+            "cooldown",
+            "send_failed",
+            "no_email",
+        ):
             assert ParticipantProvisionResult("u", "n", True, invitation=code).invited is False
         assert ParticipantProvisionResult("u", "n", True, invitation="sent").invited is True
 
@@ -648,6 +685,118 @@ class TestRetry:
             await enablement.retry(db, submission, step="teleport")
 
 
+class TestAFailedSendIsRetriedByName:
+    """`send_failed` is the one `succeeded` step a retry re-runs, and only by name.
+
+    The operator is repairing an email that did not go out. `cooldown` and
+    `no_email` are not re-run: the first would be a second email nobody decided
+    on, and the second can never be sent. An unnamed retry, like approval, never
+    re-sends.
+    """
+
+    @pytest.fixture()
+    def login(self, monkeypatch, happy_path):
+        """Step 1 answers the queued codes in order, one per call."""
+        state = {"codes": [], "calls": 0}
+
+        async def _kc(sub):
+            state["calls"] += 1
+            return ParticipantProvisionResult(
+                user_id="kc-123",
+                username=sub.email,
+                created=state["calls"] == 1,
+                invitation=state["codes"].pop(0),
+            )
+
+        monkeypatch.setattr(provisioning, "provision_participant", _kc)
+        return state
+
+    async def _approved_with(self, db, submission, login, code):
+        login["codes"] = [code]
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.KEYCLOAK_USER].status == EnablementStatus.SUCCEEDED
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation == code
+        assert enablement.state_of(rows) == "complete"
+        return rows
+
+    async def test_a_named_retry_sends_again(self, db, submission, login):
+        await self._approved_with(db, submission, login, "send_failed")
+        login["codes"] = ["sent"]
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+
+        assert login["calls"] == 2
+        row = rows[EnablementStep.KEYCLOAK_USER]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.invitation == "sent"
+        assert row.attempts == 2
+        assert row.detail == "already existed, invitation sent"
+        assert row.external_ref == "kc-123"
+
+    async def test_a_second_failure_stays_retryable(self, db, submission, login):
+        await self._approved_with(db, submission, login, "send_failed")
+        login["codes"] = ["send_failed", "sent"]
+
+        await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+        rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+
+        assert login["calls"] == 3
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation == "sent"
+
+    async def test_the_named_retry_runs_only_that_step(self, db, submission, login, happy_path):
+        await self._approved_with(db, submission, login, "send_failed")
+        happy_path.clear()
+        login["codes"] = ["sent"]
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+
+        assert happy_path == []
+        assert rows[EnablementStep.REC_REGISTRY_MEMBER].attempts == 1
+
+    async def test_an_unnamed_retry_does_not_resend(self, db, submission, login):
+        await self._approved_with(db, submission, login, "send_failed")
+
+        rows = await enablement.retry(db, submission)
+
+        assert login["calls"] == 1
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation == "send_failed"
+
+    async def test_approval_again_does_not_resend(self, db, submission, login):
+        await self._approved_with(db, submission, login, "send_failed")
+
+        await enablement.enable(db, submission)
+
+        assert login["calls"] == 1
+
+    @pytest.mark.parametrize(
+        "code", ["cooldown", "no_email", "sent", "has_password", "account_disabled"]
+    )
+    async def test_no_other_code_is_rerun_by_name(self, db, submission, login, code):
+        await self._approved_with(db, submission, login, code)
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+
+        assert login["calls"] == 1
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation == code
+        assert rows[EnablementStep.KEYCLOAK_USER].attempts == 1
+
+    async def test_a_resend_that_raises_fails_the_step_and_can_be_retried(
+        self, db, submission, login, monkeypatch
+    ):
+        await self._approved_with(db, submission, login, "send_failed")
+
+        async def _outage(sub):
+            raise ValueError("Provisioning refused provisioning a login (502)")
+
+        monkeypatch.setattr(provisioning, "provision_participant", _outage)
+        rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
+
+        row = rows[EnablementStep.KEYCLOAK_USER]
+        assert row.status == EnablementStatus.FAILED
+        # The account is still recorded, so the steps after it keep their reference.
+        assert row.external_ref == "kc-123"
+
+
 # ---------------------------------------------------------------------------
 # Revocation
 # ---------------------------------------------------------------------------
@@ -887,7 +1036,7 @@ class TestApprovalRecordsTheAttempt:
         self, db, review_env, monkeypatch
     ):
         review, recorded = review_env
-        submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW)
+        submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW, verification=OFFLINE)
 
         async def _boom(sub, *, keycloak_username=None):
             raise ValueError("registry unreachable")
@@ -907,7 +1056,7 @@ class TestApprovalRecordsTheAttempt:
 
     async def test_a_successful_approval_records_the_transition(self, db, review_env):
         review, recorded = review_env
-        submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW)
+        submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW, verification=OFFLINE)
 
         from celine.onboarding.services.audit_service import Actor
 

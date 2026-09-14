@@ -126,7 +126,9 @@ def api(idp: TestIdp, _seeded) -> str:
         "REQUIRE_ENCRYPTION": "false",
         # Document upload and scanning off, whatever a local `.env` says: the
         # suite must never send anything to the extraction provider.
-        "DPA_SIGNED": "false",
+        "EXTRACTION_ENABLED": "false",
+        "EXTRACTION_API_KEY": "",
+        "DPA_SIGNED": "",
         "OPENAI_API_KEY": "",
         "DPA_SMS_SIGNED": "yes",
         "ADMIN_TOKEN": "",
@@ -194,7 +196,7 @@ def submission(client: httpx.Client, idp: TestIdp):
     that the anonymous path still works with the console in place.
     """
 
-    def _make(rec: str = REC) -> dict:
+    def _make(rec: str = REC, *, verified: bool = True) -> dict:
         created = client.post(
             f"/api/{rec}/submissions",
             json={
@@ -233,6 +235,15 @@ def submission(client: httpx.Client, idp: TestIdp):
                 json={"target": target},
             )
             assert moved.status_code == 200, moved.text
+        # Approval waits for the REC's recorded verification, and most tests are
+        # about what happens after it. Pass `verified=False` to test the wait.
+        if verified:
+            recorded = client.post(
+                f"/api/admin/{rec}/submissions/{body['id']}/verifications",
+                headers=admin,
+                json={"method": "offline"},
+            )
+            assert recorded.status_code == 201, recorded.text
         return client.get(f"/api/admin/{rec}/submissions/{body['id']}", headers=admin).json()
 
     return _make

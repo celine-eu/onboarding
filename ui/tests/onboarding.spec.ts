@@ -53,20 +53,27 @@ test.describe('Wizard', () => {
 	});
 });
 
-test.describe('Wizard without document processing', () => {
-	// Needs the live backend `scripts/e2e.sh` starts, which runs with the switch off
-	// (no DPA_SIGNED, no OPENAI_API_KEY). Against `pnpm dev` there is no API to submit to.
+test.describe('Wizard without document processing or SMS', () => {
+	// Needs the live backend `scripts/e2e.sh` starts, which runs with both switches off
+	// (no EXTRACTION_ENABLED or EXTRACTION_API_KEY; a real SMS_PROVIDER without
+	// DPA_SMS_SIGNED). Against `pnpm dev` there is no API to submit to.
 	test.skip(!process.env.PLAYWRIGHT_BASE_URL, 'run through scripts/e2e.sh ui');
 
-	test('a full run submits with no upload control and no document request', async ({ page }) => {
+	test('a full run submits with no upload control, no phone step and no request for either', async ({ page }) => {
 		const config = await (await page.request.get(`/api/${REC}/config`)).json();
 		// Otherwise this passes vacuously on a deployment where scanning is on.
-		expect(config.features).toEqual({ document_upload: false, document_scan: false });
+		expect(config.features).toEqual({
+			document_upload: false,
+			document_scan: false,
+			phone_verification: false
+		});
+		// The seeded community asks for `phone_verify`; with SMS off the step is left out.
+		expect(JSON.stringify(config.steps)).toContain('phone_verify');
 
 		const documentRequests: string[] = [];
 		page.on('request', (req) => {
 			const path = new URL(req.url()).pathname;
-			if (/\/(extract|extract-id|documents|extractions)(\/|$)/.test(path)) {
+			if (/\/(extract|extract-id|documents|extractions|verify-phone|confirm-phone)(\/|$)/.test(path)) {
 				documentRequests.push(`${req.method()} ${path}`);
 			}
 		});

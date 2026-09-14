@@ -11,7 +11,7 @@ from typing import Protocol
 
 import httpx
 
-from celine.onboarding.config.settings import settings
+from celine.onboarding.config.settings import DEV_SMS_PROVIDERS, settings
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,6 @@ def get_provider() -> SmsProvider:
     name = settings.sms_provider.strip().lower()
     if name == "brevo":
         return BrevoSmsProvider()
-    if name in {"log", "console", "dev"}:
+    if name in DEV_SMS_PROVIDERS:
         return LogSmsProvider()
     raise SmsDeliveryError(f"Unknown SMS_PROVIDER: {settings.sms_provider!r}")

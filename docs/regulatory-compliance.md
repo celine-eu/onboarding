@@ -46,15 +46,23 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
   verification, this reaches *reasonable assurance* — consistent with utility
   onboarding practice. See [phone-verification.md](phone-verification.md).
 
-  **Without document scanning** (`DPA_SIGNED` or `OPENAI_API_KEY` unset — see
+  **Without document scanning** (`EXTRACTION_ENABLED` or `EXTRACTION_API_KEY` unset — see
   the README's *Document upload and scanning*), bill extraction and ID-card
   cross-validation are absent, and no bill or ID card is uploaded. What remains
   is the CF checksum, the POD format and, where the community's steps include
-  `phone_verify`, SMS verification of the phone number. Every identifying field
+  `phone_verify` and phone verification is enabled (see
+  [phone-verification.md](phone-verification.md#when-verification-is-off)), SMS
+  verification of the phone number. Every identifying field
   is self-declared: nothing ties the POD to the person, or the name to an
-  identity document. That is weaker than the assurance above, and a community
-  that needs document evidence has to collect it outside the platform until
-  scanning is enabled.
+  identity document on the platform. That is weaker than the assurance above.
+
+  **What approval now rests on.** Whatever was collected, approval requires the
+  REC to record how it verified that the person is who they declare and holds the
+  POD — offline, or against a document uploaded to the submission (see
+  [admin-console.md](admin-console.md#before-approving-the-recs-verification)). The
+  method travels in the dataspace credential and the registry member, for the DSO
+  that shares members' data. The platform records the REC's statement; it does not
+  check the documents itself.
 - **Point of delivery.** POD format is validated (`IT` + 3 digits + `E` + 8).
 - **Consent trail.** Versioned, timestamped, IP-stamped, audit-logged — strong
   for GDPR Art. 7 and traceability.

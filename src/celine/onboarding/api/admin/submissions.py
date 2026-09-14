@@ -53,6 +53,7 @@ def _read(submission, *, reveal: bool = False) -> SubmissionAdminRead:
     nothing else. See `api/admin/masking.py`.
     """
     model = SubmissionAdminRead.model_validate(submission)
+    model.phone_verification_waived = review.phone_verification_waived(submission)
     if reveal:
         return model
     return model.model_copy(

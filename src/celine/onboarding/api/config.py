@@ -23,13 +23,18 @@ async def get_config(rec_slug: str = Depends(valid_rec_slug)):
     The wizard renders upload and scanning only where these say so, rather than
     offering a control the API would refuse. Upload and scan are separate
     fields that follow one switch today, so that upload without scanning can be
-    enabled later without changing this response.
+    enabled later without changing this response. ``phone_verification`` says
+    whether a ``phone_verify`` step can run; off, the wizard leaves it out.
     """
     documents = settings.document_processing_enabled
     return {
         **template_service.get_config(rec_slug),
         "login_invitation": await provisioning.login_is_provisioned(rec_slug),
-        "features": {"document_upload": documents, "document_scan": documents},
+        "features": {
+            "document_upload": documents,
+            "document_scan": documents,
+            "phone_verification": settings.phone_verification_enabled,
+        },
     }
 
 

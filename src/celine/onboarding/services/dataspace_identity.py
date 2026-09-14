@@ -11,6 +11,7 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
+from celine.onboarding.models.verification import CREDENTIAL_METHOD_PREFIX
 from celine.onboarding.services import template_service
 from celine.onboarding.services.service_auth import service_token_provider
 
@@ -401,7 +402,27 @@ async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
 # A constant rather than a setting, deliberately. A deployment that could edit this
 # could make the credential claim an assurance level nobody established, which is
 # the exact failure `verified_by` exists to prevent (ds `D-53`).
-VERIFICATION_METHOD = "submission-review"
+#
+# Since 2026-09-14 the approval door says *how* the REC checked, as a suffix taken
+# from the verification its operator recorded before approving —
+# `submission-review:offline` or `submission-review:uploaded-document` (see
+# `verification_method_for`). The value still comes from what somebody recorded,
+# never from configuration. The participant wizard door has no such record and
+# still sends the bare value.
+VERIFICATION_METHOD = CREDENTIAL_METHOD_PREFIX
+
+
+def verification_method_for(submission: Any) -> str:
+    """The credential's `verificationMethod` for an approved submission.
+
+    The recorded verification's method, prefixed. The bare `submission-review`
+    only for a submission approved before verifications were recorded — a retry
+    of its enablement must not claim a method nobody wrote down.
+    """
+    current = getattr(submission, "verification", None)
+    if current is None:
+        return VERIFICATION_METHOD
+    return current.verification_method.credential_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,7 +873,7 @@ async def provision_user_identity(
             # submission its manager approved. `organization_did` is the only
             # authority this service can name without inventing one.
             verified_by=binding.organization_did or None,
-            verification_method=VERIFICATION_METHOD,
+            verification_method=verification_method_for(submission),
             allowed_actions=tuple(
                 a.strip() for a in settings.dataspace_allowed_actions.split(",") if a.strip()
             ),

@@ -97,6 +97,7 @@
 		"email": "Email",
 		"phone": "Telefono",
 		"verified": "verificato",
+		"phone_verification_waived": "non verificato — la verifica del telefono è disattivata su questa installazione, quindi l'approvazione non la richiede",
 		"fiscal_code": "Codice fiscale",
 		"pod": "POD",
 		"supply_municipality": "Comune fornitura",
@@ -125,7 +126,20 @@
 		"revoke": "Revoca abilitazione",
 		"revoke_confirm": "Revocare l'abilitazione? Verranno ritirati il consenso alla condivisione dei dati e la credenziale del dataspace, disabilitato l'accesso e disattivata l'iscrizione alla comunità.",
 		"enablement_unavailable": "Stato non disponibile.",
-		"history": "Cronologia"
+		"history": "Cronologia",
+		"verification": "Verifica",
+		"verification_hint": "Prima di approvare, registra come la comunità ha verificato che il partecipante è chi dichiara e che è titolare del POD indicato. Qui non servono documenti: vale anche una verifica fatta dalla comunità fuori dalla piattaforma. Il metodo viene riportato nella credenziale e nella scheda del registro del partecipante.",
+		"verification_none": "Nessuna verifica registrata. La pratica non può essere approvata finché non ne viene registrata una.",
+		"verification_offline": "Verificato dalla comunità fuori dalla piattaforma",
+		"verification_uploaded_document": "Verificato su un documento caricato qui",
+		"verification_document": "Documento",
+		"verification_superseded": "sostituita",
+		"verification_method": "Come è stato verificato il partecipante?",
+		"verification_note": "Nota (facoltativa)",
+		"verification_record": "Registra verifica",
+		"verification_record_new": "Registra una nuova verifica",
+		"verification_recorded": "Verifica registrata.",
+		"verification_needed_to_approve": "Registra come è stato verificato il partecipante prima di approvare."
 	},
 	"enablement_state": {
 		"not_started": "non avviata",
@@ -151,7 +165,10 @@
 		"has_password": "L'account ha già una password: nessun invito necessario.",
 		"not_on_dev_list": "Invito non inviato: questo ambiente invia email solo agli indirizzi della sua lista di destinatari.",
 		"account_disabled": "Invito non inviato: l'account è disabilitato.",
-		"not_requested": "Nessun invito richiesto."
+		"not_requested": "Nessun invito richiesto.",
+		"cooldown": "Invito non inviato: a questo account è stata inviata un'email pochi istanti fa, quindi non ne è stata inviata una seconda.",
+		"send_failed": "Invito non inviato: non è stato possibile inviare l'email. Ritenta questo passo per riprovare.",
+		"no_email": "Invito non inviato: l'account non ha un indirizzo email, quindi nessun invito può raggiungerlo."
 	},
 	"subject_type": {
 		"user": "utente",

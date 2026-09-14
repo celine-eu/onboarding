@@ -22,8 +22,8 @@
 
 The four extraction routes, and an upload with `doc_type` `utility_bill` or
 `id_card`, answer **403** with `{"detail": {"code": "document_processing_disabled", ...}}`
-while document upload and scanning are off (`DPA_SIGNED` and `OPENAI_API_KEY`
-not both set). They stay registered, so the contract has the same shape on every
+while document upload and scanning are off (`EXTRACTION_ENABLED` and
+`EXTRACTION_API_KEY` not both set). They stay registered, so the contract has the same shape on every
 deployment. `GET /api/{rec}/config` reports the state in `features.document_upload`
 and `features.document_scan`.
 

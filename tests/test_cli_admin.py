@@ -445,3 +445,74 @@ class TestLocalMode:
         assert payload["subject_type"] == "cli"
         assert "@" in payload["sub"]
         assert payload["recs"][0]["slug"] == "rec-a"
+
+
+class TestVerify:
+    """Recording the REC's verification, which approval waits for."""
+
+    URL = f"/api/admin/rec-a/submissions/{SUBMISSION['id']}/verifications"
+    ROW = {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "method": "offline",
+        "document_id": None,
+        "note": None,
+        "actor_type": "service",
+        "actor_sub": "svc",
+        "actor_email": None,
+        "created_at": "2026-09-14T12:00:00Z",
+    }
+
+    def test_offline_reaches_the_endpoint_the_console_uses(self, api):
+        queue_route(api)
+        route = api.post(self.URL).mock(return_value=httpx.Response(201, json=self.ROW))
+
+        result = run(
+            "review",
+            "verify",
+            "20260730-aaa1",
+            "--rec",
+            "rec-a",
+            "--method",
+            "offline",
+            "--note",
+            "ID seen at the office",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(route.calls.last.request.content) == {
+            "method": "offline",
+            "note": "ID seen at the office",
+        }
+        assert "verified (offline)" in result.output
+
+    def test_uploaded_document_sends_the_document(self, api):
+        queue_route(api)
+        route = api.post(self.URL).mock(
+            return_value=httpx.Response(201, json=dict(self.ROW, method="uploaded-document"))
+        )
+        run(
+            "review",
+            "verify",
+            "20260730-aaa1",
+            "--rec",
+            "rec-a",
+            "--method",
+            "uploaded-document",
+            "--document",
+            "doc-1",
+        )
+        assert json.loads(route.calls.last.request.content)["document_id"] == "doc-1"
+
+    def test_an_unknown_method_never_reaches_the_api(self, api):
+        route = api.post(self.URL)
+        result = run("review", "verify", "20260730-aaa1", "--rec", "rec-a", "--method", "trust-me")
+        assert result.exit_code == 1
+        assert not route.called
+
+    def test_show_says_when_none_is_recorded(self, api):
+        queue_route(api)
+        api.get(f"/api/admin/rec-a/submissions/{SUBMISSION['id']}").mock(
+            return_value=httpx.Response(200, json=dict(SUBMISSION, verification=None))
+        )
+        result = run("review", "show", "20260730-aaa1", "--rec", "rec-a")
+        assert "none recorded" in result.output

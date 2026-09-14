@@ -22,6 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 # Same convention as `celine-forecasting` and `celine-ai-assistant`.
 DEV_HOST = "172.17.0.1"
 
+# SMS providers by whether they send anything to a third party. `services/sms.py`
+# builds one for each name.
+DEV_SMS_PROVIDERS = frozenset({"log", "console", "dev"})
+REAL_SMS_PROVIDERS = frozenset({"brevo"})
+
 
 class Settings(BaseSettings):
     # Dev default: the host Postgres this workspace's stacks share, reachable at
@@ -29,7 +34,7 @@ class Settings(BaseSettings):
     database_url: str = (
         f"postgresql+asyncpg://postgres:securepassword123@{DEV_HOST}:15432/rec_onboarding"
     )
-    openai_api_key: str = ""
+    extraction_api_key: str = ""
     extraction_base_url: str = "https://api.openai.com/v1"
     extraction_model: str = "gpt-5.4"
 
@@ -39,7 +44,17 @@ class Settings(BaseSettings):
 
     encryption_key: str = ""
     require_encryption: bool = True
-    dpa_signed: bool = False
+    # Set only once the endpoint at `extraction_base_url` is operated by this
+    # deployment's own operator, or covered by a processing agreement (GDPR Art. 28)
+    # that keeps processing in the EU. See `document_processing_enabled`.
+    extraction_enabled: bool = False
+
+    # The two names the switch had until 2026-09-14. Declared only so a leftover is
+    # reported at boot instead of silently leaving the feature off: `DPA_SIGNED`
+    # asserted a contract an in-house endpoint does not have, and `OPENAI_API_KEY`
+    # named a vendor the endpoint need not be. Nothing reads them.
+    removed_dpa_signed: str = Field(default="", validation_alias="DPA_SIGNED")
+    removed_openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
 
     # Declared only so that startup can refuse to run with it set — nothing reads
     # it. The shared admin token was replaced by Keycloak identities and OPA
@@ -264,14 +279,30 @@ class Settings(BaseSettings):
     def document_processing_enabled(self) -> bool:
         """Whether participants may upload a bill or ID card and have it read.
 
-        Scanning sends identity documents to the extraction provider, so it needs
-        a data processing agreement with that provider (`DPA_SIGNED`) and a key to
-        call it with. Either missing means the feature is off — not a refusal to
+        Scanning sends identity documents to the extraction endpoint, so it needs
+        the operator to have switched it on (`EXTRACTION_ENABLED`, which asserts the
+        endpoint is in-house or under an EU processing agreement) and a key to call
+        it with (`EXTRACTION_API_KEY`). Either missing means the feature is off — not a refusal to
         start: the wizard still onboards a participant from the fields they type.
         Upload follows the same switch, because a stored document exists only to
         be scanned or reviewed alongside a scan.
         """
-        return self.dpa_signed and bool(self.openai_api_key)
+        return self.extraction_enabled and bool(self.extraction_api_key)
+
+    @property
+    def phone_verification_enabled(self) -> bool:
+        """Whether participants can verify their phone number by SMS.
+
+        A development provider sends nothing — it logs the code — so it needs no
+        agreement. A real gateway receives the participant's phone number and is a
+        processor under GDPR Art. 28, so it is used only with `DPA_SMS_SIGNED`. An
+        unknown provider name cannot send anything either way. Off is a degraded
+        feature, not a refusal to start: the wizard drops the `phone_verify` step.
+        """
+        name = self.sms_provider.strip().lower()
+        if name in DEV_SMS_PROVIDERS:
+            return True
+        return name in REAL_SMS_PROVIDERS and self.dpa_sms_signed
 
     def smtp_is_dev_default(self) -> bool:
         """Whether email is going to the workspace's Mailpit because nothing said otherwise."""
