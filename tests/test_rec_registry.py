@@ -13,6 +13,7 @@ work around.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -316,10 +317,14 @@ def _configured(monkeypatch, bind_rec):
     rr._client = None
 
 
-def _stub_client(monkeypatch, status: int, content: bytes = b""):
+def _stub_client(monkeypatch, status: int, content: bytes = b"", holder=None):
     calls: list = []
 
     class _Client:
+        async def lookup_member_by_user_id(self, user_id):
+            calls.append(("lookup", user_id))
+            return holder
+
         async def create_member(self, community, body):
             calls.append((community, body))
             return SimpleNamespace(status_code=status, content=content)
@@ -355,9 +360,11 @@ class TestRegisterMember:
     async def test_already_registered_is_not_a_failure(self, monkeypatch, _configured):
         """Approval is retriable. Refusing the second attempt would leave a
         submission that can never be approved."""
-        _stub_client(monkeypatch, 409, b"already exists")
+        holder = SimpleNamespace(key="20260727-abcd", community_key="test-community")
+        calls = _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
 
         assert await rr.register_member(_sub()) == "20260727-abcd"
+        assert ("lookup", "alice.rossi@example.org") in calls
 
     async def test_refusal_fails_closed(self, monkeypatch, _configured):
         """Unlike share provisioning: a member who does not exist is invisible to
@@ -372,6 +379,104 @@ class TestRegisterMember:
 
         with pytest.raises(ValueError, match="area 'north' unknown"):
             await rr.register_member(_sub())
+
+
+def _conflict(detail: str) -> bytes:
+    """A registry 409 body, as FastAPI renders `HTTPException(409, detail)`."""
+    return json.dumps({"detail": detail}).encode()
+
+
+# The registry's own wording, from `MemberConflict` in rec-registry.
+KEY_TAKEN = "Member '20260727-abcd' already exists in this community"
+USER_ID_TAKEN = "A member with user_id 'alice.rossi@example.org' already exists in this community"
+
+
+class TestRegisterMemberConflict:
+    """A `409` is a registration only when it is this participant's member.
+
+    The registry answers `409` for a taken key, a taken `user_id`, a taken DID,
+    and (planned) a delivery point held by another member. Only the first is the
+    retry approval expects; recording success for the others leaves somebody
+    approved and absent from the registry, with a member key step 3 would write
+    their DID onto.
+    """
+
+    async def test_a_taken_user_id_fails_the_step(self, monkeypatch, _configured):
+        calls = _stub_client(monkeypatch, 409, _conflict(USER_ID_TAKEN))
+
+        with pytest.raises(ValueError, match="user_id 'alice.rossi@example.org' already exists"):
+            await rr.register_member(_sub())
+
+        # Nothing to confirm: no member was created for this submission.
+        assert [c for c in calls if c[0] == "lookup"] == []
+
+    async def test_the_refusal_says_no_member_was_registered(self, monkeypatch, _configured):
+        _stub_client(monkeypatch, 409, _conflict(USER_ID_TAKEN))
+
+        with pytest.raises(ValueError, match="No member was registered"):
+            await rr.register_member(_sub())
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "did 'did:web:alice' already belongs to another member",
+            "Delivery point 'IT001E00000001' is already held by another active member",
+            "conflict",
+        ],
+    )
+    async def test_any_other_conflict_fails_closed(self, monkeypatch, _configured, detail):
+        """A DID, a duplicate POD, or a wording this service does not know."""
+        _stub_client(monkeypatch, 409, _conflict(detail))
+
+        with pytest.raises(ValueError, match="REC registry refused"):
+            await rr.register_member(_sub())
+
+    async def test_a_body_that_is_not_json_fails_closed(self, monkeypatch, _configured):
+        _stub_client(monkeypatch, 409, b"already exists")
+
+        with pytest.raises(ValueError, match="already exists"):
+            await rr.register_member(_sub())
+
+    async def test_a_key_held_under_another_members_user_id_fails(self, monkeypatch, _configured):
+        """`user_id` is unique per community, so finding it on a different member
+        means the row under this key is not this participant's."""
+        holder = SimpleNamespace(key="gl-00007", community_key="test-community")
+        _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
+
+        with pytest.raises(ValueError, match="belongs to member 'gl-00007'"):
+            await rr.register_member(_sub())
+
+    async def test_the_retry_is_confirmed_with_the_username(self, monkeypatch, _configured):
+        holder = SimpleNamespace(key="20260727-abcd", community_key="test-community")
+        calls = _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
+
+        key = await rr.register_member(_sub(), keycloak_username="gl-00001")
+
+        assert key == "20260727-abcd"
+        assert ("lookup", "gl-00001") in calls
+
+    async def test_an_unconfirmed_key_retry_still_succeeds_and_says_so(
+        self, monkeypatch, _configured, caplog
+    ):
+        """A retry of step 2 alone sends the email fallback, not the username the
+        first attempt registered, so the lookup finds nobody. The key is the
+        submission's ref, which only this service writes: failing here would wedge
+        exactly the retry the 409 handling exists for."""
+        _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=None)
+
+        with caplog.at_level("WARNING"):
+            assert await rr.register_member(_sub()) == "20260727-abcd"
+
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    async def test_the_user_id_in_another_community_does_not_contradict_the_retry(
+        self, monkeypatch, _configured
+    ):
+        """The lookup is cross-community and returns one row."""
+        holder = SimpleNamespace(key="m-3", community_key="somewhere-else")
+        _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
+
+        assert await rr.register_member(_sub()) == "20260727-abcd"
 
 
 class TestRegisterMemberUserId:

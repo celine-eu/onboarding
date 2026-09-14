@@ -190,6 +190,60 @@ class TestMe:
         assert body["organizations"] == []
 
 
+class TestARealmIssuedCliServiceToken:
+    """`onboarding-cli admin …` on its own service account, as a real realm issues it.
+
+    A realm synced by celine-policies assigns exactly the declared client scopes,
+    so `svc-onboarding-cli`'s token carries **no `client_id` and no
+    `preferred_username`** — only `azp`, `sub`, `scope` and a `jti` whose
+    `trrtcc:` prefix records the client-credentials grant. The `service_token`
+    fixture carries both missing claims, which is how this caller was answered
+    403 while every test here passed.
+
+    Passing depends on `celine.sdk.auth.is_service_account` reading that marker,
+    first released in celine-sdk 1.20.0 (the floor).
+    """
+
+    @pytest.fixture()
+    def cli_token(self, issue_token):
+        def _issue(jti: str = "trrtcc:3d1f6b2a-7c4e-4f0a-8e2b-9a6c5d4e3f21"):
+            return issue_token(
+                sub="7b2e9f14-3a6d-4c81-b5e0-2d9f8a7c6e53",
+                azp="svc-onboarding-cli",
+                scope="onboarding.admin",
+                jti=jti,
+            )
+
+        return _issue
+
+    def test_it_is_a_service(self, client, cli_token):
+        response = client.get("/api/admin/me", headers=auth(cli_token()))
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["subject_type"] == "service"
+        assert {rec["slug"] for rec in body["recs"]} >= {"rec-a", "rec-b"}
+
+    def test_onboarding_admin_grants_it_the_console(self, client, cli_token):
+        """Read from the policy's own answer, so no database is involved."""
+        body = client.get("/api/admin/me", headers=auth(cli_token())).json()
+
+        [rec_a] = [rec for rec in body["recs"] if rec["slug"] == "rec-a"]
+        assert {"submissions.read", "submissions.review", "enablement.retry"} <= set(
+            rec_a["capabilities"]
+        )
+
+    def test_without_the_grant_marker_it_is_a_person_of_no_community(self, client, cli_token):
+        """The marker is what decides it: the same claims with a password-grant
+        `jti` hold no organization, and a person with none is refused."""
+        response = client.get(
+            "/api/admin/me",
+            headers=auth(cli_token(jti="onrtro:3d1f6b2a-7c4e-4f0a-8e2b-9a6c5d4e3f21")),
+        )
+
+        assert response.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # /recs
 # ---------------------------------------------------------------------------

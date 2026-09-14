@@ -145,6 +145,14 @@ remotely and the next attempt would create a second one. The step row records th
 error, the attempt count and the external reference, so the remedy is retrying
 that step rather than pressing Approve again and re-running all four.
 
+A registry **conflict** on step 2 is a failure unless it is this participant's own
+member. The registry refuses a create with `409` for a taken member key, a login
+(`user_id`) another member of the community already holds, a DID another member holds,
+and a delivery point another member holds. Only the first is an earlier attempt of this
+same step, and it counts as registered. The others leave no member for this person, so
+the step fails with the registry's reason. Retrying will not clear it. Resolve the clash in
+the registry first, then retry the step.
+
 `retry` only re-runs steps that are not already `succeeded` or `skipped`, with one
 exception: naming `keycloak_user` re-runs a login step whose invitation is
 `send_failed` (see [The invitation, for the operator](#the-invitation-for-the-operator)).

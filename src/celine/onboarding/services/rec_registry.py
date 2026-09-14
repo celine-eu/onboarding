@@ -31,6 +31,7 @@ the registry is what the community says now.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -212,6 +213,76 @@ def build_member_payload(
     return payload
 
 
+def _conflict_detail(response: Any) -> str:
+    """The registry's own sentence for a ``409``: FastAPI's ``{"detail": ...}``."""
+    body = getattr(response, "content", b"")
+    text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+    try:
+        detail = json.loads(text).get("detail")
+    except (ValueError, AttributeError):
+        return text
+    return detail if isinstance(detail, str) else text
+
+
+async def _accept_conflict(community: str, *, key: str, user_id: str, detail: str) -> None:
+    """Return when a ``409`` on create is this participant's member; raise otherwise.
+
+    The registry answers ``409`` for several unique rules, and only one of them is
+    the retry approval expects:
+
+    - **the key is taken** — this submission's member, from an earlier attempt
+      whose outcome was lost. Success.
+    - **the ``user_id`` is taken** — somebody else in this community already logs
+      in as this person. No member was created for this submission.
+    - **the DID is taken**, or (planned) **a delivery point is already held** by
+      another active member. Again, no member was created.
+
+    Recording success for any but the first leaves the participant approved and
+    absent from the registry — invisible to every pipeline, dashboard and twin
+    query, with nothing marking it — and hands step 3 a member key that is not
+    theirs. So this branches on the registry's reason rather than the status, and
+    a wording it does not recognise fails closed.
+
+    **A key retry is confirmed through the ``user_id`` lookup**, not by reading
+    the member by key: that read needs ``rec-registry.read``, which this client is
+    deliberately not granted, while the lookup is covered by the
+    ``rec-registry.lookup`` it already holds. The registry keeps ``user_id``
+    unique per community, so this ``user_id`` on a *different* member here means
+    the key row is not this person's. Finding nobody, or somebody in another
+    community (the lookup returns the first row across communities), does not
+    contradict the retry: a retry of step 2 alone sends the email fallback rather
+    than the username step 1 read back. The key is ``submission.ref``, which only
+    this service writes, so that stays a success — logged, because it was not
+    confirmed.
+    """
+    key_taken = detail.startswith(f"Member {key!r}") and "already exists" in detail
+    if not key_taken:
+        raise ValueError(
+            f"REC registry refused member {key!r} for community {community!r} (409): "
+            f"{detail}. No member was registered for this submission; an operator has "
+            "to resolve the conflict in the registry before this step is retried"
+        )
+
+    holder = await _get_client().lookup_member_by_user_id(user_id)
+    if holder is not None and holder.community_key == community and holder.key != key:
+        raise ValueError(
+            f"REC registry already holds member {key!r} in community {community!r}, but "
+            f"user_id {user_id!r} belongs to member {holder.key!r} there. Member {key!r} "
+            "is not this participant's; an operator has to resolve which is"
+        )
+
+    if holder is not None and holder.community_key == community:
+        logger.info("Member %s in %s was already registered as %r", key, community, user_id)
+    else:
+        logger.warning(
+            "Member %s already exists in %s, and user_id %r is not on it as far as the "
+            "lookup can tell; accepting it as this submission's earlier registration",
+            key,
+            community,
+            user_id,
+        )
+
+
 async def register_member(
     submission: Submission, *, keycloak_username: str | None = None
 ) -> str | None:
@@ -227,9 +298,10 @@ async def register_member(
     Both are supported configurations rather than degraded ones.
 
     Raises on failure, so approval does not complete. An already-registered
-    participant (``409``) is **not** a failure: this runs on approval, approval
-    can be retried, and refusing the second attempt would leave a submission
-    that can never be approved.
+    participant is **not** a failure: this runs on approval, approval can be
+    retried, and refusing the second attempt would leave a submission that can
+    never be approved. But a ``409`` is not always that participant — see
+    :func:`_accept_conflict`.
     """
     if not settings.rec_registry_url:
         return None
@@ -253,21 +325,11 @@ async def register_member(
     status_value = int(status) if status is not None else 0
 
     if status_value == 409:
-        # Already there. Approval is retriable, so treat this as success rather
-        # than wedging a submission that cannot be approved a second time.
-        #
-        # The registry answers 409 for a taken *key* and for a taken *user_id*,
-        # and only the first is the retry this expects. The second means somebody
-        # else in this community already logs in as `user_id` — a real clash,
-        # which is why both readings are named here rather than the first assumed.
-        # It stays non-fatal either way: refusing would wedge the approval, and a
-        # clash is not something this side can resolve.
-        logger.info(
-            "REC registry answered 409 for member %s in %s: already registered, or "
-            "another member there already holds user_id %r",
-            payload["key"],
+        await _accept_conflict(
             binding.community,
-            payload["user_id"],
+            key=payload["key"],
+            user_id=payload["user_id"],
+            detail=_conflict_detail(response),
         )
         return payload["key"]
 

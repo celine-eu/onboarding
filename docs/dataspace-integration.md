@@ -360,6 +360,15 @@ Registry registration **fails closed**, so a dataspace identity is never issued
 to somebody who is not a community member. See `AGENTS.md` for what is derived
 from the wizard's answers and what is deliberately not.
 
+A `409` on the member create is read by its reason, not its status. A taken member
+key is this submission's own earlier attempt and counts as registered. Onboarding checks
+that with `GET /lookup/member-by-user-id/{user_id}`, covered by the `rec-registry.lookup`
+it already holds: if another member of the community holds this `user_id`, the key is not
+this person's and the step fails. A taken `user_id`, a taken DID, a delivery point held by
+another member, or any conflict it does not recognise also fails the step with the
+registry's own message. None of them created a member, and recording success would leave
+the participant approved and missing from the registry.
+
 The traffic goes the other way once, too. After the dataspace identity step
 succeeds, onboarding writes the minted DID back onto the registry member with
 `PATCH /communities/{community}/members/{key}`, sending `did` and nothing else.
