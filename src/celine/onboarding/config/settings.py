@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -113,12 +113,22 @@ class Settings(BaseSettings):
     rate_limit_otp_send: str = "10/hour"
     rate_limit_otp_confirm: str = "20/hour"
 
-    smtp_host: str = ""
-    smtp_port: int = 587
+    # Dev default: the Mailpit `../celine-policies`' compose publishes on the host's
+    # 1025 — the same catch-all Keycloak's invitation emails land in, so a
+    # developer sees every message this workspace sends in one inbox and none of
+    # them reaches a real person. A deployment sets SMTP_HOST (and the rest) to
+    # its relay; `SMTP_HOST=` switches email off, which is what leaving it unset
+    # used to mean.
+    smtp_host: str = DEV_HOST
+    smtp_port: int = 1025
     smtp_user: str = ""
     smtp_password: str = ""
-    smtp_from: str = ""
-    smtp_tls: bool = True
+    smtp_from: str = "onboarding@celine.localhost"
+    # Unset means "on, unless the dev Mailpit is the host": Mailpit offers no
+    # STARTTLS, and a deployment that points SMTP_HOST at its relay must not
+    # silently lose TLS because it never thought to set this. Resolved below, so
+    # every reader sees a plain bool.
+    smtp_tls: bool | None = None
     smtp_notify: str = ""
 
     dataspace_enabled: bool = False
@@ -243,6 +253,30 @@ class Settings(BaseSettings):
         "env_file": (str(REPO_ROOT / ".env"), str(REPO_ROOT / ".env.local")),
         "env_file_encoding": "utf-8",
     }
+
+    @model_validator(mode="after")
+    def _resolve_smtp_tls(self) -> "Settings":
+        if self.smtp_tls is None:
+            self.smtp_tls = self.smtp_host != DEV_HOST
+        return self
+
+    @property
+    def document_processing_enabled(self) -> bool:
+        """Whether participants may upload a bill or ID card and have it read.
+
+        Scanning sends identity documents to the extraction provider, so it needs
+        a data processing agreement with that provider (`DPA_SIGNED`) and a key to
+        call it with. Either missing means the feature is off — not a refusal to
+        start: the wizard still onboards a participant from the fields they type.
+        Upload follows the same switch, because a stored document exists only to
+        be scanned or reviewed alongside a scan.
+        """
+        return self.dpa_signed and bool(self.openai_api_key)
+
+    def smtp_is_dev_default(self) -> bool:
+        """Whether email is going to the workspace's Mailpit because nothing said otherwise."""
+        default = type(self).model_fields["smtp_host"].default
+        return bool(self.smtp_host) and self.smtp_host == default
 
     def resolve_path(self, value: str) -> Path:
         p = Path(value)

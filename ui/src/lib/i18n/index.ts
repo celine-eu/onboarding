@@ -39,7 +39,7 @@ if (typeof document !== 'undefined') {
 
 const STORAGE_KEY = 'onboarding.locale';
 
-function isSupported(value: unknown): value is SupportedLocale {
+export function isSupported(value: unknown): value is SupportedLocale {
 	return typeof value === 'string' && (supportedLocales as readonly string[]).includes(value);
 }
 

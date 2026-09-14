@@ -104,7 +104,7 @@ PY
   DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" \
   OIDC_BASE_URL="http://127.0.0.1:$E2E_IDP_PORT" \
   OIDC_JWKS_URI="http://127.0.0.1:$E2E_IDP_PORT/certs" \
-  REQUIRE_ENCRYPTION=false DPA_SIGNED=yes DPA_SMS_SIGNED=yes ADMIN_TOKEN= \
+  REQUIRE_ENCRYPTION=false DPA_SIGNED=false OPENAI_API_KEY= DPA_SMS_SIGNED=yes ADMIN_TOKEN= \
   DS_NS_URL= DS_CONNECTOR_URL= REC_REGISTRY_URL= DATASPACE_ENABLED=false \
     uv run --project src uvicorn celine.onboarding.main:app --port "$E2E_API_PORT" --log-level warning &
   PIDS+=($!)

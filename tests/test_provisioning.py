@@ -79,7 +79,13 @@ def api():
 
 
 def upsert_route(api, *, community=COMMUNITY, key="20260727-abcd", **body):
-    payload = {"user_id": "kc-uuid-1", "username": "alice.rossi@example.org", "created": True}
+    payload = {
+        "user_id": "kc-uuid-1",
+        "username": "alice.rossi@example.org",
+        "created": True,
+        "invitation": "sent",
+        "invited": True,
+    }
     payload.update(body)
     return api.put(f"/participants/{community}/{key}").mock(
         return_value=httpx.Response(200, json=payload)
@@ -163,7 +169,150 @@ class TestTheCommunity:
         assert await pv.provision_participant(_sub(rec_slug="plain")) is None
 
 
+class TestWhatTheWizardIsTold:
+    """Whether the wizard may promise an email to set a password.
+
+    Approval sends the invitation only where a login is provisioned at all, so
+    the promise follows exactly the two conditions step 1 checks. A person told
+    to expect an email that never comes has been told something false.
+    """
+
+    async def test_a_bound_rec_on_a_provisioning_deployment_gets_one(self, bound, enabled):
+        assert await pv.login_is_provisioned("example") is True
+
+    async def test_no_provisioning_service_means_no_promise(self, monkeypatch, bound):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        assert await pv.login_is_provisioned("example") is False
+
+    async def test_no_registry_binding_means_no_promise(self, bind_rec, enabled):
+        bind_rec("plain")
+        assert await pv.login_is_provisioned("plain") is False
+
+    def test_the_public_config_carries_it(self, bound, enabled, bind_rec):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from celine.onboarding.api.config import router
+
+        bind_rec("plain")
+        app = FastAPI()
+        app.include_router(router, prefix="/api/{rec_slug}")
+        client = TestClient(app)
+
+        assert client.get("/api/example/config").json()["login_invitation"] is True
+        assert client.get("/api/plain/config").json()["login_invitation"] is False
+
+
 # ── the upsert ────────────────────────────────────────────────────────────────
+
+
+class TestTheUpsertAsksForAnInvitation:
+    """Approval always asks; the provisioning service decides whether one is sent.
+
+    This repository cannot see credentials, so it does not decide whether an
+    account "needs" an invitation. The service sends only to an account created
+    in the call or one without a password, which is what makes a retry safe.
+    """
+
+    async def test_invite_is_true(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub())
+        assert json.loads(route.calls[0].request.content)["invite"] is True
+
+    async def test_a_retry_asks_again(self, bound, enabled, api):
+        route = upsert_route(api, created=False, invitation="has_password", invited=False)
+        await pv.provision_participant(_sub())
+        await pv.provision_participant(_sub())
+        assert [json.loads(c.request.content)["invite"] for c in route.calls] == [True, True]
+
+    @pytest.mark.parametrize(
+        ("code", "invited"),
+        [
+            ("sent", True),
+            ("has_password", False),
+            ("not_on_dev_list", False),
+            ("account_disabled", False),
+            ("not_requested", False),
+        ],
+    )
+    async def test_the_outcome_comes_back_as_a_plain_code(self, bound, enabled, api, code, invited):
+        """The generated schema holds an `Enum`; the step row and the console need
+        the string, and `invited` is derived from it here rather than trusted."""
+        upsert_route(api, created=False, invitation=code, invited=invited)
+        result = await pv.provision_participant(_sub())
+        assert result.invitation == code
+        assert isinstance(result.invitation, str)
+        assert result.invited is invited
+
+    async def test_a_disabled_account_is_not_a_failure(self, bound, enabled, api):
+        """Re-approval after revocation: `200` with `account_disabled` (O3). The
+        account exists, so the step succeeds and says the email did not go out."""
+        upsert_route(api, created=False, invitation="account_disabled", invited=False)
+        result = await pv.provision_participant(_sub())
+        assert result.user_id == "kc-uuid-1"
+        assert result.invitation == "account_disabled"
+
+
+class TestTheInvitationLanguage:
+    """Submission, then manifest, then nothing — each narrowed to `it|en|es`.
+
+    The service answers `422` for anything else, and step 1 fails closed, so a
+    value it would refuse is dropped rather than sent: the realm default gives
+    the same email without blocking an approval.
+    """
+
+    @staticmethod
+    def _sent_locale(route):
+        return json.loads(route.calls[0].request.content).get("locale")
+
+    async def test_the_submissions_own_language_wins(self, bound, enabled, api):
+        bound["locale"] = "it"
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(locale="es"))
+        assert self._sent_locale(route) == "es"
+
+    async def test_the_manifest_language_is_the_fallback(self, bound, enabled, api):
+        bound["locale"] = "en"
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(locale=None))
+        assert self._sent_locale(route) == "en"
+
+    async def test_with_neither_no_locale_is_sent(self, bound, enabled, api):
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(locale=None))
+        assert "locale" not in json.loads(route.calls[0].request.content)
+
+    @pytest.mark.parametrize("manifest_locale", ["it-IT", "fr", "IT", ""])
+    async def test_a_manifest_value_the_service_would_refuse_sends_nothing(
+        self, bound, enabled, api, manifest_locale
+    ):
+        bound["locale"] = manifest_locale
+        route = upsert_route(api)
+        result = await pv.provision_participant(_sub(locale=None))
+        assert route.called and result is not None
+        assert "locale" not in json.loads(route.calls[0].request.content)
+
+    async def test_an_unsupported_submission_value_falls_through_to_the_manifest(
+        self, bound, enabled, api
+    ):
+        """Unreachable through the wizard, which refuses it at capture; a row
+        written some other way must still not block approval."""
+        bound["locale"] = "it"
+        route = upsert_route(api)
+        await pv.provision_participant(_sub(locale="fr"))
+        assert self._sent_locale(route) == "it"
+
+    async def test_a_retry_sends_the_language_again(self, bound, enabled, api):
+        route = upsert_route(api, created=False)
+        await pv.provision_participant(_sub(locale="es"))
+        await pv.provision_participant(_sub(locale="es"))
+        assert [json.loads(c.request.content)["locale"] for c in route.calls] == ["es", "es"]
+
+    def test_the_consent_locale_is_not_read(self, bind_rec):
+        """It is evidence of what a consent text was shown in, not a preference."""
+        bind_rec("example")
+        sub = _sub(locale=None, data_sharing_consent_locale="es")
+        assert pv.participant_locale(sub) is None
 
 
 class TestProvisioningAParticipant:

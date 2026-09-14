@@ -54,6 +54,7 @@
 	"email_or_phone": "Email or phone required",
 	"submit_success": "Application submitted successfully!",
 	"submit_success_detail": "You will receive a confirmation email.",
+	"submit_login_invitation": "Once your application is approved, you will receive an email to set the password for your account. The link is valid for 7 days. After setting your password, sign in with it.",
 	"download_pdf": "Download PDF summary",
 	"upload_id_intro": "To speed things up, please upload an ID document belonging to the same person as the utility bill. If that's not possible, no worries — we'll collect it later.",
 	"upload_id": "Upload your ID document",

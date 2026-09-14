@@ -54,6 +54,7 @@
 	"email_or_phone": "Correo electrónico o teléfono obligatorio",
 	"submit_success": "¡Solicitud enviada correctamente!",
 	"submit_success_detail": "Recibirás una confirmación por correo electrónico.",
+	"submit_login_invitation": "Cuando se apruebe tu solicitud, recibirás un correo electrónico para establecer la contraseña de tu cuenta. El enlace es válido durante 7 días. Después de establecer la contraseña, inicia sesión con ella.",
 	"download_pdf": "Descargar resumen en PDF",
 	"upload_id_intro": "Para agilizar el trámite, te pedimos que subas un documento de identidad a nombre de la misma persona que figura en la factura. Si no es posible, no pasa nada: lo recogeremos más adelante.",
 	"upload_id": "Sube tu documento de identidad",

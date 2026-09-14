@@ -4,14 +4,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import limiter, require_session
+from celine.onboarding.api.deps import limiter, require_document_processing, require_session
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import ExtractionConfirm, ExtractionRead
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import document_service, extraction_service
 
-router = APIRouter(tags=["extractions"])
+# Every route here reads a document with the extraction provider, so the whole
+# router is behind the document-processing switch — confirm included, since an
+# extraction to confirm can only exist while scanning is on.
+router = APIRouter(tags=["extractions"], dependencies=[Depends(require_document_processing)])
 
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 

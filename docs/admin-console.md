@@ -29,6 +29,27 @@ realm; this service holds no Keycloak grant. A community that declares no
 registry binding has no community to key the account on, so step 1 is **skipped**
 for it — see [ADR-0004](decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md).
 
+Step 1 also **asks for an invitation**: Keycloak emails the participant a link to set
+their password, valid for 7 days, in the language they last used in the wizard (or
+the community manifest's `locale`, or the realm default). It asks every time,
+including on a retry, and the provisioning service decides whether an email goes out,
+because only it can see whether the account already has a password. The step row
+records what it decided, and **every outcome is a success**: the account exists, and
+an invitation that did not go out is not a failed login.
+
+| Code | Console says | Meaning |
+|---|---|---|
+| `sent` | invitation sent | a new account, or one without a password |
+| `has_password` | already has a password | nothing to invite to |
+| `not_on_dev_list` | not sent, recipient list | the provisioning service is in dev email mode and the address is not on its list |
+| `account_disabled` | not sent, account disabled | a participant approved again after revocation: revocation disables the account, and re-approval does not re-enable it |
+| `not_requested` | no invitation requested | not produced by approval, which always asks |
+
+The console shows the code translated; the CLI prints the code beside an English
+sentence (`[invitation=account_disabled]`). Rows from before invitations existed
+carry no code and show their old detail. There is no re-send or reset button here:
+that is a community manager's action in `celine-community`.
+
 Step 3 does one thing more than its name says: the DID it mints is written back
 onto the member step 2 created. That is the key anything else uses to attribute a
 dataspace consent to a member, and it cannot be written any earlier because the
@@ -100,7 +121,7 @@ The console is translated into Italian (the default), English and Spanish, with 
 strings in `ui/src/lib/i18n/{it,en,es}/admin.json`. The choice is made from the
 header and remembered per browser, and it is shared with the wizard.
 
-Status, step and state names are translated by their **code**, not taken from the
+Status, step, state and invitation outcomes are translated by their **code**, not taken from the
 API: the step `label` in the enablement payload stays English because the CLI prints
 it. A code with no translation is shown raw. Audit action names are never
 translated, because they are what `onboarding-cli admin audit --action` filters by.

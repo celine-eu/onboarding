@@ -146,6 +146,13 @@
 		"dataspace_identity": "Dataspace identity",
 		"dataspace_share": "Standing sharing consent"
 	},
+	"invitation": {
+		"sent": "Invitation to set a password sent.",
+		"has_password": "The account already has a password: no invitation needed.",
+		"not_on_dev_list": "Invitation not sent: this environment only emails the addresses on its recipient list.",
+		"account_disabled": "Invitation not sent: the account is disabled.",
+		"not_requested": "No invitation was requested."
+	},
 	"subject_type": {
 		"user": "user",
 		"service": "service"

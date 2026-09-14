@@ -6,12 +6,33 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.services import template_service
 
 limiter = Limiter(key_func=get_remote_address)
 
 SESSION_TTL_SECONDS = 600
+
+DOCUMENT_PROCESSING_DISABLED = "document_processing_disabled"
+
+
+async def require_document_processing() -> None:
+    """Refuse a document upload or scan while the feature is switched off.
+
+    The routes stay registered so the API has the same shape on every
+    deployment; a caller learns the feature is off from a 403 with a stable
+    ``code``, and the wizard never gets that far because ``/config`` already
+    said so. See ``Settings.document_processing_enabled`` for what the switch is.
+    """
+    if not settings.document_processing_enabled:
+        raise HTTPException(
+            403,
+            {
+                "code": DOCUMENT_PROCESSING_DISABLED,
+                "message": "Document upload and scanning are not enabled on this deployment.",
+            },
+        )
 
 
 async def valid_rec_slug(rec_slug: str) -> str:

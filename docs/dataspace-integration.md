@@ -24,7 +24,7 @@ Onboarding stores only the subject ID, DID, credential ID, and issuance timestam
 
 When a submission is approved, `DATASPACE_ENABLED` is true and the REC declares a `dataspace:` block:
 
-1. `provision_participant()` asks the provisioning service to ensure the account and returns its Keycloak `user_id` and `username`.
+1. `provision_participant()` asks the provisioning service to ensure the account, and to invite the participant to set a password, and returns its Keycloak `user_id`, `username` and the invitation outcome.
 2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak, then provisions any data-sharing shares to the connector as its last step.
 
 ```mermaid
@@ -82,7 +82,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 ### Step-by-step
 
-1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
+1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. The body always carries `invite: true` and, when there is one, the participant's `locale` (see [The invitation](#the-invitation)); the answer's `invitation` code is recorded on the step row. Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
 
 2. **Subject resolution** -- `GET /users/resolve?email=…&derive=true` asks the identity-registry who this person is. It is the sole authority on the email-to-`subject_id` mapping: an existing one comes back, and a new one is derived deterministically, keyed by the registry's own `ENCRYPTION_KEY`, so first-time issuance has an identifier without onboarding inventing one. A missing mapping is therefore **not** a `404`. Skipped when `DATASPACE_SUBJECT_SOURCE` is `submission_ref`, where the identifier comes from the submission instead.
 
@@ -199,6 +199,28 @@ is worse than an absent one.
 carries only `active` members, so the reverse order would make the disable a `404`: the
 login survives, the participant can still sign in, and the step row reports success
 because nothing failed. `enablement.REVOKE_ORDER` declares the order for that reason.
+
+### The invitation
+
+Every upsert from step 1 carries `invite: true`, including a retry. This service
+cannot see credentials, so it does not decide whether an account needs an
+invitation: the provisioning service sends one only to an account created in that
+call or one without a password, which is also what makes a retry safe. Keycloak
+writes the email; nothing here sends one about the login.
+
+`locale` is the submission's own (the language the person last used in the wizard),
+then the REC manifest's `locale`, then absent, which leaves the realm default. Both
+are **narrowed to `it|en|es`, and anything else is sent as absent**: the service
+answers `422` for any other value, and a `422` would fail step 1 closed and block an
+approval over a language tag. A manifest saying `it-IT` therefore gets the realm
+default, which is the email Keycloak would have sent anyway.
+
+The answer's `invitation` is `sent`, `has_password`, `not_on_dev_list`,
+`account_disabled` or `not_requested`, and none of them fails the step. It is stored
+on the step row beside `detail`, and the console translates it
+([Operator console](admin-console.md#what-approval-actually-does)).
+`account_disabled` is a participant approved again after revocation: revocation
+disables the account, and neither answer re-enables it.
 
 ### What each refusal means
 

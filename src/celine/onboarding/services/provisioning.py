@@ -37,10 +37,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
 from celine.onboarding.config.settings import settings
-from celine.onboarding.models.submission import Submission
+from celine.onboarding.models.submission import ParticipantLocale, Submission
 from celine.onboarding.services.errors import ConfigurationError
 from celine.onboarding.services.service_auth import issuer_realm
 
@@ -62,6 +62,16 @@ class ParticipantProvisionResult:
     #: ``preferred_username`` carries.
     username: str
     created: bool
+    #: The provisioning service's reason code for the invitation this call asked
+    #: for: ``not_requested | sent | has_password | not_on_dev_list |
+    #: account_disabled``. Recorded verbatim on the step row, where the console
+    #: translates it. ``None`` only for a result built without one (tests).
+    invitation: str | None = None
+
+    @property
+    def invited(self) -> bool:
+        """Whether an invitation to set a password went out in this call."""
+        return self.invitation == "sent"
 
 
 _client: Any | None = None
@@ -151,6 +161,16 @@ async def participant_community(rec_slug: str) -> str | None:
     return binding.community if binding.enabled else None
 
 
+async def login_is_provisioned(rec_slug: str) -> bool:
+    """Whether approving somebody in this REC gives them a login, and so an invitation.
+
+    The two conditions step 1 checks before it calls anything, answered for a
+    REC rather than a submission, so the wizard can say what approval will do
+    before there is anything to approve.
+    """
+    return provisioning_enabled() and await participant_community(rec_slug) is not None
+
+
 def participant_username(submission: Submission) -> str | None:
     """The username a *new* account would get for this submission, or ``None``.
 
@@ -191,6 +211,38 @@ def keycloak_realm() -> str:
     return derived
 
 
+_LOCALES: frozenset[str] = frozenset(get_args(ParticipantLocale))
+
+
+def participant_locale(submission: Submission) -> str | None:
+    """The language the invitation email is written in, or ``None`` for the realm's.
+
+    The submission's own ``locale`` first — the language the person last used in
+    the wizard — then the REC manifest's ``locale``, then nothing, which leaves
+    Keycloak on the realm default.
+
+    **Both are narrowed to ``it|en|es``, and anything else counts as absent.** The
+    manifest's ``locale`` is free text, and the provisioning service answers
+    ``422`` for any other value (the SDK raises before sending). Step 1 fails
+    closed, so a manifest saying ``it-IT`` would block every approval in that
+    community over a language tag — where sending nothing gives the same email.
+
+    Not ``data_sharing_consent_locale``: that is evidence of the language a
+    consent text was shown in, and it is empty for everyone who declined it.
+    """
+    if getattr(submission, "locale", None) in _LOCALES:
+        return submission.locale
+
+    from celine.onboarding.services import template_service
+
+    try:
+        manifest = template_service.load_manifest(submission.rec_slug)
+    except KeyError:
+        return None
+    manifest_locale = manifest.get("locale")
+    return manifest_locale if manifest_locale in _LOCALES else None
+
+
 def _display_name(value: str | None) -> str | None:
     cleaned = (value or "").strip()
     return cleaned or None
@@ -224,6 +276,12 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
 
     Idempotent on ``(community, key)``: a retry finds the account the first call
     made and comes back with ``created`` false.
+
+    **Always asks for an invitation**, including on a retry. Whether one is sent
+    is the provisioning service's decision, because it is the one that can see
+    credentials: it sends only to an account created in this call or one without
+    a password, so a retry never emails somebody who has already set theirs. What
+    it decided comes back as ``invitation``, and no outcome of it fails the call.
     """
     if not provisioning_enabled():
         return None
@@ -242,21 +300,28 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
             email=email,
             first_name=_display_name(submission.first_name),
             last_name=_display_name(submission.last_name),
+            locale=participant_locale(submission),
+            invite=True,
         )
     except ProvisioningApiError as exc:
         raise _refused("provisioning a login", exc) from exc
 
+    # A plain `Enum` in the generated schema, so the value is read rather than
+    # compared: `account.invitation == "sent"` is always false.
+    invitation = getattr(account.invitation, "value", account.invitation)
     logger.info(
-        "Provisioned %s/%s as '%s' (%s)",
+        "Provisioned %s/%s as '%s' (%s, invitation %s)",
         community,
         submission.ref,
         account.username,
         "created" if account.created else "already existed",
+        invitation,
     )
     return ParticipantProvisionResult(
         user_id=account.user_id,
         username=account.username,
         created=account.created,
+        invitation=invitation,
     )
 
 

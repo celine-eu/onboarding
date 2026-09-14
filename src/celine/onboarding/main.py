@@ -146,6 +146,35 @@ async def _validate_dataspace_config() -> None:
             )
 
 
+def _warn_document_processing() -> None:
+    """Say once, at boot, that document upload and scanning are off, and why.
+
+    This used to refuse to start. A missing processing agreement is a reason to
+    switch off the one feature that sends identity documents to a third party,
+    not to take the whole onboarding down: the wizard works from the fields the
+    participant types, and the API refuses the document routes on its own.
+    """
+    if settings.document_processing_enabled:
+        return
+    missing = [
+        name
+        for name, present in (
+            ("DPA_SIGNED", settings.dpa_signed),
+            ("OPENAI_API_KEY", bool(settings.openai_api_key)),
+        )
+        if not present
+    ]
+    logger.warning(
+        "Document upload and scanning are disabled: %s not set. The wizard collects "
+        "personal data without a bill or ID card, and the upload and extraction "
+        "endpoints answer 403. Scanning sends identity documents to the extraction "
+        "provider (%s), so enable it only under a data processing agreement with "
+        "that provider (GDPR Art. 28).",
+        " and ".join(missing),
+        settings.extraction_base_url,
+    )
+
+
 def _validate_provisioning_config() -> None:
     """Refuse to start when approving somebody could not give them a login.
 
@@ -373,6 +402,21 @@ def _validate_admin_config() -> None:
             settings.oidc_base_url,
         )
 
+    # Same trade for email, with a softer failure: off this workspace nothing
+    # answers on the dev Mailpit address, so every submission email is attempted,
+    # fails and is logged — the submission itself is unaffected. Said once at boot
+    # so a deployment learns it here rather than from a participant who never got
+    # their confirmation.
+    if settings.smtp_is_dev_default():
+        logger.warning(
+            "SMTP_HOST is unset, so the development default %s:%s (the workspace's "
+            "Mailpit) is in force. Off celine-dev nothing answers there and no "
+            "email is delivered. Set SMTP_HOST to this deployment's relay, or "
+            "SMTP_HOST= to switch email off.",
+            settings.smtp_host,
+            settings.smtp_port,
+        )
+
     policy = get_policy()
     if not policy.available and not settings.allow_permissive_policy:
         raise RuntimeError(
@@ -421,28 +465,10 @@ async def lifespan(app: FastAPI):
 
     await load_recs_from_db()
 
-    from celine.onboarding.services.template_service import get_slugs, load_manifest
-
-    for slug in get_slugs():
-        manifest = load_manifest(slug)
-        steps = manifest.get("steps", [])
-        if any(s in steps for s in ("utility", "identity", "personal")) and not settings.dpa_signed:
-            raise RuntimeError(
-                f"\n\n"
-                f"═══════════════════════════════════════════════════════════════\n"
-                f"  DPA_SIGNED=yes is required in .env (REC: {slug})\n"
-                f"═══════════════════════════════════════════════════════════════\n\n"
-                f"REC '{slug}' uses LLM-based extraction (bill/ID processing),\n"
-                f"which sends personal data to an external AI provider.\n\n"
-                f"GDPR Article 28 requires a Data Processing Agreement (DPA)\n"
-                f"with your provider before processing personal data.\n\n"
-                f"  1. Sign the DPA with your LLM provider\n"
-                f"  2. Set DPA_SIGNED=yes in your .env file\n\n"
-                f"═══════════════════════════════════════════════════════════════\n"
-            )
+    _warn_document_processing()
 
     # A real SMS gateway receives the participant's phone number, making it a
-    # processor under GDPR Art. 28 exactly as the LLM provider is above.
+    # processor under GDPR Art. 28 exactly as the extraction provider is.
     sms_is_real = settings.sms_provider.strip().lower() not in {"log", "console", "dev"}
     if sms_is_real and not settings.dpa_sms_signed:
         raise RuntimeError(

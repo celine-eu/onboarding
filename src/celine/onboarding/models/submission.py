@@ -2,7 +2,7 @@ import enum
 import secrets
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -15,6 +15,12 @@ if TYPE_CHECKING:  # relationship annotations only — SQLAlchemy resolves
     # runtime would be a circular import for no benefit.
     from celine.onboarding.models.document import Document
 from celine.onboarding.models.encrypted import EncryptedJSON, EncryptedString
+
+#: The languages a participant can choose in the wizard, and the only values the
+#: provisioning service accepts for an account's ``locale``. It answers ``422`` for
+#: anything else, so this list is shared with ``SubmissionUpdate`` and with the
+#: step that sends it rather than restated.
+ParticipantLocale = Literal["it", "en", "es"]
 
 
 def _sortable_ref() -> str:
@@ -98,6 +104,12 @@ class Submission(Base):
     )
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The language the person last used in the wizard. Approval hands it to the
+    # provisioning service, and Keycloak writes the invitation in it. Not
+    # `data_sharing_consent_locale`: that one is evidence of the language a
+    # consent text was shown in, and it is empty for everyone who declined.
+    locale: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     dataspace_subject_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     dataspace_did: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -30,7 +30,7 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
 | Fiscal code (CF) | `submissions.fiscal_code` | ✅ checksum (`src/celine/onboarding/validators/fiscal_code.py`) | ✅ |
 | POD code | `submissions.pod_code` | ✅ format (`src/celine/onboarding/validators/pod_code.py`) | ✅ |
 | Email / phone | `submissions.email/phone` | format; phone optionally SMS-verified | ✅ (one of) |
-| Supply address | `extracted_data.indirizzo` (bill OCR) | ❌ unstructured, optional | ❌ |
+| Supply address | `extracted_data.indirizzo` (bill OCR, only where scanning is enabled) | ❌ unstructured, optional | ❌ |
 | Energy assets (PV, kWp, battery, EV, heat pump) | `extra_data` (manifest fields) | type only | only if manifest marks `required` |
 | Property type | `extra_data.property_type` | enum | ❌ |
 | GDPR / policy / statute consent | `submissions.*_consent` + timestamp + version | ✅ | ✅ |
@@ -45,6 +45,16 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
   optional bill extraction, ID-card cross-validation, and (Block 2) SMS
   verification, this reaches *reasonable assurance* — consistent with utility
   onboarding practice. See [phone-verification.md](phone-verification.md).
+
+  **Without document scanning** (`DPA_SIGNED` or `OPENAI_API_KEY` unset — see
+  the README's *Document upload and scanning*), bill extraction and ID-card
+  cross-validation are absent, and no bill or ID card is uploaded. What remains
+  is the CF checksum, the POD format and, where the community's steps include
+  `phone_verify`, SMS verification of the phone number. Every identifying field
+  is self-declared: nothing ties the POD to the person, or the name to an
+  identity document. That is weaker than the assurance above, and a community
+  that needs document evidence has to collect it outside the platform until
+  scanning is enabled.
 - **Point of delivery.** POD format is validated (`IT` + 3 digits + `E` + 8).
 - **Consent trail.** Versioned, timestamped, IP-stamped, audit-logged — strong
   for GDPR Art. 7 and traceability.
@@ -63,7 +73,7 @@ GSE's own CP check supersedes.
 #### G2. Supply address is not a first-class field
 The POD's supply address is only captured as free text inside
 `extracted_data.indirizzo`, populated **only if** the applicant uploads a bill
-(an optional step). It is not structured, not validated, and **not required by
+(an optional step, and not offered at all while document scanning is off). It is not structured, not validated, and **not required by
 `can_submit`**. The default `example` template's `steps` do not even include
 the `eligibility` step. GSE registration ties each POD to its supply address
 within the CP perimeter, so the platform should persist a structured,

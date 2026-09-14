@@ -37,6 +37,10 @@ class StepRead(BaseModel):
     attempts: int
     last_error: str | None
     detail: str | None
+    # Step 1 only: the provisioning service's invitation reason code
+    # (`not_requested | sent | has_password | not_on_dev_list | account_disabled`),
+    # which the console translates. `detail` is the English sentence for the CLI.
+    invitation: str | None = None
     started_at: datetime | None
     completed_at: datetime | None
 
@@ -76,6 +80,7 @@ def _render(submission_id: uuid.UUID, rows: dict[str, SubmissionEnablementStep])
                 attempts=row.attempts if row else 0,
                 last_error=row.last_error if row else None,
                 detail=row.detail if row else None,
+                invitation=row.invitation if row else None,
                 started_at=row.started_at if row else None,
                 completed_at=row.completed_at if row else None,
             )

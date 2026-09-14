@@ -261,6 +261,29 @@ def test_a_configured_issuer_does_not_warn(_oidc_configured, caplog):
     assert not any("OIDC_BASE_URL is unset" in r.message for r in caplog.records)
 
 
+def test_the_development_smtp_default_warns(monkeypatch, _oidc_configured, caplog):
+    """Email points at the workspace's Mailpit unless told otherwise. Off the
+    workspace that address answers nothing, so a deployment that forgot
+    SMTP_HOST is told at boot rather than by a missing confirmation email."""
+    default = app_main.Settings.model_fields["smtp_host"].default
+    monkeypatch.setattr(app_main.settings, "smtp_host", default)
+
+    with caplog.at_level("WARNING"):
+        app_main._validate_admin_config()
+
+    assert any("SMTP_HOST is unset" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("host", ["smtp.example.org", ""])
+def test_a_configured_or_disabled_smtp_does_not_warn(monkeypatch, _oidc_configured, caplog, host):
+    monkeypatch.setattr(app_main.settings, "smtp_host", host)
+
+    with caplog.at_level("WARNING"):
+        app_main._validate_admin_config()
+
+    assert not any("SMTP_HOST is unset" in r.message for r in caplog.records)
+
+
 def test_jwks_uri_is_derived_from_the_issuer(_oidc_configured):
     """Set only OIDC_BASE_URL and the realm's certs endpoint is assumed."""
     from celine.onboarding.security.oidc import oidc_settings

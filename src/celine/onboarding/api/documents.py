@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import valid_rec_slug
+from celine.onboarding.api.deps import require_document_processing, valid_rec_slug
 from celine.onboarding.api.submissions import _get_live_submission
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.document import DocumentType
@@ -11,6 +11,10 @@ from celine.onboarding.models.schemas import DocumentRead
 from celine.onboarding.services import document_service
 
 router = APIRouter(tags=["documents"])
+
+# The kinds the wizard uploads for scanning: a bill and an identity document.
+# They are refused while document processing is off, together with scanning.
+SCANNED_DOCUMENT_TYPES = {DocumentType.UTILITY_BILL, DocumentType.ID_CARD}
 
 
 @router.post(
@@ -26,6 +30,8 @@ async def upload_document(
     rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
+    if doc_type in SCANNED_DOCUMENT_TYPES:
+        await require_document_processing()
     await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
     try:
         return await document_service.save_document(db, submission_id, file, doc_type)

@@ -70,6 +70,9 @@ class StepOutcome:
     status: EnablementStatus
     external_ref: str | None = None
     detail: str | None = None
+    #: Step 1 only: the provisioning service's invitation reason code. A code
+    #: beside `detail` because the console translates it and `detail` is English.
+    invitation: str | None = None
 
 
 @dataclass
@@ -119,6 +122,34 @@ class RunContext:
 # ---------------------------------------------------------------------------
 
 
+#: What each invitation reason code reads as in a step row's `detail`, which is
+#: the English sentence the CLI and the log show. The console does not show it:
+#: it translates the code itself (`admin.invitation.<code>`).
+INVITATION_DETAIL: dict[str, str] = {
+    "sent": "invitation sent",
+    "has_password": "has a password",
+    "not_on_dev_list": "invitation not sent (provisioning email mode)",
+    "account_disabled": "invitation not sent: account is disabled",
+    "not_requested": "no invitation requested",
+}
+
+
+def login_detail(created: bool, invitation: str | None) -> str:
+    """Step 1's `detail`: whether the account is new, and whether it can sign in.
+
+    Every outcome is a success. An invitation that did not go out is not a
+    failed login: the account exists, and a manager can re-send from
+    `celine-community`. Failing closed would block an approval over an email.
+
+    An unknown code is kept visible rather than dropped, so a code the service
+    adds later still reaches the operator.
+    """
+    account = "created" if created else "already existed"
+    if invitation is None:
+        return account
+    return f"{account}, {INVITATION_DETAIL.get(invitation, f'invitation: {invitation}')}"
+
+
 async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
     from celine.onboarding.services import provisioning
 
@@ -149,7 +180,8 @@ async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
     return StepOutcome(
         EnablementStatus.SUCCEEDED,
         external_ref=result.user_id,
-        detail="created" if result.created else "already existed",
+        detail=login_detail(result.created, result.invitation),
+        invitation=result.invitation,
     )
 
 
@@ -480,6 +512,7 @@ async def _run_one(db: AsyncSession, ctx: RunContext, spec: StepSpec) -> Submiss
     row.status = outcome.status
     row.external_ref = outcome.external_ref or row.external_ref
     row.detail = outcome.detail
+    row.invitation = outcome.invitation
     row.last_error = None
     row.completed_at = datetime.now(UTC)
     await db.commit()
@@ -564,6 +597,9 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
 
         row.status = EnablementStatus.PENDING
         row.detail = detail
+        # The invitation belonged to the access just revoked; a re-approval
+        # records its own.
+        row.invitation = None
         row.last_error = None
         row.external_ref = None
         row.completed_at = datetime.now(UTC)

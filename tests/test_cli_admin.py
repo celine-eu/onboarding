@@ -286,6 +286,33 @@ class TestEnablement:
         assert "state: failed" in result.output
         assert "(non-blocking)" not in result.output  # both steps here are closed
 
+    def test_status_prints_the_invitation_code(self, api):
+        """The code, not only the sentence: the console translates the same code,
+        and a script can match on it."""
+        queue_route(api)
+        login = dict(
+            ENABLEMENT["steps"][0],
+            detail="already existed, invitation not sent: account is disabled",
+            invitation="account_disabled",
+        )
+        api.get(f"/api/admin/rec-a/submissions/{SUBMISSION['id']}/enablement").mock(
+            return_value=httpx.Response(
+                200, json=dict(ENABLEMENT, steps=[login, *ENABLEMENT["steps"][1:]])
+            )
+        )
+        result = run("enablement", "status", "20260730-aaa1", "--rec", "rec-a")
+        assert "[invitation=account_disabled]" in result.output
+        assert "already existed, invitation not sent" in result.output
+
+    def test_a_step_without_one_prints_no_code(self, api):
+        """Rows from before invitations existed, and every other step."""
+        queue_route(api)
+        api.get(f"/api/admin/rec-a/submissions/{SUBMISSION['id']}/enablement").mock(
+            return_value=httpx.Response(200, json=ENABLEMENT)
+        )
+        result = run("enablement", "status", "20260730-aaa1", "--rec", "rec-a")
+        assert "invitation=" not in result.output
+
     def test_retry_passes_the_step(self, api):
         queue_route(api)
         route = api.post(f"/api/admin/rec-a/submissions/{SUBMISSION['id']}/enablement/retry").mock(

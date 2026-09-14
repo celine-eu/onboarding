@@ -141,6 +141,79 @@ def happy_path(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestTheLoginStepReportsTheInvitation:
+    """Step 1 records the provisioning service's invitation code and a sentence.
+
+    Every outcome is `succeeded`: an invitation that did not go out is not a
+    failed login, and failing closed would block approval over an email.
+    """
+
+    @pytest.mark.parametrize(
+        ("created", "invitation", "detail"),
+        [
+            (True, "sent", "created, invitation sent"),
+            (False, "sent", "already existed, invitation sent"),
+            (False, "has_password", "already existed, has a password"),
+            (True, "not_on_dev_list", "created, invitation not sent (provisioning email mode)"),
+            (
+                False,
+                "account_disabled",
+                "already existed, invitation not sent: account is disabled",
+            ),
+            (True, "not_requested", "created, no invitation requested"),
+            # A code the service adds later is shown, not dropped.
+            (True, "rate_limited", "created, invitation: rate_limited"),
+            # No code at all: the sentence the step wrote before invitations.
+            (True, None, "created"),
+            (False, None, "already existed"),
+        ],
+    )
+    def test_the_detail_sentence(self, created, invitation, detail):
+        assert enablement.login_detail(created, invitation) == detail
+
+    @pytest.fixture()
+    def invitation(self, monkeypatch, happy_path):
+        outcome = {"code": "account_disabled", "created": False}
+
+        async def _kc(sub):
+            return ParticipantProvisionResult(
+                user_id="kc-123",
+                username=sub.email,
+                created=outcome["created"],
+                invitation=outcome["code"],
+            )
+
+        monkeypatch.setattr(provisioning, "provision_participant", _kc)
+        return outcome
+
+    @pytest.mark.parametrize(
+        "code", ["sent", "has_password", "not_on_dev_list", "account_disabled", "not_requested"]
+    )
+    async def test_every_code_is_a_success_and_is_recorded(self, db, submission, invitation, code):
+        invitation["code"] = code
+        rows = await enablement.enable(db, submission)
+        row = rows[EnablementStep.KEYCLOAK_USER]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.invitation == code
+        assert row.detail == enablement.login_detail(False, code)
+
+    async def test_only_the_login_step_carries_a_code(self, db, submission, invitation):
+        rows = await enablement.enable(db, submission)
+        assert {step: row.invitation for step, row in rows.items()} == {
+            EnablementStep.KEYCLOAK_USER: "account_disabled",
+            EnablementStep.REC_REGISTRY_MEMBER: None,
+            EnablementStep.DATASPACE_IDENTITY: None,
+            EnablementStep.DATASPACE_SHARE: None,
+        }
+
+    def test_invited_means_sent(self):
+        result = ParticipantProvisionResult(user_id="u", username="n", created=True)
+        assert result.invited is False
+        for code in ("has_password", "not_on_dev_list", "account_disabled", "not_requested"):
+            assert ParticipantProvisionResult("u", "n", True, invitation=code).invited is False
+        assert ParticipantProvisionResult("u", "n", True, invitation="sent").invited is True
+
+
 class TestEnable:
     async def test_runs_every_step_in_order(self, db, submission, happy_path):
         rows = await enablement.enable(db, submission)
@@ -701,6 +774,19 @@ class TestRevoke:
         rows = await enablement.revoke(db, submission)
         assert rows[EnablementStep.KEYCLOAK_USER].status == EnablementStatus.PENDING
         assert rows[EnablementStep.KEYCLOAK_USER].external_ref is None
+
+    async def test_a_revoked_login_forgets_its_invitation(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """The code described access that no longer exists; a re-approval records its own."""
+
+        async def _kc(sub):
+            return ParticipantProvisionResult("kc-123", sub.email, True, invitation="sent")
+
+        monkeypatch.setattr(provisioning, "provision_participant", _kc)
+        await enablement.enable(db, submission)
+        rows = await enablement.revoke(db, submission)
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation is None
 
     async def test_a_failed_revocation_is_recorded_and_the_rest_continues(
         self, db, submission, happy_path, revocations, monkeypatch

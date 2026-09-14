@@ -118,6 +118,12 @@ export interface SiteConfig {
 	>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;
+	/** Whether approval gives this community's participants a login, and so an
+	 *  email inviting them to set a password. */
+	login_invitation?: boolean;
+	/** What this deployment allows, which the manifest cannot know. Absent means
+	 *  off: the wizard never offers a control the API would refuse. */
+	features?: { document_upload: boolean; document_scan: boolean };
 }
 
 export interface SharingOffer {
@@ -229,6 +235,10 @@ export interface EnablementStep {
 	attempts: number;
 	last_error: string | null;
 	detail: string | null;
+	/** Login step only: the provisioning service's invitation reason code
+	 *  (`sent`, `has_password`, `not_on_dev_list`, `account_disabled`,
+	 *  `not_requested`). Translated by key; `detail` is the CLI's English. */
+	invitation?: string | null;
 	started_at: string | null;
 	completed_at: string | null;
 }

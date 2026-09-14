@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { t, locale } from '$lib/i18n';
+	import { t, locale, isSupported } from '$lib/i18n';
 	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi, type SharingOffer } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
@@ -13,6 +13,16 @@
 	let rec: string = $derived(data.rec);
 	let recApi: RecApi = $derived(data.recApi);
 
+	// Every update carries the language in use, so the stored value is the last one
+	// the person chose. Approval sends it to the provisioning service, and Keycloak
+	// writes the invitation to set a password in it. The server refuses anything
+	// but it|en|es, so an unsupported value is left out rather than sent: a 422 here
+	// would stop the wizard over a language tag.
+	function saveSubmission(id: string, patch: Record<string, unknown>) {
+		const lang = $locale;
+		return recApi.updateSubmission(id, isSupported(lang) ? { ...patch, locale: lang } : patch);
+	}
+
 	const STEP_LABELS: Record<string, string> = {
 		consents: 'onboarding.step_data_consents',
 		utility: 'onboarding.step_utility',
@@ -24,10 +34,18 @@
 		review: 'onboarding.step_review'
 	};
 
+	// Upload and scanning are off unless the deployment says otherwise: scanning
+	// sends the documents to an external provider, which needs an agreement this
+	// page cannot see. Off, the feature is absent — no control, no "coming soon" —
+	// and a `utility` step, which is a bill upload and nothing else, is dropped.
+	let documentUpload = $derived(config?.features?.document_upload === true);
+	let documentScan = $derived(config?.features?.document_scan === true);
+
 	let steps = $derived(
-		config
+		(config
 			? config.steps.map((s) => (typeof s === 'string' ? s : s.custom))
 			: ['consents', 'personal', 'review']
+		).filter((s) => documentUpload || s !== 'utility')
 	);
 
 	let stepLabelOverrides = $derived<Record<string, string>>(
@@ -352,7 +370,7 @@
 			if (!validateStep2()) return;
 			if (!submissionId) return;
 			try {
-				await recApi.updateSubmission(submissionId, {
+				await saveSubmission(submissionId, {
 					first_name: firstName,
 					last_name: lastName,
 					email: email || null,
@@ -376,7 +394,7 @@
 		const stepExtraFields = extraFieldsForStep(currentStepName);
 		if (stepExtraFields.length > 0 && currentStepName !== 'personal' && submissionId) {
 			try {
-				await recApi.updateSubmission(submissionId, { extra_data: extraData });
+				await saveSubmission(submissionId, { extra_data: extraData });
 			} catch (e) {
 				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
 				return;
@@ -412,7 +430,7 @@
 			uploadedFiles = [...uploadedFiles];
 		}
 
-		scheduleExtraction();
+		if (documentScan) scheduleExtraction();
 	}
 
 	function scheduleExtraction() {
@@ -479,7 +497,7 @@
 			// resolves it far more reliably than OCR of a bill does.
 			if (submissionId && eligibilityResult?.municipality) {
 				try {
-					await recApi.updateSubmission(submissionId, {
+					await saveSubmission(submissionId, {
 						supply_municipality: eligibilityResult.municipality,
 					});
 				} catch {
@@ -547,7 +565,7 @@
 			idUploadedFiles = [...idUploadedFiles];
 		}
 
-		scheduleIdExtraction();
+		if (documentScan) scheduleIdExtraction();
 	}
 
 	function scheduleIdExtraction() {
@@ -645,7 +663,7 @@
 					data_sharing_consent_text_sha256: sha,
 				};
 			}
-			await recApi.updateSubmission(submissionId, {
+			await saveSubmission(submissionId, {
 				statute_consent: statuteConsent,
 				keep_me_updated: keepMeUpdated,
 				extra_data: extraData,
@@ -688,6 +706,9 @@
 			<Markdown content={config.content.success} />
 		{:else}
 			<h2 class="success-title">{$t('onboarding.submit_success')}</h2>
+		{/if}
+		{#if config?.login_invitation}
+			<p class="success-detail">{$t('onboarding.submit_login_invitation')}</p>
 		{/if}
 		{#if submissionRef}
 			<p class="success-ref">Ref: {submissionRef}</p>
@@ -773,6 +794,7 @@
 				</div>
 			{:else if currentStepName === 'personal'}
 				<div class="personal-step">
+				{#if documentUpload}
 				<p class="step-hint">{$t('onboarding.upload_id_intro')}</p>
 				<div class="step-section">
 					<FileUpload
@@ -793,8 +815,9 @@
 						<ExtractionReview data={idExtractionData} onchange={onIdExtractionChange} />
 					{/if}
 				</div>
+				{/if}
 
-				{#if !steps.includes('utility')}
+				{#if documentUpload && !steps.includes('utility')}
 					<div class="step-section">
 						<p class="step-hint">{$t('onboarding.upload_bill_optional')}</p>
 						<FileUpload
@@ -1748,6 +1771,12 @@
 	.success-actions {
 		display: flex;
 		gap: var(--celine-space-sm);
+	}
+
+	.success-detail {
+		max-width: 36rem;
+		margin: 0 auto;
+		color: var(--celine-text-secondary);
 	}
 
 	.success-ref {

@@ -328,6 +328,11 @@
 								</div>
 								{#if step.last_error}
 									<p class="step-error">{step.last_error}</p>
+								{:else if step.invitation}
+									<!-- The code, translated; `detail` is the same outcome in English for the CLI. -->
+									<p class="muted small" data-invitation={step.invitation}>
+										{label('invitation', step.invitation)}
+									</p>
 								{:else if step.detail}
 									<p class="muted small">{step.detail}</p>
 								{/if}

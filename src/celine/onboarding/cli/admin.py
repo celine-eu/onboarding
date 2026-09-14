@@ -94,13 +94,17 @@ def _print_enablement(payload: dict) -> None:
     for step in payload["steps"]:
         note = step.get("last_error") or step.get("detail") or ""
         blocking = "" if step["fail_closed"] else "  (non-blocking)"
+        # The code, not only the sentence: it is what the console translates and
+        # what somebody greps for.
+        invitation = f"  [invitation={step['invitation']}]" if step.get("invitation") else ""
         colour = {
             "failed": typer.colors.RED,
             "succeeded": typer.colors.GREEN,
             "skipped": typer.colors.BRIGHT_BLACK,
         }.get(step["status"])
         line = (
-            f"{step['step']:<22} {step['status']:<11} {step['attempts']:<6} {note[:60]}{blocking}"
+            f"{step['step']:<22} {step['status']:<11} {step['attempts']:<6} "
+            f"{note[:60]}{invitation}{blocking}"
         )
         typer.secho(line, fg=colour)
 

@@ -52,3 +52,54 @@ test.describe('Wizard', () => {
 		await expect(page.getByText('Inizia adesione')).toBeVisible();
 	});
 });
+
+test.describe('Wizard without document processing', () => {
+	// Needs the live backend `scripts/e2e.sh` starts, which runs with the switch off
+	// (no DPA_SIGNED, no OPENAI_API_KEY). Against `pnpm dev` there is no API to submit to.
+	test.skip(!process.env.PLAYWRIGHT_BASE_URL, 'run through scripts/e2e.sh ui');
+
+	test('a full run submits with no upload control and no document request', async ({ page }) => {
+		const config = await (await page.request.get(`/api/${REC}/config`)).json();
+		// Otherwise this passes vacuously on a deployment where scanning is on.
+		expect(config.features).toEqual({ document_upload: false, document_scan: false });
+
+		const documentRequests: string[] = [];
+		page.on('request', (req) => {
+			const path = new URL(req.url()).pathname;
+			if (/\/(extract|extract-id|documents|extractions)(\/|$)/.test(path)) {
+				documentRequests.push(`${req.method()} ${path}`);
+			}
+		});
+		const noUploadControl = () => expect(page.locator('input[type="file"]')).toHaveCount(0);
+
+		await page.goto(`/${REC}/onboarding`);
+
+		// consents
+		await noUploadControl();
+		for (const label of [
+			'Acconsento al trattamento dei dati personali ai sensi del GDPR',
+			'Accetto il regolamento della comunita energetica',
+			'Accetto lo statuto della comunita energetica'
+		]) {
+			await page.getByLabel(label).check();
+		}
+		await page.getByRole('button', { name: 'Avanti' }).click();
+
+		// personal: the manual fields only
+		await expect(page.locator('input[name="first_name"]')).toBeVisible();
+		await noUploadControl();
+		await page.locator('input[name="first_name"]').fill('Mario');
+		await page.locator('input[name="last_name"]').fill('Rossi');
+		await page.locator('input[name="fiscal_code"]').fill('RSSMRA85T10A562S');
+		await page.locator('input[name="pod_code"]').fill('IT001E12345678');
+		await page.locator('input[name="email"]').fill('wizard-e2e@example.org');
+		await page.getByRole('button', { name: 'Avanti' }).click();
+
+		// review
+		await noUploadControl();
+		await page.getByRole('button', { name: 'Invia' }).click();
+
+		await expect(page.getByText('Adesione inviata con successo!')).toBeVisible();
+		expect(documentRequests).toEqual([]);
+	});
+});

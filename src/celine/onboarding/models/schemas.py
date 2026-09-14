@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from celine.onboarding.models.document import DocumentType
-from celine.onboarding.models.submission import SubmissionStatus
+from celine.onboarding.models.submission import ParticipantLocale, SubmissionStatus
 from celine.onboarding.validators.fiscal_code import validate_fiscal_code
 from celine.onboarding.validators.pod_code import validate_pod_code
 
@@ -43,6 +43,13 @@ class SubmissionUpdate(BaseModel):
     data_sharing_consent_locale: str | None = Field(None, max_length=20)
     data_sharing_consent_text_sha256: str | None = Field(None, max_length=64)
     keep_me_updated: bool | None = None
+    # The language the person is using the wizard in, sent with every update so
+    # the stored value is the last one they chose. Approval hands it to the
+    # provisioning service for the invitation email, and that service refuses
+    # anything outside these three — so it is refused here, at capture, rather
+    # than at approval, where the refusal would block somebody's approval over a
+    # language tag.
+    locale: ParticipantLocale | None = None
     status: SubmissionStatus | None = None
     notes: str | None = Field(None, max_length=2000)
 

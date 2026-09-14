@@ -20,6 +20,13 @@
 | `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |
 | `GET` | `/api/downloads/{token}` | token | Time-limited document download |
 
+The four extraction routes, and an upload with `doc_type` `utility_bill` or
+`id_card`, answer **403** with `{"detail": {"code": "document_processing_disabled", ...}}`
+while document upload and scanning are off (`DPA_SIGNED` and `OPENAI_API_KEY`
+not both set). They stay registered, so the contract has the same shape on every
+deployment. `GET /api/{rec}/config` reports the state in `features.document_upload`
+and `features.document_scan`.
+
 **The member's own surface (`/api/me/**`, Keycloak identity, no capability):**
 
 The only self-service surface in this service, and the only authenticated one

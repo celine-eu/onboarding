@@ -68,6 +68,39 @@ test.describe('Operator console', () => {
 		await expect(page.getByText('Membro della comunità')).toBeVisible();
 	});
 
+	test('the invitation outcome is shown translated, never as the English detail', async ({
+		page
+	}) => {
+		await signedIn(page);
+		// No provisioning service runs under e2e, so the login step never gets a
+		// code of its own. The real response is fetched and one code written onto
+		// it, which is exactly what the API returns after a re-approval of a
+		// revoked participant.
+		await page.route('**/enablement', async (route) => {
+			const response = await route.fetch({
+				headers: { ...route.request().headers(), authorization: `Bearer ${TOKEN}` }
+			});
+			const body = await response.json();
+			body.steps[0] = {
+				...body.steps[0],
+				status: 'succeeded',
+				detail: 'already existed, invitation not sent: account is disabled',
+				invitation: 'account_disabled'
+			};
+			await route.fulfill({ response, json: body });
+		});
+		await page.goto(`/admin/${REC}`);
+		await page.locator('tbody tr a').first().click();
+
+		await expect(page.getByText("Invito non inviato: l'account è disabilitato.")).toBeVisible();
+		await expect(page.getByText('invitation not sent: account is disabled')).toHaveCount(0);
+
+		await page.getByLabel('Lingua').selectOption('es');
+		await expect(
+			page.getByText('Invitación no enviada: la cuenta está deshabilitada.')
+		).toBeVisible();
+	});
+
 	test('the chosen language applies to the console and survives a reload', async ({ page }) => {
 		await signedIn(page);
 		await page.goto(`/admin/${REC}`);

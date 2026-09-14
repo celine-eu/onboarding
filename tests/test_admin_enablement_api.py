@@ -151,6 +151,31 @@ class TestRead:
         body = client.get(f"{BASE}/enablement", headers=auth(operator_token(ORG, "viewers"))).json()
         assert body["state"] == "failed"
 
+    def test_the_invitation_code_reaches_the_console(self, client, operator_token, monkeypatch):
+        """A code the console translates, beside the English `detail` it does not show."""
+        from celine.onboarding.models.enablement import SubmissionEnablementStep
+
+        async def _load(db, submission_id):
+            return {
+                EnablementStep.KEYCLOAK_USER: SubmissionEnablementStep(
+                    step=EnablementStep.KEYCLOAK_USER,
+                    status=EnablementStatus.SUCCEEDED,
+                    attempts=1,
+                    detail="already existed, invitation not sent: account is disabled",
+                    invitation="account_disabled",
+                )
+            }
+
+        monkeypatch.setattr(enablement, "load_steps", _load)
+        body = client.get(f"{BASE}/enablement", headers=auth(operator_token(ORG, "viewers"))).json()
+        codes = {s["step"]: s["invitation"] for s in body["steps"]}
+        assert codes == {
+            "keycloak_user": "account_disabled",
+            "rec_registry_member": None,
+            "dataspace_identity": None,
+            "dataspace_share": None,
+        }
+
     def test_says_which_steps_block_approval(self, client, operator_token):
         """The console needs to distinguish "blocked" from "worth retrying"."""
         body = client.get(f"{BASE}/enablement", headers=auth(operator_token(ORG, "viewers"))).json()

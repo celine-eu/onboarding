@@ -124,14 +124,16 @@ def api(idp: TestIdp, _seeded) -> str:
         "OIDC_BASE_URL": idp.issuer,
         "OIDC_JWKS_URI": idp.jwks_uri,
         "REQUIRE_ENCRYPTION": "false",
-        "DPA_SIGNED": "yes",
+        # Document upload and scanning off, whatever a local `.env` says: the
+        # suite must never send anything to the extraction provider.
+        "DPA_SIGNED": "false",
+        "OPENAI_API_KEY": "",
         "DPA_SMS_SIGNED": "yes",
         "ADMIN_TOKEN": "",
         "DS_NS_URL": "",
         "DS_CONNECTOR_URL": "",
         "REC_REGISTRY_URL": "",
         "DATASPACE_ENABLED": "false",
-        "DATASPACE_KEYCLOAK_ENABLED": "false",
         "POLICIES_DIR": str(REPO_ROOT / "policies"),
         "TEMPLATES_DIR": str(REPO_ROOT / "templates"),
         # Every request comes from 127.0.0.1, so the per-IP limits would

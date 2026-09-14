@@ -13,8 +13,8 @@ This platform automates the process: a public-facing wizard collects data from a
 ### For the applicant
 
 1. **Accept consents** — GDPR privacy policy and community rules, with links to the actual documents. This step creates the submission and records the IP address, timestamp, and document versions.
-2. **Upload utility bill** (optional) — photos or PDFs of the electricity bill. The system uses AI vision to extract the holder's name, fiscal code, POD code, address, and provider. Multiple pages can be uploaded; each one refines the extracted data.
-3. **Confirm personal data** — a form pre-filled with extracted data. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats. Optional ID card upload provides cross-validation against bill data.
+2. **Upload utility bill** (optional, and only where [document scanning](#document-upload-and-scanning) is enabled) — photos or PDFs of the electricity bill. The system uses AI vision to extract the holder's name, fiscal code, POD code, address, and provider. Multiple pages can be uploaded; each one refines the extracted data.
+3. **Confirm personal data** — a form, pre-filled with extracted data when there is some. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats. Where scanning is enabled, an optional ID card upload provides cross-validation against bill data; where it is not, the applicant types these fields and nothing is uploaded.
 4. **Eligibility check** (if configured) — the applicant's address is geocoded and checked against the community's coverage area (municipalities, postal codes, or regions).
 5. **Accept statute** — the community's founding document, presented separately from the data-collection consents. If the community enables it, this step also offers an **optional data-sharing consent**: the applicant can authorise sharing specific offers into the dataspace. It is never required and does not block submission (GDPR Art. 7(4)).
 6. **Review and submit** — summary of all entered data. On submit, the applicant receives a PDF summary and the operator is notified by email.
@@ -25,7 +25,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 Operators work in the console at `/admin`, signing in with their Keycloak identity; what they may do is decided by their organization and group (see [Authorization](docs/authorization.md)). They can work the queue, open a submission in full — consents, documents, extracted data, enablement — change status, repair a failed enablement step, and export to CSV. The same flow is available from the terminal with `onboarding-cli admin`; see [Operator console](docs/admin-console.md). Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
 
-Approval enables a participant in three steps, in order: a **login**, a **member in the REC registry**, then a **dataspace identity**. The login is provisioned by asking `celine-policies`' provisioning service (`PROVISIONING_URL`) — this service holds no Keycloak grant of its own; see [ADR-0004](docs/decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md). Without `PROVISIONING_URL`, or for a community with no `rec_registry:` block, that step is skipped and the participant is onboarded without a login. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
+Approval enables a participant in three steps, in order: a **login**, a **member in the REC registry**, then a **dataspace identity**. The login is provisioned by asking `celine-policies`' provisioning service (`PROVISIONING_URL`) — this service holds no Keycloak grant of its own; see [ADR-0004](docs/decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md). Approval also asks for an invitation: Keycloak emails the participant a link to set their password, valid for 7 days, in the language they last used in the wizard. Whether it is sent is the provisioning service's decision (not for an account that already has a password, nor for a disabled one), and the outcome is shown on the step in the console and by `onboarding-cli admin enablement status`; see [Operator console](docs/admin-console.md#what-approval-actually-does). Without `PROVISIONING_URL`, or for a community with no `rec_registry:` block, that step is skipped and the participant is onboarded without a login, or an invitation, and the wizard does not promise one. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
 
 When dataspace provisioning is enabled (`DATASPACE_ENABLED=true`), changing a submission to `approved` provisions a dataspace identity via the **identity-registry** HTTP API: a user DID, a Verifiable Credential, a membership in the REC organization, and a `dataspace_did` attribute on the Keycloak user. Onboarding keeps only the subject ID, DID, credential ID, and issuance timestamp. If `DS_CONNECTOR_URL` is set and the applicant gave data-sharing consent, the consented offers are then provisioned to the dataspace connector as a final, non-fatal step; a failed share leaves `share_provisioned=false` and can be retried from the console or via `POST /api/admin/{rec}/submissions/{id}/enablement/retry`. See [Dataspace Integration](docs/dataspace-integration.md) and [Data Sharing](docs/data-sharing.md) for details.
 
@@ -79,7 +79,7 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
 - Right to erasure: `DELETE /api/admin/{rec}/submissions/{id}` removes files from disk and all DB records
 - Audit trail: all admin operations logged with action, entity, IP, detail **and the operator who performed them**
-- DPA enforcement: app refuses to start with LLM extraction steps unless `DPA_SIGNED=yes` (and SMS providers unless `DPA_SMS_SIGNED=yes`)
+- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `DPA_SIGNED=yes` and `OPENAI_API_KEY` are both set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). A real SMS provider still refuses to start without `DPA_SMS_SIGNED=yes`
 - CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins
 - Markdown content sanitized with DOMPurify to prevent XSS
@@ -164,8 +164,6 @@ address is the only thing that says whether the dependency is there:
 | Variable | Description |
 |---|---|
 | `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it in development only |
-| `DPA_SIGNED` | Set to `yes` after signing a DPA with your LLM provider (required when a REC uses extraction steps) |
-| `OPENAI_API_KEY` | OpenAI API key — only when you actually exercise bill/ID extraction |
 
 ### Defaulted, but wrong off the celine-dev workspace
 
@@ -180,6 +178,19 @@ address is the only thing that says whether the dependency is there:
 | Variable | Description |
 |---|---|
 | `PROVISIONING_URL` | Internal address of `celine-policies`' provisioning service, which provisions participant logins (e.g. `http://provisioning:8010`). Empty onboards participants without a login. It must have no public route — which is also why it has no both-sides address to default to |
+
+### Document upload and scanning
+
+Off by default. Scanning sends a participant's utility bill and identity document to the extraction provider, which makes that provider a processor under GDPR Art. 28. Both variables must be set to switch it on; with either missing the app still starts, logs one warning naming what is missing, and runs without the feature:
+
+- the wizard offers no upload on any step and drops a `utility` step, so the participant types their personal data;
+- `POST /api/{rec}/extract`, `/extract-id`, `/documents/{id}/extract`, `/extractions/{id}/confirm`, and a `utility_bill` or `id_card` upload to `/submissions/{id}/documents`, answer **403** with `detail.code` `document_processing_disabled`;
+- `GET /api/{rec}/config` reports `features.document_upload` and `features.document_scan`, which is what the wizard reads.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DPA_SIGNED` | `false` | Set to `yes` only once a Data Processing Agreement with the extraction provider is signed and on file |
+| `OPENAI_API_KEY` | *(none)* | Key for the extraction provider at `EXTRACTION_BASE_URL` |
 
 ### Security
 
@@ -202,16 +213,16 @@ address is the only thing that says whether the dependency is there:
 
 ### Email (SMTP)
 
-All optional. If `SMTP_HOST` is unset, email notifications are silently skipped.
+The defaults are for development: they point at the Mailpit that `celine-policies`' compose publishes on the host's port 1025 (UI on 8025), the same inbox Keycloak's invitation emails land in, so nothing reaches a real person. A deployment overrides them with its relay; `SMTP_HOST=` (set, empty) switches email off. The app logs a warning at boot while the development host is in force.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SMTP_HOST` | *(none)* | SMTP server hostname |
-| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_HOST` | `172.17.0.1` (dev Mailpit) | SMTP server hostname; empty disables email |
+| `SMTP_PORT` | `1025` | SMTP port |
 | `SMTP_USER` | *(none)* | SMTP username |
 | `SMTP_PASSWORD` | *(none)* | SMTP password |
-| `SMTP_FROM` | *(none)* | Sender address (overridden by manifest `notifications.from`) |
-| `SMTP_TLS` | `true` | STARTTLS with certificate verification |
+| `SMTP_FROM` | `onboarding@celine.localhost` | Sender address (overridden by manifest `notifications.from`) |
+| `SMTP_TLS` | on, except for the dev host | STARTTLS with certificate verification. Unset follows `SMTP_HOST`, so a relay gets TLS without asking |
 | `SMTP_NOTIFY` | *(none)* | Fallback operator emails (overridden by manifest `notifications.notify`) |
 
 ### Phone Verification (SMS OTP)

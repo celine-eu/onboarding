@@ -146,6 +146,13 @@
 		"dataspace_identity": "Identità nel dataspace",
 		"dataspace_share": "Consenso alla condivisione dei dati"
 	},
+	"invitation": {
+		"sent": "Invito a impostare la password inviato.",
+		"has_password": "L'account ha già una password: nessun invito necessario.",
+		"not_on_dev_list": "Invito non inviato: questo ambiente invia email solo agli indirizzi della sua lista di destinatari.",
+		"account_disabled": "Invito non inviato: l'account è disabilitato.",
+		"not_requested": "Nessun invito richiesto."
+	},
 	"subject_type": {
 		"user": "utente",
 		"service": "servizio"
