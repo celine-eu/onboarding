@@ -31,8 +31,10 @@ dependencies = [
     # instead. There is no fallback path to fall back to, so this is a floor and
     # not a preference — see docs/decisions/ADR-0004.
     #
-    # It also carries `ensure_participant(locale=, invite=)` and the `invitation`
-    # reason code on its answer, which approval sends and records.
+    # 1.19.0 is the floor: it reads the provisioning service's 1.3.0 contract.
+    # Its `invitation` outcome knows `cooldown`, `send_failed` and `no_email`
+    # (1.18.0 raises on them), and its `ProvisioningApiError` carries the `code`
+    # revocation branches on.
     #
     # 1.17.3 remains the floor for the JWT claim readers this service's
     # authorization is built on: `realm_groups`, which reads the realm level
@@ -42,24 +44,9 @@ dependencies = [
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
-    "celine-sdk>=1.18.0",
+    "celine-sdk>=1.19.0",
     "phonenumbers>=8.13",
 ]
-
-# **Workspace-editable until the next `celine-sdk` release carries the
-# provisioning 1.3.0 contract** (requester, 2026-09-14). The floor above stays
-# 1.18.0 and the SDK version is not bumped, but 1.18.0 as published cannot read
-# a 1.3.0 answer: its generated `InvitationOutcome` has no `cooldown`,
-# `send_failed` or `no_email` and raises on them, and its `ProvisioningApiError`
-# has no `code`. Approval records those codes and revocation branches on that
-# `code`, so what satisfies the floor here is the sibling checkout, regenerated
-# against the service's current spec, installed editable.
-#
-# That makes this a pin to whatever is on one machine's disk. Delete the block
-# when a release with the 1.3.0 contract is published, raise the floor to it, and
-# `uv lock --upgrade-package celine-sdk` to move back to the registry.
-[tool.uv.sources]
-celine-sdk = { path = "../celine-sdk", editable = true }
 
 [build-system]
 requires = ["hatchling"]
