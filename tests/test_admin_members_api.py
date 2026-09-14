@@ -466,8 +466,7 @@ class TestARealmIssuedServiceToken:
     """The token shape a real realm issues, not the fixture's.
 
     Passing depends on `celine.sdk.auth.is_service_account` reading Keycloak's
-    grant marker in `jti`. That code is in the editable `../celine-sdk` checkout
-    and was not in 1.19.0.
+    grant marker in `jti`, first released in celine-sdk 1.20.0 (the floor).
     """
 
     def test_it_is_a_service_and_the_delegated_call_goes_through(
