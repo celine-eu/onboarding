@@ -125,6 +125,25 @@ def community_token(service_token):
 
 
 @pytest.fixture()
+def realm_community_token(issue_token):
+    """`svc-community`'s token as a realm synced by celine-policies issues it.
+
+    Measured on the local stack, 2026-09-14: the sync assigns exactly the declared
+    scopes, so Keycloak's built-in `service_account` scope is absent and the token
+    carries **no `client_id` and no `preferred_username`**. It has `azp`, `sub`,
+    `scope`, and a `jti` whose `trrtcc:` prefix records the client-credentials
+    grant. The `service_token` fixture carries both missing claims, and so it hid
+    the first end-to-end refusal.
+    """
+    return issue_token(
+        sub="0c7a3c3e-5d0b-4d1e-9a39-6f7f2b1c0a11",
+        azp="svc-community",
+        scope="onboarding.members.invite",
+        jti="trrtcc:8b4f2a64-1f61-4c38-9d6e-2a5f5b7e9c01",
+    )
+
+
+@pytest.fixture()
 def manager_token(operator_token):
     return operator_token(ORG, "managers", sub="manager-sub", email="manager@example.org")
 
@@ -441,6 +460,42 @@ class TestWhoMayCall:
 
     def test_no_token_at_all_is_401(self, client):
         assert client.post(INVITE).status_code == 401
+
+
+class TestARealmIssuedServiceToken:
+    """The token shape a real realm issues, not the fixture's.
+
+    Passing depends on `celine.sdk.auth.is_service_account` reading Keycloak's
+    grant marker in `jti`. That code is in the editable `../celine-sdk` checkout
+    and was not in 1.19.0.
+    """
+
+    def test_it_is_a_service_and_the_delegated_call_goes_through(
+        self, client, enabled, api, realm_community_token, manager_token, db
+    ):
+        route = api.post(UPSTREAM).mock(return_value=sent())
+
+        response = client.post(INVITE, headers=delegated(realm_community_token, manager_token))
+
+        assert response.status_code == 200, response.text
+        assert route.call_count == 1
+        [row] = db.audit_rows
+        # From `azp`, the only client claim such a token carries.
+        assert row.actor_client_id == "svc-community"
+        assert row.actor_sub == "manager-sub"
+
+    def test_a_managers_password_grant_token_is_still_a_person(
+        self, client, enabled, api, operator_token
+    ):
+        """The marker must not turn a person into a service: `onrtro:` is a password grant."""
+        route = api.post(UPSTREAM).mock(return_value=sent())
+        manager = operator_token(ORG, "managers", jti="onrtro:5f0e1f7c-1111-4a4a-9b9b-0c0c0c0c0c0c")
+
+        response = client.post(INVITE, headers=delegated(manager, manager))
+
+        assert response.status_code == 403
+        assert "only through a service" in response.json()["detail"]["message"]
+        assert route.call_count == 0
 
 
 # ---------------------------------------------------------------------------

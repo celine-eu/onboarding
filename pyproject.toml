@@ -31,7 +31,13 @@ dependencies = [
     # instead. There is no fallback path to fall back to, so this is a floor and
     # not a preference — see docs/decisions/ADR-0004.
     #
-    # 1.19.0 is the floor: it reads the provisioning service's 1.3.0 contract.
+    # 1.20.0 is the floor: its `is_service_account` reads Keycloak's
+    # client-credentials grant marker in `jti` (`trrtcc:`). A realm synced by
+    # celine-policies issues service tokens with no `client_id` and no
+    # `preferred_username`, which 1.19.0 reads as a person, so the policy refuses
+    # `svc-community`'s delegated `members.invite` call as a manager's own token.
+    #
+    # 1.19.0 reads the provisioning service's 1.3.0 contract.
     # Its `invitation` outcome knows `cooldown`, `send_failed` and `no_email`
     # (1.18.0 raises on them), and its `ProvisioningApiError` carries the `code`
     # revocation branches on.
@@ -44,7 +50,7 @@ dependencies = [
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
-    "celine-sdk>=1.19.0",
+    "celine-sdk>=1.20.0",
     "phonenumbers>=8.13",
 ]
 
