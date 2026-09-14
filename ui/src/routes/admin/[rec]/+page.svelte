@@ -1,18 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { AdminDeniedError, type AdminSubmission, type RecStats } from '$lib/api/client';
+	import { intlLocale, locale, t } from '$lib/i18n';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
 	const api = $derived(data.api);
 
-	const STATUS_LABELS: Record<string, string> = {
-		draft: 'Bozza',
-		submitted: 'Inviata',
-		under_review: 'In valutazione',
-		approved: 'Approvata',
-		rejected: 'Rifiutata'
-	};
+	const STATUSES = ['draft', 'submitted', 'under_review', 'approved', 'rejected'];
+
+	function statusLabel(status: string): string {
+		return $t(`admin.status.${status}`, { default: status });
+	}
 
 	const PAGE_SIZE = 25;
 
@@ -69,7 +68,7 @@
 		const date = new Date(value);
 		return Number.isNaN(date.getTime())
 			? '—'
-			: new Intl.DateTimeFormat('it-IT', {
+			: new Intl.DateTimeFormat(intlLocale($locale), {
 					day: '2-digit',
 					month: '2-digit',
 					year: 'numeric',
@@ -83,7 +82,7 @@
 	<header class="head">
 		<div>
 			<h1>{data.access.name}</h1>
-			<p class="lead">{total} pratiche</p>
+			<p class="lead">{$t('admin.queue.count', { count: total })}</p>
 		</div>
 		{#if stats}
 			<div class="chips">
@@ -96,13 +95,13 @@
 							void applyFilters();
 						}}
 					>
-						{STATUS_LABELS[status] ?? status}
+						{statusLabel(status)}
 						<strong>{count}</strong>
 					</button>
 				{/each}
 				{#if stats.submissions_with_failed_steps > 0}
-					<span class="chip failed" title="Approvate ma non abilitate">
-						abilitazione fallita <strong>{stats.submissions_with_failed_steps}</strong>
+					<span class="chip failed" title={$t('admin.queue.failed_title')}>
+						{$t('admin.queue.failed_chip')} <strong>{stats.submissions_with_failed_steps}</strong>
 					</span>
 				{/if}
 			</div>
@@ -117,24 +116,20 @@
 		}}
 	>
 		<label>
-			<span>Riferimento</span>
-			<input
-				bind:value={refFilter}
-				placeholder="20260730-…"
-				title="Solo il riferimento e' ricercabile: nome, email, codice fiscale e POD sono cifrati."
-			/>
+			<span>{$t('admin.queue.ref')}</span>
+			<input bind:value={refFilter} placeholder="20260730-…" title={$t('admin.queue.ref_hint')} />
 		</label>
 		<label>
-			<span>Stato</span>
+			<span>{$t('admin.queue.status')}</span>
 			<select bind:value={statusFilter}>
-				<option value="">Tutti</option>
-				{#each Object.keys(STATUS_LABELS) as status}
-					<option value={status}>{STATUS_LABELS[status]}</option>
+				<option value="">{$t('admin.queue.all')}</option>
+				{#each STATUSES as status}
+					<option value={status}>{statusLabel(status)}</option>
 				{/each}
 			</select>
 		</label>
 		<button type="submit" class="primary" disabled={loading}>
-			{loading ? 'Caricamento…' : 'Filtra'}
+			{loading ? $t('admin.loading') : $t('admin.queue.filter')}
 		</button>
 	</form>
 
@@ -143,17 +138,17 @@
 	{/if}
 
 	{#if submissions.length === 0 && !loading}
-		<p class="empty">Nessuna pratica con questi filtri.</p>
+		<p class="empty">{$t('admin.queue.empty')}</p>
 	{:else}
 		<div class="table-wrap">
 			<table>
 				<thead>
 					<tr>
-						<th>Riferimento</th>
-						<th>Richiedente</th>
-						<th>Contatti</th>
-						<th>Stato</th>
-						<th>Aggiornata</th>
+						<th>{$t('admin.queue.col_ref')}</th>
+						<th>{$t('admin.queue.col_applicant')}</th>
+						<th>{$t('admin.queue.col_contacts')}</th>
+						<th>{$t('admin.queue.col_status')}</th>
+						<th>{$t('admin.queue.col_updated')}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -172,7 +167,7 @@
 							</td>
 							<td>
 								<span class="status" data-status={submission.status}>
-									{STATUS_LABELS[submission.status] ?? submission.status}
+									{statusLabel(submission.status)}
 								</span>
 							</td>
 							<td>{formatDate(submission.updated_at)}</td>
@@ -189,15 +184,21 @@
 					onclick={() => {
 						skip = Math.max(0, skip - PAGE_SIZE);
 						void load();
-					}}>← Precedenti</button
+					}}>{$t('admin.queue.previous')}</button
 				>
-				<span>{skip + 1}–{Math.min(skip + PAGE_SIZE, total)} di {total}</span>
+				<span>
+					{$t('admin.queue.range', {
+						from: skip + 1,
+						to: Math.min(skip + PAGE_SIZE, total),
+						total
+					})}
+				</span>
 				<button
 					disabled={skip + PAGE_SIZE >= total || loading}
 					onclick={() => {
 						skip += PAGE_SIZE;
 						void load();
-					}}>Successive →</button
+					}}>{$t('admin.queue.next')}</button
 				>
 			</nav>
 		{/if}

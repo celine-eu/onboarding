@@ -63,8 +63,20 @@ test.describe('Operator console', () => {
 		// All four steps, always — including the ones not yet run. A shorter
 		// pipeline would read as "less to do" rather than "not started".
 		await expect(page.locator('.steps li')).toHaveCount(4);
-		await expect(page.getByText('Login identity')).toBeVisible();
-		await expect(page.getByText('Community member')).toBeVisible();
+		// Labelled by step key in the console's language, not by the API's English label.
+		await expect(page.getByText('Accesso alla piattaforma')).toBeVisible();
+		await expect(page.getByText('Membro della comunità')).toBeVisible();
+	});
+
+	test('the chosen language applies to the console and survives a reload', async ({ page }) => {
+		await signedIn(page);
+		await page.goto(`/admin/${REC}`);
+		await page.getByLabel('Lingua').selectOption('es');
+		await expect(page.getByRole('link', { name: 'Consola de operadores' })).toBeVisible();
+
+		await page.reload();
+		await expect(page.getByRole('link', { name: 'Consola de operadores' })).toBeVisible();
+		await expect(page.locator('html')).toHaveAttribute('lang', 'es');
 	});
 
 	test('rejecting demands a reason', async ({ page }) => {
@@ -87,7 +99,7 @@ test.describe('Operator console', () => {
 	test('the audit trail lists this community only', async ({ page }) => {
 		await signedIn(page);
 		await page.goto(`/admin/${REC}/audit`);
-		await expect(page.getByRole('heading', { name: /Registro attivita/ })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /Registro attività/ })).toBeVisible();
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 
@@ -101,6 +113,6 @@ test.describe('Operator console', () => {
 		});
 		await page.goto('/admin');
 		await page.waitForURL(/\/admin\/denied/, { timeout: 10_000 });
-		await expect(page.getByRole('heading', { name: /Nessuna comunita/ })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /Nessuna comunità/ })).toBeVisible();
 	});
 });

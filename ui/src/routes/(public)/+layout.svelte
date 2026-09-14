@@ -1,12 +1,8 @@
 <script lang="ts">
 	import '../../app.css';
-	import { locale, locales, t } from '$lib/i18n';
+	import { locale, locales, setLocale, t } from '$lib/i18n';
 
 	let { children } = $props();
-
-	function switchLocale(lang: string) {
-		locale.set(lang);
-	}
 </script>
 
 <svelte:head>
@@ -22,7 +18,7 @@
 					<button
 						class="locale-btn"
 						class:active={$locale === lang}
-						onclick={() => switchLocale(lang)}
+						onclick={() => setLocale(lang)}
 					>
 						{lang.toUpperCase()}
 					</button>

@@ -94,6 +94,18 @@ rows written before the trail recorded a community, and not recoverable by the
 **`/admin/{rec}/exports`** — CSV of every submission, and the supply-point list for
 a distributor. Both stream and leave nothing on disk.
 
+## Language
+
+The console is translated into Italian (the default), English and Spanish, with the
+strings in `ui/src/lib/i18n/{it,en,es}/admin.json`. The choice is made from the
+header and remembered per browser, and it is shared with the wizard.
+
+Status, step and state names are translated by their **code**, not taken from the
+API: the step `label` in the enablement payload stays English because the CLI prints
+it. A code with no translation is shown raw. Audit action names are never
+translated, because they are what `onboarding-cli admin audit --action` filters by.
+Error messages returned by the API are shown as the API wrote them.
+
 ## Masking
 
 `fiscal_code` and `pod_code` are encrypted at rest and **masked by default**

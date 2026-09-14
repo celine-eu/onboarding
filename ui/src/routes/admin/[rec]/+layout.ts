@@ -1,5 +1,7 @@
 import { error } from '@sveltejs/kit';
+import { get } from 'svelte/store';
 import { createRecAdminApi } from '$lib/api/client';
+import { t } from '$lib/i18n';
 import type { LayoutLoad } from './$types';
 
 export const load: LayoutLoad = async ({ params, parent }) => {
@@ -10,7 +12,7 @@ export const load: LayoutLoad = async ({ params, parent }) => {
 	// slug that is not among them is refused here rather than by letting every
 	// endpoint on the page 403 separately.
 	if (!access) {
-		error(403, `Non hai permessi sulla comunita' '${params.rec}'.`);
+		error(403, get(t)('admin.no_access_rec', { rec: params.rec }));
 	}
 
 	return {

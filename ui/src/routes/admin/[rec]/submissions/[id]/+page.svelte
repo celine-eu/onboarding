@@ -8,6 +8,7 @@
 		type AuditEntry,
 		type Enablement
 	} from '$lib/api/client';
+	import { intlLocale, locale, t } from '$lib/i18n';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -15,27 +16,24 @@
 	const id = $derived(page.params.id!);
 	const can = $derived(data.can);
 
-	const STATUS_LABELS: Record<string, string> = {
-		draft: 'Bozza',
-		submitted: 'Inviata',
-		under_review: 'In valutazione',
-		approved: 'Approvata',
-		rejected: 'Rifiutata'
-	};
+	// Codes come from the API; an unknown one is shown raw rather than hidden.
+	function label(group: string, code: string): string {
+		return $t(`admin.${group}.${code}`, { default: code });
+	}
 
 	// Mirrors workflows/engine.TRANSITIONS. The server is the authority; this only
 	// decides which buttons to offer, so an operator is not shown an action that
 	// can only 422.
 	const NEXT: Record<string, Array<{ target: string; label: string; tone: string }>> = {
 		submitted: [
-			{ target: 'under_review', label: 'Prendi in carico', tone: 'secondary' },
-			{ target: 'rejected', label: 'Rifiuta', tone: 'danger' }
+			{ target: 'under_review', label: 'admin.detail.take', tone: 'secondary' },
+			{ target: 'rejected', label: 'admin.detail.reject', tone: 'danger' }
 		],
 		under_review: [
-			{ target: 'approved', label: 'Approva', tone: 'primary' },
-			{ target: 'rejected', label: 'Rifiuta', tone: 'danger' }
+			{ target: 'approved', label: 'admin.detail.approve', tone: 'primary' },
+			{ target: 'rejected', label: 'admin.detail.reject', tone: 'danger' }
 		],
-		rejected: [{ target: 'submitted', label: 'Riapri', tone: 'secondary' }]
+		rejected: [{ target: 'submitted', label: 'admin.detail.reopen', tone: 'secondary' }]
 	};
 
 	let submission = $state<AdminSubmission | null>(null);
@@ -98,7 +96,7 @@
 		act(target, async () => {
 			await api.transition(id, target, reason);
 			await refresh();
-			successMsg = `Pratica ${STATUS_LABELS[target] ?? target}.`;
+			successMsg = $t('admin.detail.transitioned', { status: label('status', target) });
 			showReject = false;
 			rejectReason = '';
 		});
@@ -119,7 +117,7 @@
 
 	const revoke = () =>
 		act('revoke', async () => {
-			if (!confirm('Revocare l’abilitazione? Credenziale e iscrizione verranno annullate.'))
+			if (!confirm($t('admin.detail.revoke_confirm')))
 				return;
 			enablement = await api.revokeEnablement(id);
 		});
@@ -127,7 +125,7 @@
 	const saveNotes = () =>
 		act('notes', async () => {
 			submission = await api.updateSubmission(id, { notes });
-			successMsg = 'Note salvate.';
+			successMsg = $t('admin.detail.notes_saved');
 		});
 
 	function formatDate(value?: string | null): string {
@@ -135,7 +133,7 @@
 		const date = new Date(value);
 		return Number.isNaN(date.getTime())
 			? '—'
-			: new Intl.DateTimeFormat('it-IT', {
+			: new Intl.DateTimeFormat(intlLocale($locale), {
 					dateStyle: 'medium',
 					timeStyle: 'short'
 				}).format(date);
@@ -148,11 +146,11 @@
 	const consents = $derived(
 		submission
 			? [
-					consentRow('GDPR', submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version),
-					consentRow('Privacy policy', submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version),
-					consentRow('Statuto', submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version),
+					consentRow($t('admin.detail.consent_gdpr'), submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version),
+					consentRow($t('admin.detail.consent_policy'), submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version),
+					consentRow($t('admin.detail.consent_statute'), submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version),
 					consentRow(
-						'Condivisione dati',
+						$t('admin.detail.consent_data_sharing'),
 						submission.data_sharing_consent,
 						submission.data_sharing_consent_at,
 						submission.data_sharing_consent_text_version
@@ -162,9 +160,9 @@
 	);
 </script>
 
-<svelte:head><title>{submission?.ref ?? 'Pratica'}</title></svelte:head>
+<svelte:head><title>{submission?.ref ?? $t('admin.detail.page_title')}</title></svelte:head>
 
-<a class="back" href="/admin/{data.rec}">← Tutte le pratiche</a>
+<a class="back" href="/admin/{data.rec}">{$t('admin.detail.back')}</a>
 
 {#if errorMsg}<p class="message error">{errorMsg}</p>{/if}
 {#if successMsg}<p class="message success">{successMsg}</p>{/if}
@@ -174,7 +172,7 @@
 		<div>
 			<h1>{submission.ref}</h1>
 			<span class="status" data-status={submission.status}>
-				{STATUS_LABELS[submission.status] ?? submission.status}
+				{label('status', submission.status)}
 			</span>
 		</div>
 
@@ -183,7 +181,7 @@
 				{#each NEXT[submission.status] ?? [] as action}
 					{#if action.target === 'rejected'}
 						<button class="danger" onclick={() => (showReject = true)} disabled={busy !== null}>
-							{action.label}
+							{$t(action.label)}
 						</button>
 					{:else}
 						<button
@@ -191,7 +189,7 @@
 							disabled={busy !== null}
 							onclick={() => transition(action.target)}
 						>
-							{busy === action.target ? '…' : action.label}
+							{busy === action.target ? '…' : $t(action.label)}
 						</button>
 					{/if}
 				{/each}
@@ -209,51 +207,57 @@
 			}}
 		>
 			<label>
-				<span>Motivo del rifiuto</span>
+				<span>{$t('admin.detail.reject_reason')}</span>
 				<!-- Required by the API too. The participant is told, and whoever
 				     reopens the case months later needs to know why. -->
-				<input bind:value={rejectReason} required placeholder="es. POD di un'altra fornitura" />
+				<input
+					bind:value={rejectReason}
+					required
+					placeholder={$t('admin.detail.reject_placeholder')}
+				/>
 			</label>
 			<button type="submit" class="danger" disabled={busy !== null || !rejectReason.trim()}>
-				Conferma rifiuto
+				{$t('admin.detail.reject_confirm')}
 			</button>
-			<button type="button" class="secondary" onclick={() => (showReject = false)}>Annulla</button>
+			<button type="button" class="secondary" onclick={() => (showReject = false)}>
+				{$t('admin.cancel')}
+			</button>
 		</form>
 	{/if}
 
 	<div class="columns">
 		<div class="col">
 			<section class="panel">
-				<h2>Richiedente</h2>
+				<h2>{$t('admin.detail.applicant')}</h2>
 				<dl>
-					<dt>Nome</dt>
+					<dt>{$t('admin.detail.name')}</dt>
 					<dd>{[submission.first_name, submission.last_name].filter(Boolean).join(' ') || '—'}</dd>
-					<dt>Email</dt>
+					<dt>{$t('admin.detail.email')}</dt>
 					<dd>{submission.email ?? '—'}</dd>
-					<dt>Telefono</dt>
+					<dt>{$t('admin.detail.phone')}</dt>
 					<dd>
 						{submission.phone ?? '—'}
-						{#if submission.phone_verified}<span class="ok">verificato</span>{/if}
+						{#if submission.phone_verified}<span class="ok">{$t('admin.detail.verified')}</span>{/if}
 					</dd>
-					<dt>Codice fiscale</dt>
+					<dt>{$t('admin.detail.fiscal_code')}</dt>
 					<dd class="mono">{submission.fiscal_code ?? '—'}</dd>
-					<dt>POD</dt>
+					<dt>{$t('admin.detail.pod')}</dt>
 					<dd class="mono">{submission.pod_code ?? '—'}</dd>
-					<dt>Comune fornitura</dt>
+					<dt>{$t('admin.detail.supply_municipality')}</dt>
 					<dd>{submission.supply_municipality ?? '—'}</dd>
 				</dl>
 				{#if can('submissions.reveal')}
 					<button class="secondary small" onclick={toggleReveal} disabled={busy !== null}>
-						{revealed ? 'Nascondi identificativi' : 'Mostra codice fiscale e POD'}
+						{revealed ? $t('admin.detail.hide_identifiers') : $t('admin.detail.reveal_identifiers')}
 					</button>
-					<p class="hint">Ogni visualizzazione in chiaro viene registrata nel registro.</p>
+					<p class="hint">{$t('admin.detail.reveal_audited')}</p>
 				{:else}
-					<p class="hint">Codice fiscale e POD sono mascherati: serve il permesso di rivelarli.</p>
+					<p class="hint">{$t('admin.detail.reveal_forbidden')}</p>
 				{/if}
 			</section>
 
 			<section class="panel">
-				<h2>Consensi</h2>
+				<h2>{$t('admin.detail.consents')}</h2>
 				<table class="mini">
 					<tbody>
 						{#each consents as consent}
@@ -269,9 +273,9 @@
 			</section>
 
 			<section class="panel">
-				<h2>Documenti</h2>
+				<h2>{$t('admin.detail.documents')}</h2>
 				{#if documents.length === 0}
-					<p class="muted">Nessun documento caricato.</p>
+					<p class="muted">{$t('admin.detail.no_documents')}</p>
 				{:else}
 					<ul class="docs">
 						{#each documents as doc}
@@ -286,10 +290,10 @@
 
 			{#if can('submissions.write')}
 				<section class="panel">
-					<h2>Note operatore</h2>
+					<h2>{$t('admin.detail.notes')}</h2>
 					<textarea bind:value={notes} rows="4"></textarea>
 					<button class="secondary small" onclick={saveNotes} disabled={busy !== null}>
-						{busy === 'notes' ? 'Salvataggio…' : 'Salva note'}
+						{busy === 'notes' ? $t('admin.detail.notes_saving') : $t('admin.detail.notes_save')}
 					</button>
 				</section>
 			{/if}
@@ -298,27 +302,28 @@
 		<div class="col">
 			<section class="panel">
 				<h2>
-					Abilitazione
+					{$t('admin.detail.enablement')}
 					{#if enablement}
-						<span class="state" data-state={enablement.state}>{enablement.state}</span>
+						<span class="state" data-state={enablement.state}>
+							{label('enablement_state', enablement.state)}
+						</span>
 					{/if}
 				</h2>
-				<p class="hint">
-					Cosa ha prodotto l'approvazione. I passi bloccanti impediscono l'approvazione
-					finche' non riescono; gli altri si possono ritentare in seguito.
-				</p>
+				<p class="hint">{$t('admin.detail.enablement_hint')}</p>
 
 				{#if enablement}
 					<ul class="steps">
 						{#each enablement.steps as step}
 							<li data-status={step.status}>
 								<div class="step-head">
-									<strong>{step.label}</strong>
-									<span class="badge" data-status={step.status}>{step.status}</span>
+									<strong>{$t(`admin.step.${step.step}`, { default: step.label })}</strong>
+									<span class="badge" data-status={step.status}>
+										{label('step_status', step.status)}
+									</span>
 								</div>
 								<div class="step-meta">
-									{#if !step.fail_closed}<span class="soft">non bloccante</span>{/if}
-									{#if step.attempts > 0}<span>{step.attempts} tentativi</span>{/if}
+									{#if !step.fail_closed}<span class="soft">{$t('admin.detail.non_blocking')}</span>{/if}
+									{#if step.attempts > 0}<span>{$t('admin.detail.attempts', { count: step.attempts })}</span>{/if}
 									{#if step.external_ref}<span class="mono">{step.external_ref}</span>{/if}
 								</div>
 								{#if step.last_error}
@@ -332,7 +337,7 @@
 										disabled={busy !== null}
 										onclick={() => retry(step.step)}
 									>
-										Ritenta questo passo
+										{$t('admin.detail.retry_step')}
 									</button>
 								{/if}
 							</li>
@@ -342,23 +347,23 @@
 					<div class="step-actions">
 						{#if can('enablement.retry') && enablement.state === 'failed'}
 							<button class="primary small" disabled={busy !== null} onclick={() => retry()}>
-								{busy === 'retry' ? 'In corso…' : 'Ritenta tutto'}
+								{busy === 'retry' ? $t('admin.detail.in_progress') : $t('admin.detail.retry_all')}
 							</button>
 						{/if}
 						{#if can('enablement.revoke') && enablement.state !== 'not_started'}
 							<button class="danger small" disabled={busy !== null} onclick={revoke}>
-								Revoca abilitazione
+								{$t('admin.detail.revoke')}
 							</button>
 						{/if}
 					</div>
 				{:else}
-					<p class="muted">Stato non disponibile.</p>
+					<p class="muted">{$t('admin.detail.enablement_unavailable')}</p>
 				{/if}
 			</section>
 
 			{#if auditEntries.length > 0}
 				<section class="panel">
-					<h2>Cronologia</h2>
+					<h2>{$t('admin.detail.history')}</h2>
 					<ul class="audit">
 						{#each auditEntries as entry}
 							<li>
@@ -376,7 +381,7 @@
 		</div>
 	</div>
 {:else if !errorMsg}
-	<p class="muted">Caricamento…</p>
+	<p class="muted">{$t('admin.loading')}</p>
 {/if}
 
 <style>

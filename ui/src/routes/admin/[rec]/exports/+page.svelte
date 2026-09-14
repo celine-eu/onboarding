@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from '$lib/i18n';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -35,58 +36,51 @@
 	}
 </script>
 
-<h1>Esportazioni</h1>
+<h1>{$t('admin.exports.title')}</h1>
 
 {#if errorMsg}<p class="message error">{errorMsg}</p>{/if}
 
 {#if !data.can('export')}
-	<p class="muted">Non hai il permesso di esportare i dati di questa comunita'.</p>
+	<p class="muted">{$t('admin.exports.forbidden')}</p>
 {:else}
 	<section class="panel">
-		<h2>Tutte le pratiche (CSV)</h2>
-		<p class="hint">
-			Indicare un destinatario registra l'esportazione come divulgazione nel registro di
-			provenienza. Lasciare vuoto per un uso interno.
-		</p>
+		<h2>{$t('admin.exports.csv_title')}</h2>
+		<p class="hint">{$t('admin.exports.csv_hint')}</p>
 		<div class="row">
 			<label>
-				<span>Destinatario (facoltativo)</span>
-				<input bind:value={recipient} placeholder="es. distributore-x" />
+				<span>{$t('admin.exports.recipient_optional')}</span>
+				<input bind:value={recipient} placeholder={$t('admin.exports.recipient_placeholder')} />
 			</label>
 			<button
 				class="primary"
 				disabled={busy !== null}
 				onclick={() =>
-					run('csv', () => data.api.exportCsv(recipient || undefined), `${data.rec}-pratiche-${stamp()}.csv`)}
+					run('csv', () => data.api.exportCsv(recipient || undefined), `${data.rec}-${$t('admin.exports.csv_filename')}-${stamp()}.csv`)}
 			>
-				{busy === 'csv' ? 'Esportazione…' : 'Scarica CSV'}
+				{busy === 'csv' ? $t('admin.exports.exporting') : $t('admin.exports.csv_download')}
 			</button>
 		</div>
 	</section>
 
 	<section class="panel">
-		<h2>Punti di prelievo consentiti</h2>
-		<p class="hint">
-			Solo i POD di chi ha acconsentito a <em>questa</em> offerta: il consenso e' vincolato
-			alla finalita'. E' una fotografia — chi revoca resta nella copia del destinatario fino
-			alla prossima esportazione, quindi la cadenza con cui si ripete e' la latenza della revoca.
-		</p>
+		<h2>{$t('admin.exports.pods_title')}</h2>
+		<p class="hint">{$t('admin.exports.pods_hint')}</p>
 		<div class="row">
 			<label>
-				<span>Offerta</span>
+				<span>{$t('admin.exports.offer')}</span>
 				<input bind:value={offerId} placeholder="household-energy-flexibility" />
 			</label>
 			<label>
-				<span>Destinatario</span>
-				<input bind:value={podRecipient} placeholder="es. distributore-x" />
+				<span>{$t('admin.exports.recipient')}</span>
+				<input bind:value={podRecipient} placeholder={$t('admin.exports.recipient_placeholder')} />
 			</label>
 			<button
 				class="primary"
 				disabled={busy !== null || !offerId.trim() || !podRecipient.trim()}
 				onclick={() =>
-					run('pods', () => data.api.exportPodList(offerId, podRecipient), `${data.rec}-pod-${stamp()}.csv`)}
+					run('pods', () => data.api.exportPodList(offerId, podRecipient), `${data.rec}-${$t('admin.exports.pods_filename')}-${stamp()}.csv`)}
 			>
-				{busy === 'pods' ? 'Esportazione…' : 'Scarica elenco POD'}
+				{busy === 'pods' ? $t('admin.exports.exporting') : $t('admin.exports.pods_download')}
 			</button>
 		</div>
 	</section>

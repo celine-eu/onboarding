@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { adminPing } from '$lib/api/client';
+	import { locale, locales, setLocale, t } from '$lib/i18n';
 	import type { LayoutData } from './$types';
 
 	const { data, children }: { data: LayoutData; children: import('svelte').Snippet } = $props();
@@ -34,34 +35,45 @@
 </script>
 
 <svelte:head>
-	<title>Console operatori{currentAccess ? ` · ${currentAccess.name}` : ''}</title>
+	<title>{$t('admin.console_title')}{currentAccess ? ` · ${currentAccess.name}` : ''}</title>
 </svelte:head>
 
 <div class="console">
 	<header class="console-header">
-		<a class="brand" href="/admin">Console operatori</a>
+		<a class="brand" href="/admin">{$t('admin.console_title')}</a>
 
 		{#if me && currentRec}
 			<nav class="nav">
 				<a href="/admin/{currentRec}" class:active={page.url.pathname === `/admin/${currentRec}`}>
-					Pratiche
+					{$t('admin.nav.submissions')}
 				</a>
 				<a
 					href="/admin/{currentRec}/audit"
 					class:active={page.url.pathname.endsWith('/audit')}
 				>
-					Registro
+					{$t('admin.nav.audit')}
 				</a>
 				<a
 					href="/admin/{currentRec}/exports"
 					class:active={page.url.pathname.endsWith('/exports')}
 				>
-					Esportazioni
+					{$t('admin.nav.exports')}
 				</a>
 			</nav>
 		{/if}
 
 		<div class="header-right">
+			<select
+				class="locale-switcher"
+				aria-label={$t('common.language')}
+				value={$locale}
+				onchange={(e) => setLocale((e.currentTarget as HTMLSelectElement).value)}
+			>
+				{#each $locales as lang}
+					<option value={lang}>{lang.toUpperCase()}</option>
+				{/each}
+			</select>
+
 			{#if me && me.recs.length > 1}
 				<select
 					class="rec-switcher"
@@ -71,7 +83,7 @@
 						if (slug) window.location.href = `/admin/${slug}`;
 					}}
 				>
-					<option value="">Scegli comunita'...</option>
+					<option value="">{$t('admin.choose_rec')}</option>
 					{#each me.recs as rec}
 						<option value={rec.slug}>{rec.name}</option>
 					{/each}
@@ -79,18 +91,18 @@
 			{/if}
 
 			{#if me}
-				<button class="avatar" onclick={() => (profileOpen = !profileOpen)} aria-label="Profilo">
+				<button class="avatar" onclick={() => (profileOpen = !profileOpen)} aria-label={$t('admin.profile')}>
 					{initials()}
 				</button>
 				{#if profileOpen}
 					<div class="dropdown" role="menu">
 						<div class="dropdown-id">
 							<strong>{me.email ?? me.preferred_username ?? me.sub}</strong>
-							<span>{me.subject_type}</span>
+							<span>{$t(`admin.subject_type.${me.subject_type}`, { default: me.subject_type })}</span>
 						</div>
 						{#if currentAccess}
 							<div class="dropdown-caps">
-								<span>Permessi su {currentAccess.name}</span>
+								<span>{$t('admin.permissions_on', { name: currentAccess.name })}</span>
 								<ul>
 									{#each currentAccess.capabilities as capability}
 										<li>{capability}</li>
@@ -99,7 +111,7 @@
 							</div>
 						{/if}
 						<hr />
-						<a href="/oauth2/sign_out" role="menuitem">Esci</a>
+						<a href="/oauth2/sign_out" role="menuitem">{$t('admin.sign_out')}</a>
 					</div>
 				{/if}
 			{/if}
@@ -173,7 +185,8 @@
 		gap: 0.75rem;
 	}
 
-	.rec-switcher {
+	.rec-switcher,
+	.locale-switcher {
 		min-height: 2.25rem;
 		border: 1px solid var(--celine-border);
 		border-radius: var(--celine-radius-sm);

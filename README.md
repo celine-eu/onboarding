@@ -46,7 +46,7 @@ Templates are imported into the database with `task import-templates`, and serve
 
 **Backend**: Python 3.12, FastAPI (async), SQLAlchemy 2 (async), PostgreSQL, Alembic migrations. Rate limiting via slowapi. PDF generation with fpdf2. Email via SMTP.
 
-**Frontend**: SvelteKit 5, CSS custom properties for theming, sveltekit-i18n (Italian + English), marked for markdown rendering with DOMPurify sanitization. No CSS framework — design tokens from a shared design system.
+**Frontend**: SvelteKit 5, CSS custom properties for theming, sveltekit-i18n (Italian, English, Spanish — wizard and operator console), marked for markdown rendering with DOMPurify sanitization. No CSS framework — design tokens from a shared design system.
 
 **Extraction pipeline**: uploaded files are classified by magic bytes. Images are compressed to JPEG (max 1600px, quality 75) and sent to the OpenAI Vision API. PDFs are converted to text via markitdown. Both go into a single LLM call that returns structured JSON. The model is configurable via env var.
 
@@ -292,7 +292,7 @@ task export-pod-list      # export consented supply points for a distributor
 2. Add to `SubmissionUpdate` and `SubmissionRead` in `models/schemas.py` — add to `SubmissionAdminRead` if it should be admin-only
 3. Run `task migration -- "add_field_name"` then `task migrate`
 4. Add the form field in `ui/src/routes/onboarding/+page.svelte`
-5. Add i18n keys in `ui/src/lib/i18n/{it,en}/onboarding.json`
+5. Add i18n keys in `ui/src/lib/i18n/{it,en,es}/onboarding.json`
 
 ### Adding a wizard step
 

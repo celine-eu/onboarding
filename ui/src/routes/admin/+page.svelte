@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { createRecAdminApi, type RecStats } from '$lib/api/client';
+	import { t } from '$lib/i18n';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -34,8 +35,8 @@
 </script>
 
 <section>
-	<h1>Comunita'</h1>
-	<p class="lead">Le comunita' su cui hai permessi.</p>
+	<h1>{$t('admin.recs.title')}</h1>
+	<p class="lead">{$t('admin.recs.lead')}</p>
 
 	<div class="grid">
 		{#each recs as rec}
@@ -45,16 +46,18 @@
 				{#if rec.organization}
 					<span class="org">org: {rec.organization}</span>
 				{:else}
-					<span class="org muted">nessuna organizzazione</span>
+					<span class="org muted">{$t('admin.recs.no_organization')}</span>
 				{/if}
 
 				{#if stats[rec.slug]}
 					<div class="counts">
 						<strong>{pending(rec.slug)}</strong>
-						<span>da lavorare</span>
+						<span>{$t('admin.recs.to_work')}</span>
 						{#if stats[rec.slug].submissions_with_failed_steps > 0}
 							<span class="failed">
-								{stats[rec.slug].submissions_with_failed_steps} con abilitazione fallita
+								{$t('admin.recs.failed_enablement', {
+									count: stats[rec.slug].submissions_with_failed_steps
+								})}
 							</span>
 						{/if}
 					</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { type AuditEntry } from '$lib/api/client';
+	import { intlLocale, locale, t } from '$lib/i18n';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -29,41 +30,46 @@
 		const d = new Date(value);
 		return Number.isNaN(d.getTime())
 			? value
-			: new Intl.DateTimeFormat('it-IT', { dateStyle: 'short', timeStyle: 'medium' }).format(d);
+			: new Intl.DateTimeFormat(intlLocale($locale), { dateStyle: 'short', timeStyle: 'medium' }).format(d);
 	}
 
 	function actor(entry: AuditEntry): string {
 		if (entry.actor_email) return entry.actor_email;
 		if (entry.actor_sub) return entry.actor_sub;
 		// Rows from before per-operator authorization: nobody can be named.
-		return entry.actor_type === 'token' ? 'token condiviso (storico)' : entry.actor_type;
+		return entry.actor_type === 'token' ? $t('admin.audit.legacy_token') : entry.actor_type;
 	}
 </script>
 
-<h1>Registro attivita'</h1>
-<p class="lead">Solo questa comunita'. Le righe piu' recenti per prime.</p>
+<h1>{$t('admin.audit.title')}</h1>
+<p class="lead">{$t('admin.audit.lead')}</p>
 
 {#if errorMsg}<p class="message error">{errorMsg}</p>{/if}
 
 <div class="toolbar">
 	<label>
-		<span>Azione</span>
+		<span>{$t('admin.audit.action')}</span>
 		<select bind:value={actionFilter}>
-			<option value="">Tutte</option>
+			<option value="">{$t('admin.audit.all')}</option>
 			{#each actions as action}<option value={action}>{action}</option>{/each}
 		</select>
 	</label>
 </div>
 
 {#if loading}
-	<p class="muted">Caricamento…</p>
+	<p class="muted">{$t('admin.loading')}</p>
 {:else if filtered.length === 0}
-	<p class="muted">Nessuna voce.</p>
+	<p class="muted">{$t('admin.audit.empty')}</p>
 {:else}
 	<div class="table-wrap">
 		<table>
 			<thead>
-				<tr><th>Quando</th><th>Azione</th><th>Operatore</th><th>Dettaglio</th></tr>
+				<tr>
+					<th>{$t('admin.audit.col_when')}</th>
+					<th>{$t('admin.audit.col_action')}</th>
+					<th>{$t('admin.audit.col_actor')}</th>
+					<th>{$t('admin.audit.col_detail')}</th>
+				</tr>
 			</thead>
 			<tbody>
 				{#each filtered as entry}

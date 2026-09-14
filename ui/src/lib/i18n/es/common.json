@@ -1,0 +1,21 @@
+{
+	"app_title": "Adhesión a la CER",
+	"onboarding_title": "Registro",
+	"app_subtitle": "Plataforma de adhesión a la Comunidad Energética Renovable",
+	"language": "Idioma",
+	"next": "Siguiente",
+	"back": "Atrás",
+	"submit": "Enviar",
+	"cancel": "Cancelar",
+	"save": "Guardar",
+	"required": "Obligatorio",
+	"loading": "Cargando...",
+	"error": "Error",
+	"success": "Operación completada",
+	"start_onboarding": "Iniciar adhesión",
+	"find_your_rec": "Introduce tu dirección para encontrar tu comunidad energética",
+	"address_placeholder": "Calle Mayor 1, Ciudad",
+	"search": "Buscar",
+	"no_rec_found": "No se ha encontrado ninguna comunidad energética para esta dirección.",
+	"show_all_recs": "Mostrar todas las comunidades"
+}
