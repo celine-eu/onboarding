@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable
+from types import SimpleNamespace
 from typing import Any
 
 from celine.onboarding.config.settings import settings
@@ -213,6 +215,24 @@ def build_member_payload(
     return payload
 
 
+async def _registry_response(call: Awaitable[Any]) -> Any:
+    """The registry's answer, whatever its status.
+
+    The SDK's admin client is built with ``raise_on_unexpected_status=True``, so a status
+    the registry's OpenAPI does not declare — the ``409`` of a taken key, the ``404`` of a
+    member already gone — arrives as ``UnexpectedStatus`` rather than as a response. Every
+    caller here branches on the status and reads the body, so both shapes become one.
+    Without this a retried registration failed on the very ``409`` it exists to accept
+    (measured against rec-registry, celine-dev, 2026-09-15).
+    """
+    from celine.sdk.openapi.rec_registry.errors import UnexpectedStatus
+
+    try:
+        return await call
+    except UnexpectedStatus as exc:
+        return SimpleNamespace(status_code=exc.status_code, content=exc.content)
+
+
 def _conflict_detail(response: Any) -> str:
     """The registry's own sentence for a ``409``: FastAPI's ``{"detail": ...}``."""
     body = getattr(response, "content", b"")
@@ -319,7 +339,9 @@ async def register_member(
 
     from celine.sdk.openapi.rec_registry.models import MemberCreate
 
-    response = await _get_client().create_member(binding.community, MemberCreate.from_dict(payload))
+    response = await _registry_response(
+        _get_client().create_member(binding.community, MemberCreate.from_dict(payload))
+    )
 
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0
@@ -369,7 +391,9 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
     if not binding.enabled:
         return "this community declares no rec_registry binding"
 
-    response = await _get_client().delete_member(binding.community, member_key, purge=False)
+    response = await _registry_response(
+        _get_client().delete_member(binding.community, member_key, purge=False)
+    )
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0
 
@@ -430,7 +454,9 @@ async def set_member_did(rec_slug: str, *, member_key: str, did: str) -> str:
 
     # Only `did` is sent. Absent fields are left alone by the registry, so this
     # cannot clobber anything an operator changed there since registration.
-    response = await _get_client().patch_member(binding.community, member_key, MemberPatch(did=did))
+    response = await _registry_response(
+        _get_client().patch_member(binding.community, member_key, MemberPatch(did=did))
+    )
 
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0

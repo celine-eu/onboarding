@@ -966,3 +966,73 @@ class TestTheMemberCarriesTheVerification:
         assert "identity_verification" not in rr.build_member_payload(
             _sub(verification=None), BINDING
         )
+
+
+class TestTheRealClientRaisesForUndeclaredStatuses:
+    """The SDK's admin client raises ``UnexpectedStatus`` for a status the registry's
+    OpenAPI does not declare, which is every ``409`` and ``404`` here. The stubs above
+    return responses; these raise, the way the real client does. Against the running
+    registry a retried registration failed on the ``409`` it exists to accept."""
+
+    @staticmethod
+    def _raising_client(monkeypatch, status: int, content: bytes = b"", holder=None):
+        from celine.sdk.openapi.rec_registry.errors import UnexpectedStatus
+
+        calls: list = []
+
+        class _Client:
+            async def lookup_member_by_user_id(self, user_id):
+                calls.append(("lookup", user_id))
+                return holder
+
+            async def create_member(self, community, body):
+                calls.append((community, body))
+                raise UnexpectedStatus(status, content)
+
+            async def delete_member(self, community, member_key, purge=False):
+                calls.append((community, member_key, purge))
+                raise UnexpectedStatus(status, content)
+
+            async def patch_member(self, community, member_key, body):
+                calls.append((community, member_key, body))
+                raise UnexpectedStatus(status, content)
+
+        monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+        return calls
+
+    async def test_a_retried_registration_is_accepted(self, monkeypatch, _configured):
+        holder = SimpleNamespace(key="20260727-abcd", community_key="test-community")
+        self._raising_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
+
+        assert await rr.register_member(_sub()) == "20260727-abcd"
+
+    async def test_a_taken_user_id_still_fails_with_the_registrys_words(
+        self, monkeypatch, _configured
+    ):
+        self._raising_client(monkeypatch, 409, _conflict(USER_ID_TAKEN))
+
+        with pytest.raises(ValueError, match="user_id 'alice.rossi@example.org' already exists"):
+            await rr.register_member(_sub())
+
+    async def test_any_other_refusal_says_what_the_registry_said(self, monkeypatch, _configured):
+        self._raising_client(monkeypatch, 422, b"area 'north' unknown")
+
+        with pytest.raises(ValueError, match="area 'north' unknown"):
+            await rr.register_member(_sub())
+
+    async def test_a_did_another_member_holds_is_refused(self, monkeypatch, _configured):
+        self._raising_client(
+            monkeypatch, 409, _conflict("did 'did:web:alice' already belongs to another member")
+        )
+
+        with pytest.raises(ValueError, match="refused the dataspace DID"):
+            await rr.set_member_did(
+                _sub().rec_slug, member_key="20260727-abcd", did="did:web:alice"
+            )
+
+    async def test_deactivating_a_member_already_gone_is_not_a_failure(
+        self, monkeypatch, _configured
+    ):
+        self._raising_client(monkeypatch, 404, b'{"detail":"Member not found"}')
+
+        assert "deactivated" in await rr.deactivate_member(_sub(), member_key="20260727-abcd")
