@@ -105,7 +105,7 @@ someone skips:
 ```bash
 task export-pod-list -- --rec my-rec \
   --offer household-energy-flexibility \
-  --recipient dso-org \
+  --recipient grid-operator \
   --purpose FlexibilityResearch \
   --agreement-ref dpa-participation-1.0
 ```
@@ -121,6 +121,16 @@ task export-pod-list -- --rec my-rec \
   keyed by. Nothing else names the recipient — the person consented to
   disclosure to the controller *that offer* names, so a manifest binding or the
   community's grid operator must not stand in for it.
+- **And the recipient has to be that controller — the organisation, not an
+  alias.** `--recipient` (the console's `recipient_ref`) is accepted only when it
+  is the offer's controller, named by its identity-registry `id` or its DID. An
+  alias is refused even when it resolves to the controller: aliases exist so
+  governance files written for other deployments resolve to this one's
+  organisations, and a disclosure is addressed to an organisation. Anyone else is
+  refused before anything is recorded: a 422 in the console, `Refused: …` and
+  exit 1 here. The `DataDisclosed` event names the controller's DID — the same
+  recipient the file's header names. To send a list to a different organisation,
+  publish an offer that names it as its controller and let people consent to it.
 - **The registry says which supply points they hold.** The DIDs the connector
   returned go to `POST /admin/lookup/members-by-dids` on the rec-registry, and
   the PODs come from `Member.delivery_points` plus any commissioned meter's

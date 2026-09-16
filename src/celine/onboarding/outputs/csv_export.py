@@ -147,6 +147,85 @@ async def _resolve_audience(
     )
 
 
+async def _require_the_controller(recipient_ref: str, audience: _Audience) -> str:
+    """Refuse a handover to anyone but the organisation the offer names.
+
+    The audience is read for the offer's controller, because that is who the
+    people in it consented to disclose to. ``recipient_ref`` is who actually
+    receives the file, and until this check the two were never compared: a list
+    computed for the controller could be handed to any party the caller named,
+    and the ``DataDisclosed`` event recorded that party while the file's own
+    header named the controller — one handover, two recipients.
+
+    **Refused, not reconciled.** Recording both would make the mismatch legible
+    and leave it possible. Disclosing to a party the offer does not name needs an
+    offer that names it — its own controller, its own consent — and there is no
+    shortcut from here to there.
+
+    **An organisation, never an alias.** Accepted: the controller's DID, or the
+    identity registry's own ``id`` for the owner holding that DID. An alias —
+    ``dso``, ``rec`` — is refused even when it resolves to the controller:
+    aliases exist so governance files written for other deployments resolve
+    here, and a disclosure is addressed to a party, not to a role one deployment
+    happens to spell a certain way. The offer's own ``controller`` may still be
+    an alias; it is compared by what it resolves to, never by its spelling.
+
+    Returns the recipient to record: always the controller's DID, which is what
+    the file's header names and what the consent plane is keyed by — so the two
+    records of one handover cannot name it differently. A registry that cannot be
+    asked is a ``RuntimeError``, for the reason
+    :func:`dataspace_identity.resolve_consumer_did` gives: an unknown recipient
+    must not proceed.
+
+    Only where the connector decided the audience. Without one there is no offer
+    controller to compare against, and
+    :func:`dataspace_identity.record_disclosure` refuses the handover by itself.
+    """
+    if audience.source != "connector":
+        return recipient_ref
+    ref = (recipient_ref or "").strip()
+    if not ref:
+        raise ValueError("The export names no recipient; a handover has to say who receives it.")
+
+    refused = (
+        f"Recipient {ref!r} is not {audience.controller!r} ({audience.consumer_did}), "
+        "the controller this offer names. The people in this list consented to "
+        "disclosure to that controller only; handing it to another organisation "
+        "needs an offer that names that organisation as its controller."
+    )
+
+    # A DID is compared, never looked up: the registry maps names to DIDs, and a
+    # DID that is not the controller's cannot become it by asking.
+    if ref.startswith("did:"):
+        if ref != audience.consumer_did:
+            raise ValueError(refused)
+        return ref
+
+    check = await dataspace_identity.check_organization(ref)
+    if check.found is None:
+        raise RuntimeError(
+            f"The identity registry could not be reached to resolve recipient {ref!r}, "
+            "so it cannot be shown to be the offer's controller and the disclosure "
+            "must not proceed."
+        )
+    if not check.found:
+        raise ValueError(f"Recipient {ref!r} is not an organisation the identity registry knows.")
+    if check.id and check.id != ref:
+        raise ValueError(
+            f"Recipient {ref!r} is an alias of {check.id!r}. Name the organisation "
+            "itself: aliases let governance files written elsewhere resolve here, and "
+            "a disclosure is addressed to an organisation, not to an alias."
+        )
+    if not check.id:
+        raise ValueError(
+            f"The identity registry did not say which organisation {ref!r} is, so it "
+            "cannot be told apart from an alias. Name the recipient by its DID."
+        )
+    if check.did != audience.consumer_did:
+        raise ValueError(refused)
+    return audience.consumer_did
+
+
 def _offer_terms(offer: dict | None) -> list[str]:
     """The offer's own terms, for the file header.
 
@@ -288,6 +367,12 @@ async def export_pod_list(
     of the two questions, because a reader cannot otherwise tell and the answers
     carry different guarantees.
 
+    **Only to the organisation the offer names.** The audience is computed for
+    the offer's controller, so ``recipient_ref`` has to be that controller, by
+    its organisation id or DID — never an alias — and the disclosure is recorded
+    against the controller's DID. Anybody else is refused before any supply point
+    is read or anything is recorded (:func:`_require_the_controller`).
+
     **The file is a snapshot, and the re-export cadence is the revocation
     latency.** Somebody who withdraws stays on the recipient's copy until the next
     run, so the file says when it was made and that it goes stale. That promise is
@@ -297,6 +382,7 @@ async def export_pod_list(
     when it holds.
     """
     audience, offer, subject_ids = await _resolve_audience(rec_slug, offer_id)
+    recipient = await _require_the_controller(recipient_ref, audience)
 
     # **The registry says what they hold.** `Submission.pod_code` is what one
     # person typed into a form on one afternoon; `Member.delivery_points` is what
@@ -342,7 +428,7 @@ async def export_pod_list(
 
     disclosures = await record_disclosure(
         offer_id=offer_id,
-        recipient_ref=recipient_ref,
+        recipient_ref=recipient,
         purpose=purpose or [],
         columns=["pod_code"],
         # The count of what is actually in the file. The audience read reports

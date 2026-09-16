@@ -376,6 +376,28 @@ class TestExports:
         )
         assert response.status_code == 422
 
+    def test_pod_list_to_a_party_the_offer_does_not_name_is_a_422(
+        self, client, operator_token, stub_exports, monkeypatch, tmp_path
+    ):
+        """The console and the CLI run one export; its refusal reaches the console as a 422."""
+        from celine.onboarding.api.admin import exports as exports_api
+
+        async def _refuse(db, path, **kwargs):
+            raise ValueError(
+                f"Recipient {kwargs['recipient_ref']!r} is not 'grid-operator', "
+                "the controller this offer names."
+            )
+
+        monkeypatch.setattr(exports_api, "export_pod_list", _refuse)
+        response = client.post(
+            f"{BASE}/exports/pod-list",
+            json={"offer_id": "household-energy-flexibility", "recipient_ref": "distributor-x"},
+            headers=auth(operator_token(ORG, "managers")),
+        )
+        assert response.status_code == 422
+        assert "the controller this offer names" in response.json()["detail"]
+        assert list(tmp_path.iterdir()) == [], "a refused handover leaves no file"
+
 
 class TestStats:
     def test_reports_every_status_including_zero(self, client, operator_token, monkeypatch):

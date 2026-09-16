@@ -756,6 +756,17 @@ async def test_owner_check_carries_the_did(monkeypatch, _consent_plane):
     assert check.did == OWNER_RESPONSE["did"]
 
 
+async def test_owner_check_carries_the_owners_own_id_when_asked_by_alias(
+    monkeypatch, _consent_plane
+):
+    """The registry answers an alias as it answers an id; the id is how a caller tells them apart."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=OWNER_RESPONSE))
+
+    check = await di.check_organization("grid")
+
+    assert check.id == "grid-operator"
+
+
 async def test_resolves_the_controller_to_a_did(monkeypatch, _consent_plane):
     captured: dict = {}
 

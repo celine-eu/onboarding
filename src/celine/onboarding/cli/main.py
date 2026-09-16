@@ -15,6 +15,20 @@ app = typer.Typer(name="onboarding-cli", help="REC Onboarding CLI")
 app.add_typer(admin_app, name="admin")
 
 
+async def _load_recs() -> None:
+    """Fill the REC manifest cache, as the API's startup hook does.
+
+    ``template_service.load_manifest`` reads a module-level cache that only the
+    API's startup and the ``admin --local`` transport fill. A standalone command
+    that skipped this found every community missing — ``KeyError: REC '<slug>'
+    not found`` for a REC that was imported and active — so it ran none of the
+    code the API runs and none of the checks with it.
+    """
+    from celine.onboarding.services import template_service
+
+    await template_service.load_recs_from_db()
+
+
 @app.command()
 def import_templates(
     filter: str | None = typer.Option(None, "--filter", "-f", help="Import only this slug"),
@@ -139,6 +153,7 @@ def export_csv(
     purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
 
     async def _run():
+        await _load_recs()
         async with async_session() as db:
             count = await export_submissions_csv(
                 db,
@@ -167,8 +182,9 @@ def export_pod_list(
     recipient: str = typer.Option(
         ...,
         "--recipient",
-        help="Who receives the list (org alias/DID/DPA ref). Recorded as a "
-        "DataDisclosed provenance event.",
+        help="Who receives the list: the offer's controller, by organisation id or "
+        "DID — never an alias. Any other party is refused. Recorded as a "
+        "DataDisclosed provenance event against the controller's DID.",
     ),
     output: str = "",
     purpose: str | None = typer.Option(
@@ -202,6 +218,7 @@ def export_pod_list(
     purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
 
     async def _run():
+        await _load_recs()
         async with async_session() as db:
             count = await _export(
                 db,
@@ -220,7 +237,13 @@ def export_pod_list(
                 "on your agreed cadence."
             )
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except ValueError as exc:
+        # A refusal, not a crash: the console answers the same condition with a
+        # 422 and the message, and so does this.
+        typer.echo(f"Refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -245,6 +268,7 @@ def check_offers(
     from celine.onboarding.services import submission_service
 
     async def _run():
+        await _load_recs()
         async with async_session() as db:
             rows = (
                 (

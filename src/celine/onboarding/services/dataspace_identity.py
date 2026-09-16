@@ -187,6 +187,15 @@ class OwnerCheck:
     when the owner has not been onboarded into the dataspace yet.
     """
 
+    id: str | None = None
+    """The owner's own identifier — never one of its aliases.
+
+    ``/owners/resolve`` answers an alias and an id alike, so this is the only way
+    a caller can tell which one it was given. Aliases exist so governance files
+    written for other deployments resolve here; a record that names a party
+    names it by this.
+    """
+
 
 async def check_organization(org_alias: str) -> OwnerCheck:
     """Resolve *org_alias* in the identity registry and report what it is."""
@@ -226,12 +235,14 @@ async def check_organization(org_alias: str) -> OwnerCheck:
         body = resp.json()
         status = str(body.get("status") or "").strip() or None
         did = str(body.get("did") or "").strip() or None
+        owner_id = str(body.get("id") or "").strip() or None
     except ValueError:
         # Found, but the body was not readable. Do not invent a status: an
         # absent one must not read as "not verified" and refuse boot.
         status = None
         did = None
-    return OwnerCheck(found=True, status=status, did=did)
+        owner_id = None
+    return OwnerCheck(found=True, status=status, did=did, id=owner_id)
 
 
 async def resolve_consumer_did(controller_alias: str) -> str:

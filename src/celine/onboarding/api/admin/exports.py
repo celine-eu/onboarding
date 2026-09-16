@@ -50,7 +50,13 @@ class PodListRequest(BaseModel):
         description="Consent is purpose-scoped: somebody who agreed to a different "
         "offer has not agreed to this handover.",
     )
-    recipient_ref: str
+    recipient_ref: str = Field(
+        ...,
+        description="Who receives the list: the offer's controller, by organisation "
+        "id or DID — never an alias. Any other party is refused with a 422: the "
+        "people in the list consented to disclosure to that controller only. The "
+        "disclosure is recorded against the controller's DID.",
+    )
     purpose: list[str] = []
     agreement_ref: str | None = None
 

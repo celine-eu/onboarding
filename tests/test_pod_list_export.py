@@ -154,6 +154,7 @@ def connector(monkeypatch):
         state["subject_ids"] = set(dids)
 
     _consents.state = state
+    _consents.monkeypatch = monkeypatch
     return _consents
 
 
@@ -202,7 +203,7 @@ async def _export(tmp_path, rows, **kw):
         out,
         rec_slug="example",
         offer_id=OFFER,
-        recipient_ref="dso-org",
+        recipient_ref=CONTROLLER,
         generated_at=GENERATED_AT,
         **kw,
     )
@@ -562,10 +563,229 @@ async def test_an_offer_without_a_controller_is_refused(tmp_path, connector):
             out,
             rec_slug="example",
             offer_id=OFFER,
-            recipient_ref="dso-org",
+            recipient_ref=CONTROLLER,
             generated_at=GENERATED_AT,
         )
     assert not out.exists()
+
+
+# ── the recipient is the offer's controller ───────────────────────
+#
+# The audience is read for the controller, so the list may go to the controller
+# and to nobody else. Every refusal below is asserted to leave no file and to
+# record no disclosure: a refused handover that still wrote a `DataDisclosed`
+# would be the two-recipient record this rule exists to stop.
+
+
+@pytest.fixture()
+def disclosures(monkeypatch):
+    import celine.onboarding.services.dataspace_identity as di
+
+    recorded: list[dict] = []
+
+    async def _capture(**kw):
+        recorded.append(kw)
+        return [
+            {
+                "dataset_id": DATASET,
+                "consent_snapshot_hash": "a" * 64,
+                "granted_party_count": 1,
+            }
+        ]
+
+    monkeypatch.setattr(di, "record_disclosure", _capture)
+    return recorded
+
+
+@pytest.fixture(autouse=True)
+def owners(monkeypatch):
+    """The identity registry's lookup, answering from a dict of name → (id, DID).
+
+    Autouse because every connector-backed export resolves its recipient. The
+    controller is registered under its own id by default. ``None`` as the whole
+    mapping stands for an unreachable registry. Records every name asked, so a
+    test can assert a DID was compared, not looked up.
+    """
+    import celine.onboarding.services.dataspace_identity as di
+
+    state: dict = {"owners": {CONTROLLER: (CONTROLLER, CONSUMER_DID)}, "asked": []}
+
+    async def _check(name):
+        state["asked"].append(name)
+        if state["owners"] is None:
+            return di.OwnerCheck(found=None)
+        if name not in state["owners"]:
+            return di.OwnerCheck(found=False)
+        owner_id, did = state["owners"][name]
+        return di.OwnerCheck(found=True, status="verified", did=did, id=owner_id)
+
+    monkeypatch.setattr(di, "check_organization", _check)
+    return state
+
+
+async def _export_to(tmp_path, sub, recipient_ref):
+    out = tmp_path / "pods.csv"
+    await csv_export.export_pod_list(
+        _Db([sub]),
+        out,
+        rec_slug="example",
+        offer_id=OFFER,
+        recipient_ref=recipient_ref,
+        generated_at=GENERATED_AT,
+    )
+    return out
+
+
+async def test_a_recipient_the_offer_does_not_name_is_refused(
+    tmp_path, connector, disclosures, owners
+):
+    """The case that shipped: a list computed for the controller, sent to someone else."""
+    owners["owners"]["dso-org"] = ("dso-org", "did:web:dso.dataspaces.localhost")
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="the controller this offer names"):
+        await _export_to(tmp_path, sub, "dso-org")
+
+    assert not (tmp_path / "pods.csv").exists()
+    assert disclosures == []
+
+
+async def test_an_unknown_recipient_is_refused(tmp_path, connector, disclosures, owners):
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="not an organisation the identity registry knows"):
+        await _export_to(tmp_path, sub, "distributor-x")
+
+    assert disclosures == []
+
+
+async def test_a_did_that_is_not_the_controllers_is_refused_without_a_lookup(
+    tmp_path, connector, disclosures, owners
+):
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="the controller this offer names"):
+        await _export_to(tmp_path, sub, "did:web:dso.dataspaces.localhost")
+
+    assert owners["asked"] == []
+    assert disclosures == []
+
+
+async def test_an_empty_recipient_is_refused(tmp_path, connector, disclosures, owners):
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="names no recipient"):
+        await _export_to(tmp_path, sub, "  ")
+
+    assert disclosures == []
+
+
+async def test_an_unreachable_registry_stops_the_handover(tmp_path, connector, disclosures, owners):
+    """Unknown is not "not the controller" — and it is not "fine" either."""
+    owners["owners"] = None
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(RuntimeError, match="could not be reached"):
+        await _export_to(tmp_path, sub, CONTROLLER)
+
+    assert not (tmp_path / "pods.csv").exists()
+    assert disclosures == []
+
+
+async def test_an_alias_of_the_controller_is_refused(tmp_path, connector, disclosures, owners):
+    """Aliases let other deployments' governance files resolve; they do not address a disclosure."""
+    owners["owners"]["grid"] = (CONTROLLER, CONSUMER_DID)
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="'grid' is an alias of 'grid-operator'"):
+        await _export_to(tmp_path, sub, "grid")
+
+    assert disclosures == []
+
+
+async def test_an_owner_the_registry_gives_no_id_for_is_refused(
+    tmp_path, connector, disclosures, owners
+):
+    """Without the id an alias and an organisation look the same, so neither is guessed."""
+    owners["owners"][CONTROLLER] = (None, CONSUMER_DID)
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    with pytest.raises(ValueError, match="Name the recipient by its DID"):
+        await _export_to(tmp_path, sub, CONTROLLER)
+
+    assert disclosures == []
+
+
+async def test_the_controllers_organisation_is_recorded_by_its_did(
+    tmp_path, connector, disclosures, owners
+):
+    """One handover, one recipient: the event names what the header names."""
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    out = await _export_to(tmp_path, sub, CONTROLLER)
+
+    text = out.read_text(encoding="utf-8")
+    assert "IT001E00000001" in text
+    assert f"(recipient {CONSUMER_DID})" in text
+    assert [d["recipient_ref"] for d in disclosures] == [CONSUMER_DID]
+
+
+async def test_the_controllers_did_is_accepted_without_a_lookup(
+    tmp_path, connector, disclosures, owners
+):
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    out = await _export_to(tmp_path, sub, CONSUMER_DID)
+
+    assert out.exists()
+    assert [d["recipient_ref"] for d in disclosures] == [CONSUMER_DID]
+    assert owners["asked"] == []
+
+
+async def test_an_offer_naming_its_controller_by_alias_still_accepts_the_organisation(
+    tmp_path, connector, disclosures, owners
+):
+    """A governance file may spell the controller as an alias; the operator still names the org."""
+    connector.state["offer"] = {
+        **OFFER_RECORD,
+        "recipients": {**OFFER_RECORD["recipients"], "controller": "grid"},
+    }
+
+    async def _did(alias):
+        assert alias == "grid"
+        return CONSUMER_DID
+
+    import celine.onboarding.services.dataspace_identity as di
+
+    connector.monkeypatch.setattr(di, "resolve_consumer_did", _did)
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    await _export_to(tmp_path, sub, CONTROLLER)
+    assert [d["recipient_ref"] for d in disclosures] == [CONSUMER_DID]
+
+    owners["owners"]["grid"] = (CONTROLLER, CONSUMER_DID)
+    with pytest.raises(ValueError, match="is an alias of"):
+        await _export_to(tmp_path, sub, "grid")
+
+
+async def test_without_a_connector_there_is_no_controller_to_compare(
+    tmp_path, no_connector, disclosures, owners
+):
+    """No offer vocabulary, so no check here — `record_disclosure` is what refuses there."""
+    _, text = await _export(tmp_path, [_sub()])
+
+    assert "IT001E00000001" in text
+    assert owners["asked"] == []
 
 
 # ── the disclosure record ─────────────────────────────────────────
@@ -592,7 +812,7 @@ async def test_records_the_disclosure(tmp_path, monkeypatch, connector):
     connector(sub.dataspace_did)
     await _export(tmp_path, [sub], purpose=["FlexibilityResearch"], agreement_ref="dpa-1.0")
 
-    assert captured["recipient_ref"] == "dso-org"
+    assert captured["recipient_ref"] == CONSUMER_DID
     assert captured["columns"] == ["pod_code"]
     assert captured["subject_count"] == 1
     assert captured["purpose"] == ["FlexibilityResearch"]
@@ -676,7 +896,7 @@ async def test_a_refused_disclosure_writes_no_file(tmp_path, monkeypatch, connec
             out,
             rec_slug="example",
             offer_id=OFFER,
-            recipient_ref="dso-org",
+            recipient_ref=CONTROLLER,
             generated_at=GENERATED_AT,
         )
 
