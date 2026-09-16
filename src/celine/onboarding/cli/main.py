@@ -231,7 +231,7 @@ def export_pod_list(
                 agreement_ref=agreement_ref,
             )
             typer.echo(f"Exported {count} supply points to {output}")
-            typer.echo(f"Recorded DataDisclosed to '{recipient}'")
+            typer.echo(f"Recorded DataDisclosed to '{recipient}', by its DID")
             typer.echo(
                 "This list is a snapshot — consent can be withdrawn, so re-export "
                 "on your agreed cadence."
