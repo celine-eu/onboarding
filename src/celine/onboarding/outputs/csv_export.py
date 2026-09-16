@@ -502,10 +502,15 @@ async def export_submissions_csv(
     output_path: str | Path,
     *,
     rec_slug: str | None = None,
-    recipient_ref: str | None = None,
-    purpose: list[str] | None = None,
-    agreement_ref: str | None = None,
 ) -> int:
+    """The community's register, for the community's own use.
+
+    Every submission, every field, no consent filter. **Not a disclosure path**:
+    it takes no recipient, because handing this file to another organisation has
+    no basis anywhere in this system — the supply-point list is the governed way
+    to give another party anything. Operator access is recorded in the audit log
+    by the caller.
+    """
     query = select(Submission).order_by(Submission.created_at.desc())
     if rec_slug:
         query = query.where(Submission.rec_slug == rec_slug)

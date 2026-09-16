@@ -34,15 +34,25 @@ processing and any impact assessment remain paperwork.
 
 ## Phase A — Offline export (available now)
 
-Once participants are approved, an operator can export the submission register
-to CSV and share the relevant subset with a third party (e.g. the DSO or an
-analytics provider) under a Data Processing Agreement.
+Two exports, and only one of them gives anything to another organisation.
 
-### Export
+- **The register** is the community's own copy of its applications — for review,
+  backup and its own records. It names no recipient.
+- **The supply-point list** is the only way a list of members leaves the
+  community. It is filtered by consent, minimised to POD codes, addressed to the
+  organisation the offer names, and recorded in ds-provenance before the file
+  exists.
+
+Both commands are clients of the admin API: the terminal and the console call the
+same routes, pass the same authorization and write the same audit row. They
+authenticate as `svc-onboarding-cli` (`ONBOARDING_CLI_CLIENT_SECRET`,
+`ONBOARDING_API_URL`); `--local` is the break-glass for a deployment with no
+Keycloak and needs `ALLOW_LOCAL_ADMIN=true`.
+
+### The register
 
 ```bash
-task export-csv                 # all RECs → data/exports/<timestamp>/submissions.csv
-task export-csv -- --rec my-rec # single REC
+task export-csv -- --rec my-rec   # → data/exports/my-rec/submissions-<timestamp>.csv
 ```
 
 The CSV includes (see `src/celine/onboarding/outputs/csv_export.py`):
@@ -61,35 +71,11 @@ The CSV includes (see `src/celine/onboarding/outputs/csv_export.py`):
 Null cells are empty (not the literal `None`), so the file is safe to load into
 a spreadsheet or a downstream pipeline.
 
-### Procedure (export → filter by consent → share under DPA)
-
-1. **Export** the register for the target REC.
-2. **Filter by consent.** Only share rows where the relevant consent is `True`
-   *and* the recorded `*_consent_version` matches the consent document that
-   actually authorises the sharing purpose. A blank `*_consent_at` means the
-   consent was never given — exclude the row.
-3. **Minimise.** Drop columns the recipient does not need for the agreed
-   purpose (data minimisation, GDPR Art. 5(1)(c)). For a DSO grid-analysis
-   feed, that is typically `pod_code` + energy attributes, not name/email.
-4. **Share under a signed DPA.** The recipient must be bound by a Data
-   Processing Agreement (GDPR Art. 28) covering the purpose, retention, and
-   sub-processing. Do not transmit the file over unencrypted channels.
-5. **Record the disclosure** by naming the recipient on the export — this emits
-   a `DataDisclosed` provenance event to ds-provenance (who, what columns, which
-   purpose, how many subjects, when), the accountability trail (GDPR Art. 30):
-
-   ```bash
-   task export-csv -- --rec my-rec \
-     --recipient dso-org \
-     --purpose GridMonitoring \
-     --agreement-ref dpa-participation-1.0
-   ```
-
-   The event carries **codes, DIDs and hashes only, never PII** — `columns` are
-   field *names*, not values, and a `consent_snapshot_hash` fingerprints the
-   consent state without storing it. Requires `DS_PROVENANCE_URL` and the
-   `svc-ds-onboarding` `provenance.write` scope; without a `--recipient` the
-   export runs but records nothing.
+**It is not a way to share data.** It carries every application, every field and
+no consent filter, and it names no recipient — so there is no basis in this
+system for handing it to another organisation, and no filtering of it by hand
+makes one. Each export is recorded in the admin audit log (who, from where, how
+many rows).
 
 > The export contains personal data (fiscal code, POD, contact details). Treat
 > the file as sensitive: store it encrypted, restrict access, and delete it when

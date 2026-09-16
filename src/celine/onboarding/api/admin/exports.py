@@ -5,9 +5,12 @@ is fine for a one-off run on a server and wrong for a console: every download
 would deposit another copy of the community's personal data next to the last one.
 These write to a temporary file, stream it, and delete it.
 
-The provenance emission is unchanged and deliberately so — naming a recipient is
-what makes an export a *disclosure*, and that record belongs in ds-provenance
-regardless of which door the export came through.
+`onboarding-cli` calls these same routes, so the console and the terminal run one
+implementation and write the same audit rows.
+
+Only the supply-point list is a disclosure: it names its recipient — the offer's
+controller — and records `DataDisclosed` in ds-provenance before the file exists.
+The register export is the community's own copy and names no recipient.
 """
 
 from __future__ import annotations
@@ -35,13 +38,8 @@ ExportDep = Annotated[JwtUser, Depends(require(Capability.EXPORT))]
 
 
 class CsvExportRequest(BaseModel):
-    recipient_ref: str | None = Field(
-        None,
-        description="Who the data is being disclosed to. Naming one records a "
-        "DataDisclosed provenance event; omit it for an internal dump.",
-    )
-    purpose: list[str] = []
-    agreement_ref: str | None = None
+    """No fields. The register export is for the community's own use and names no
+    recipient; a body is still accepted so existing callers sending ``{}`` work."""
 
 
 class PodListRequest(BaseModel):
@@ -96,14 +94,7 @@ async def export_csv(
     path = Path(handle.name)
 
     try:
-        count = await export_submissions_csv(
-            db,
-            path,
-            rec_slug=rec_slug,
-            recipient_ref=body.recipient_ref,
-            purpose=body.purpose,
-            agreement_ref=body.agreement_ref,
-        )
+        count = await export_submissions_csv(db, path, rec_slug=rec_slug)
     except Exception:
         path.unlink(missing_ok=True)
         raise
@@ -116,7 +107,7 @@ async def export_csv(
         actor=actor,
         rec_slug=rec_slug,
         ip=ip,
-        detail=f"rows={count} recipient={body.recipient_ref or '-'}",
+        detail=f"rows={count}",
     )
     return _streamed(path, f"{rec_slug}-submissions-{stamp}.csv")
 

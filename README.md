@@ -23,7 +23,7 @@ The entire process has a 10-minute inactivity window. After that, the session to
 
 ### For the operator
 
-Operators work in the console at `/admin`, signing in with their Keycloak identity; what they may do is decided by their organization and group (see [Authorization](docs/authorization.md)). They can work the queue, open a submission in full — consents, documents, extracted data, enablement — change status, repair a failed enablement step, and export to CSV. The same flow is available from the terminal with `onboarding-cli admin`; see [Operator console](docs/admin-console.md). Naming a recipient on the export (`--recipient`) records the offline disclosure as a `DataDisclosed` provenance event — codes, DIDs and hashes only, never PII. All admin operations are audit-logged.
+Operators work in the console at `/admin`, signing in with their Keycloak identity; what they may do is decided by their organization and group (see [Authorization](docs/authorization.md)). They can work the queue, open a submission in full — consents, documents, extracted data, enablement — change status, repair a failed enablement step, and export to CSV. The same flow is available from the terminal with `onboarding-cli admin`; see [Operator console](docs/admin-console.md). Two exports: the community's register, for its own use, and the list of consenting members' supply points, which goes only to the organisation the sharing offer names and is recorded as a `DataDisclosed` provenance event first — codes, DIDs and hashes only, never PII. `onboarding-cli export-csv` and `export-pod-list` call the same API. All admin operations are audit-logged.
 
 Approval enables a participant in three steps, in order: a **login**, a **member in the REC registry**, then a **dataspace identity**. The login is provisioned by asking `celine-policies`' provisioning service (`PROVISIONING_URL`) — this service holds no Keycloak grant of its own; see [ADR-0004](docs/decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md). Approval also asks for an invitation: Keycloak emails the participant a link to set their password, valid for 7 days, in the language they last used in the wizard. Whether it is sent is the provisioning service's decision (not for an account that already has a password, nor for a disabled one, nor twice within a short per-account cooldown), and the outcome is shown on the step in the console and by `onboarding-cli admin enablement status`; see [Operator console](docs/admin-console.md#what-approval-actually-does). A community manager can also send any registry member an invitation or a password reset from the `celine-community` dashboard. That call goes through this service's member-keyed admin routes, because this service is the provisioning service's only caller; see [API reference](docs/api-reference.md) and [ADR-0005](docs/decisions/ADR-0005-onboarding-is-the-one-caller-of-the-provisioning-service.md). Without `PROVISIONING_URL`, or for a community with no `rec_registry:` block, that step is skipped and the participant is onboarded without a login, or an invitation, and the wizard does not promise one. Registry registration fails closed — a participant missing from it is enabled in name only, invisible to every pipeline and dashboard that joins on `user_id`, POD and sensor ids. Which community they join, and their area, are per-community settings in the template manifest's `rec_registry:` block; without one, registration is skipped and the wizard still works.
 
@@ -269,7 +269,7 @@ After approval a participant manages and withdraws their sharing decisions in th
 Which organization a community's members join, its DID and the linked participant are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
 | `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from; empty falls back to the connector's `/ns` path |
-| `DS_PROVENANCE_URL` | *(none)* | Provenance base URL for recording a named-recipient CSV export as a `DataDisclosed` event (`POST /prov/events`, scope `provenance.write`); empty disables the emission |
+| `DS_PROVENANCE_URL` | *(none)* | Provenance base URL the member-facing data-sharing view reads events from; empty disables it. Disclosures are recorded through the connector (`POST /admin/disclosure`), not here |
 
 ## Creating a Template
 
@@ -297,8 +297,8 @@ task migrate              # apply migrations
 task migration -- "msg"   # create new migration
 task test                 # backend + frontend tests
 task lint                 # ruff + svelte-check
-task export-csv           # export submissions to data/exports/
-task export-pod-list      # export consented supply points for a distributor
+task export-csv           # the community's register, via the API (-- --rec <slug>)
+task export-pod-list      # consented supply points for the offer's controller, via the API
 ```
 
 ### Adding a field

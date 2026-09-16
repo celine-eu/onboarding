@@ -67,6 +67,18 @@ class Transport(Protocol):
         self, rec: str, *, limit: int, action: str | None, actor: str | None
     ) -> list[dict]: ...
 
+    async def export_csv(self, rec: str) -> bytes: ...
+
+    async def export_pod_list(
+        self,
+        rec: str,
+        *,
+        offer_id: str,
+        recipient_ref: str,
+        purpose: list[str],
+        agreement_ref: str | None,
+    ) -> bytes: ...
+
     async def aclose(self) -> None: ...
 
 
@@ -119,6 +131,8 @@ class ApiTransport:
             raise CliError(f"Not permitted: {_detail(response)}")
         if response.status_code == 404:
             raise CliError(f"Not found: {_detail(response)}")
+        if response.status_code == 422:
+            raise CliError(f"Refused: {_detail(response)}")
         if response.status_code >= 400:
             raise CliError(f"API error {response.status_code}: {_detail(response)}")
         return response
@@ -211,6 +225,21 @@ class ApiTransport:
                 if actor in (r.get("actor_sub") or "") or actor in (r.get("actor_email") or "")
             ]
         return rows
+
+    async def export_csv(self, rec):
+        return (await self._request("POST", f"/api/admin/{rec}/exports/csv", json={})).content
+
+    async def export_pod_list(self, rec, *, offer_id, recipient_ref, purpose, agreement_ref):
+        body: dict[str, Any] = {
+            "offer_id": offer_id,
+            "recipient_ref": recipient_ref,
+            "purpose": purpose,
+        }
+        if agreement_ref:
+            body["agreement_ref"] = agreement_ref
+        return (
+            await self._request("POST", f"/api/admin/{rec}/exports/pod-list", json=body)
+        ).content
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -425,6 +454,66 @@ class LocalTransport:
                 query = query.where(AuditLog.actor_sub.ilike(f"%{actor}%"))
             rows = (await db.execute(query)).scalars().all()
             return [AuditLogRead.model_validate(r).model_dump(mode="json") for r in rows]
+
+    async def _export(self, rec: str, write, action: str, detail) -> bytes:
+        """Write through a temporary file, audit as the API does, return the bytes."""
+        import tempfile
+        from pathlib import Path
+
+        from celine.onboarding.services import audit_service
+
+        handle = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+        handle.close()
+        path = Path(handle.name)
+        try:
+            async with await self._session() as db:
+                try:
+                    count = await write(db, path)
+                except ValueError as exc:
+                    raise CliError(f"Refused: {exc}") from exc
+                await audit_service.record_and_commit(
+                    db,
+                    action=action,
+                    entity_type="submission",
+                    entity_id=None,
+                    actor=self._actor,
+                    rec_slug=rec,
+                    detail=detail(count),
+                )
+            return path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+
+    async def export_csv(self, rec):
+        from celine.onboarding.outputs.csv_export import export_submissions_csv
+
+        return await self._export(
+            rec,
+            lambda db, path: export_submissions_csv(db, path, rec_slug=rec),
+            "export_csv",
+            lambda count: f"rows={count}",
+        )
+
+    async def export_pod_list(self, rec, *, offer_id, recipient_ref, purpose, agreement_ref):
+        from datetime import UTC, datetime
+
+        from celine.onboarding.outputs.csv_export import export_pod_list
+
+        return await self._export(
+            rec,
+            lambda db, path: export_pod_list(
+                db,
+                path,
+                rec_slug=rec,
+                offer_id=offer_id,
+                recipient_ref=recipient_ref,
+                generated_at=datetime.now(UTC),
+                purpose=purpose,
+                agreement_ref=agreement_ref,
+            ),
+            "export_pod_list",
+            lambda count: f"pods={count} offer={offer_id} recipient={recipient_ref}",
+        )
 
     async def aclose(self) -> None:
         return None

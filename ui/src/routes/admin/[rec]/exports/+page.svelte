@@ -4,7 +4,6 @@
 
 	const { data }: { data: PageData } = $props();
 
-	let recipient = $state('');
 	let offerId = $state('');
 	let podRecipient = $state('');
 	let busy = $state<string | null>(null);
@@ -47,15 +46,11 @@
 		<h2>{$t('admin.exports.csv_title')}</h2>
 		<p class="hint">{$t('admin.exports.csv_hint')}</p>
 		<div class="row">
-			<label>
-				<span>{$t('admin.exports.recipient_optional')}</span>
-				<input bind:value={recipient} placeholder={$t('admin.exports.recipient_placeholder')} />
-			</label>
 			<button
 				class="primary"
 				disabled={busy !== null}
 				onclick={() =>
-					run('csv', () => data.api.exportCsv(recipient || undefined), `${data.rec}-${$t('admin.exports.csv_filename')}-${stamp()}.csv`)}
+					run('csv', () => data.api.exportCsv(), `${data.rec}-${$t('admin.exports.csv_filename')}-${stamp()}.csv`)}
 			>
 				{busy === 'csv' ? $t('admin.exports.exporting') : $t('admin.exports.csv_download')}
 			</button>

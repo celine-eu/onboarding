@@ -113,13 +113,13 @@ tasks:
       - uv run onboarding-cli admin {{.CLI_ARGS}}
 
   export-csv:
-    desc: Export submissions to CSV
+    desc: "Export a community's register, via the admin API (-- --rec <slug>)"
     dir: "{{.SRC_DIR}}"
     cmds:
       - uv run onboarding-cli export-csv {{.CLI_ARGS}}
 
   export-pod-list:
-    desc: "Export consented supply points for a distributor (snapshot — re-export on cadence)"
+    desc: "Export consented supply points for the offer's controller, via the admin API (snapshot — re-export on cadence)"
     dir: "{{.SRC_DIR}}"
     cmds:
       - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}

@@ -1,10 +1,12 @@
 import asyncio
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
 
+from celine.onboarding.cli.admin import _API_URL, _LOCAL, _TOKEN, _run
 from celine.onboarding.cli.admin import app as admin_app
+from celine.onboarding.cli.transport import build
 from celine.onboarding.config.settings import settings
 
 app = typer.Typer(name="onboarding-cli", help="REC Onboarding CLI")
@@ -18,11 +20,11 @@ app.add_typer(admin_app, name="admin")
 async def _load_recs() -> None:
     """Fill the REC manifest cache, as the API's startup hook does.
 
+    For the commands that still read the database directly (`check-offers`).
     ``template_service.load_manifest`` reads a module-level cache that only the
-    API's startup and the ``admin --local`` transport fill. A standalone command
-    that skipped this found every community missing — ``KeyError: REC '<slug>'
-    not found`` for a REC that was imported and active — so it ran none of the
-    code the API runs and none of the checks with it.
+    API's startup and the ``admin --local`` transport fill; a command that skipped
+    this found every community missing — ``KeyError: REC '<slug>' not found`` for
+    a REC that was imported and active.
     """
     from celine.onboarding.services import template_service
 
@@ -120,54 +122,58 @@ def import_templates(
     typer.echo("API will pick up changes automatically.")
 
 
+def _write_export(content: bytes, output: str) -> Path:
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def _data_rows(content: bytes) -> int:
+    """Records in an exported CSV: not the leading ``#`` lines, not the column line.
+
+    Parsed rather than counted by line, because a register field can hold a
+    newline inside quotes.
+    """
+    import csv
+    import io
+
+    lines = content.decode("utf-8").splitlines(keepends=True)
+    while lines and lines[0].startswith("#"):
+        lines.pop(0)
+    records = [row for row in csv.reader(io.StringIO("".join(lines))) if row]
+    return max(len(records) - 1, 0)
+
+
 @app.command()
 def export_csv(
-    output: str = "",
-    rec: str | None = typer.Option(None, "--rec", "-r", help="Filter by REC slug"),
-    recipient: str | None = typer.Option(
-        None,
-        "--recipient",
-        help="Recipient of this disclosure (org alias/DID/DPA ref). "
-        "Naming one records a DataDisclosed provenance event.",
-    ),
-    purpose: str | None = typer.Option(
-        None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
-    ),
-    agreement_ref: str | None = typer.Option(
-        None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
-    ),
+    rec: str = typer.Option(..., "--rec", "-r", help="REC slug"),
+    output: str = typer.Option("", "--output", help="Where to write the file"),
+    local: bool = _LOCAL,
+    api_url: str = _API_URL,
+    token: str = _TOKEN,
 ):
-    """Export onboarding submissions to CSV.
+    """Export a community's register — every application, every field — for its own use.
 
-    Pass --recipient to record the export as a DataDisclosed provenance event
-    (codes and hashes only, never PII).
+    Through the API, as the console does, so the same authorization and the same
+    audit row apply. **Not a way to give data to another organisation**: it names
+    no recipient. The supply-point list (`export-pod-list`) is the governed way.
+    The file holds personal data: store it encrypted and delete it when done.
     """
-    from celine.onboarding.models.database import async_session
-    from celine.onboarding.outputs.csv_export import export_submissions_csv
-
     if not output:
-        suffix = rec or "all"
-        output = str(Path(settings.data_dir) / "exports" / suffix / "submissions.csv")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        output = str(Path(settings.data_dir) / "exports" / rec / f"submissions-{stamp}.csv")
 
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
+    async def _go():
+        transport = build(local, api_url=api_url, token=token)
+        try:
+            content = await transport.export_csv(rec)
+        finally:
+            await transport.aclose()
+        path = _write_export(content, output)
+        typer.echo(f"Exported {_data_rows(content)} submissions to {path}")
 
-    async def _run():
-        await _load_recs()
-        async with async_session() as db:
-            count = await export_submissions_csv(
-                db,
-                output,
-                rec_slug=rec,
-                recipient_ref=recipient,
-                purpose=purposes,
-                agreement_ref=agreement_ref,
-            )
-            typer.echo(f"Exported {count} submissions to {output}")
-            if recipient:
-                typer.echo(f"Recorded DataDisclosed to '{recipient}'")
-
-    asyncio.run(_run())
+    _run(_go())
 
 
 @app.command()
@@ -186,64 +192,56 @@ def export_pod_list(
         "DID — never an alias. Any other party is refused. Recorded as a "
         "DataDisclosed provenance event against the controller's DID.",
     ),
-    output: str = "",
+    output: str = typer.Option("", "--output", help="Where to write the file"),
     purpose: str | None = typer.Option(
         None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
     ),
     agreement_ref: str | None = typer.Option(
         None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
     ),
+    local: bool = _LOCAL,
+    api_url: str = _API_URL,
+    token: str = _TOKEN,
 ):
     """Export the supply points whose owners agreed — and nothing else.
 
-    For handing a distributor the PODs it may release. Names, hashes, DIDs and
-    evidence stay out: that material lives in the dataspace, where it is
+    For handing the offer's controller the PODs it may receive. Names, hashes,
+    DIDs and evidence stay out: that material lives in the dataspace, where it is
     verifiable and revocable, and a second copy is how two records of the same
     consent start to disagree.
+
+    Through the API, as the console does. The disclosure is recorded in
+    ds-provenance before the file exists; a refusal writes nothing.
 
     The file is a snapshot, so the re-export cadence is the revocation latency.
     Re-run it on a schedule; the header states when it was generated.
     """
-    from datetime import datetime
-
-    from celine.onboarding.models.database import async_session
-    from celine.onboarding.outputs.csv_export import export_pod_list as _export
-
-    generated_at = datetime.now(UTC)
     if not output:
-        stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output = str(Path(settings.data_dir) / "exports" / rec / f"pod-list-{stamp}.csv")
-
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
     purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
 
-    async def _run():
-        await _load_recs()
-        async with async_session() as db:
-            count = await _export(
-                db,
-                output,
-                rec_slug=rec,
+    async def _go():
+        transport = build(local, api_url=api_url, token=token)
+        try:
+            content = await transport.export_pod_list(
+                rec,
                 offer_id=offer,
                 recipient_ref=recipient,
-                generated_at=generated_at,
                 purpose=purposes,
                 agreement_ref=agreement_ref,
             )
-            typer.echo(f"Exported {count} supply points to {output}")
-            typer.echo(f"Recorded DataDisclosed to '{recipient}', by its DID")
-            typer.echo(
-                "This list is a snapshot — consent can be withdrawn, so re-export "
-                "on your agreed cadence."
-            )
+        finally:
+            await transport.aclose()
+        path = _write_export(content, output)
+        typer.echo(f"Exported {_data_rows(content)} supply points to {path}")
+        typer.echo(f"Recorded DataDisclosed to '{recipient}', by its DID")
+        typer.echo(
+            "This list is a snapshot — consent can be withdrawn, so re-export on your "
+            "agreed cadence."
+        )
 
-    try:
-        asyncio.run(_run())
-    except ValueError as exc:
-        # A refusal, not a crash: the console answers the same condition with a
-        # 422 and the message, and so does this.
-        typer.echo(f"Refused: {exc}", err=True)
-        raise typer.Exit(1) from exc
+    _run(_go())
 
 
 @app.command()

@@ -447,10 +447,12 @@ export function createRecAdminApi(recSlug: string) {
 				rows.filter((r) => r.entity_id === id)
 			),
 
-		async exportCsv(recipientRef?: string): Promise<Blob> {
+		// The community's own register: it names no recipient. Giving data to another
+		// organisation goes through exportPodList, which is the governed path.
+		async exportCsv(): Promise<Blob> {
 			const res = await adminFetch(`${base}/exports/csv`, {
 				method: 'POST',
-				body: JSON.stringify({ recipient_ref: recipientRef || null })
+				body: JSON.stringify({})
 			});
 			return res.blob();
 		},

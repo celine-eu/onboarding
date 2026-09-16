@@ -356,16 +356,17 @@ class TestExports:
         client.post(f"{BASE}/exports/csv", json={}, headers=auth(operator_token(ORG, "managers")))
         assert list(tmp_path.iterdir()) == []
 
-    def test_export_is_audited_with_the_recipient(
+    def test_the_register_export_is_audited_without_a_recipient(
         self, client, operator_token, stub_exports, audited
     ):
+        """The community's own copy: audited as access, never labelled as a disclosure."""
         client.post(
             f"{BASE}/exports/csv",
             json={"recipient_ref": "distributor-x"},
             headers=auth(operator_token(ORG, "managers")),
         )
         assert audited[-1]["action"] == "export_csv"
-        assert "distributor-x" in audited[-1]["detail"]
+        assert audited[-1]["detail"] == "rows=1"
 
     def test_pod_list_requires_an_offer(self, client, operator_token, stub_exports):
         """Consent is purpose-scoped, so a handover has to name the offer."""
