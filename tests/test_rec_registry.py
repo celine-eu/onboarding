@@ -197,13 +197,13 @@ class TestUserId:
     """
 
     def test_the_keycloak_username_is_written(self):
-        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="gl-00001")
-        assert payload["user_id"] == "gl-00001"
+        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="ex-00001")
+        assert payload["user_id"] == "ex-00001"
 
     def test_the_key_stays_the_reference(self):
         """The two identifiers are different on purpose: the key is the
         registry's handle on the member, the user_id is who they log in as."""
-        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="gl-00001")
+        payload = rr.build_member_payload(_sub(), BINDING, keycloak_username="ex-00001")
         assert payload["key"] == "20260727-abcd"
 
     def test_the_reference_is_never_the_user_id(self):
@@ -227,9 +227,9 @@ class TestUserId:
         that is not their email, and asking by email says nothing about what
         their token will carry."""
         payload = rr.build_member_payload(
-            _sub(email="alice@example.org"), BINDING, keycloak_username="gl-00001"
+            _sub(email="alice@example.org"), BINDING, keycloak_username="ex-00001"
         )
-        assert payload["user_id"] == "gl-00001"
+        assert payload["user_id"] == "ex-00001"
 
     def test_no_username_and_no_email_falls_back_to_the_reference(self, caplog):
         """The broken value, kept because there is nothing better — and logged,
@@ -440,20 +440,20 @@ class TestRegisterMemberConflict:
     async def test_a_key_held_under_another_members_user_id_fails(self, monkeypatch, _configured):
         """`user_id` is unique per community, so finding it on a different member
         means the row under this key is not this participant's."""
-        holder = SimpleNamespace(key="gl-00007", community_key="test-community")
+        holder = SimpleNamespace(key="ex-00007", community_key="test-community")
         _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
 
-        with pytest.raises(ValueError, match="belongs to member 'gl-00007'"):
+        with pytest.raises(ValueError, match="belongs to member 'ex-00007'"):
             await rr.register_member(_sub())
 
     async def test_the_retry_is_confirmed_with_the_username(self, monkeypatch, _configured):
         holder = SimpleNamespace(key="20260727-abcd", community_key="test-community")
         calls = _stub_client(monkeypatch, 409, _conflict(KEY_TAKEN), holder=holder)
 
-        key = await rr.register_member(_sub(), keycloak_username="gl-00001")
+        key = await rr.register_member(_sub(), keycloak_username="ex-00001")
 
         assert key == "20260727-abcd"
-        assert ("lookup", "gl-00001") in calls
+        assert ("lookup", "ex-00001") in calls
 
     async def test_an_unconfirmed_key_retry_still_succeeds_and_says_so(
         self, monkeypatch, _configured, caplog
@@ -483,9 +483,9 @@ class TestRegisterMemberUserId:
     async def test_the_username_reaches_the_registry(self, monkeypatch, _configured):
         calls = _stub_client(monkeypatch, 201)
 
-        await rr.register_member(_sub(), keycloak_username="gl-00001")
+        await rr.register_member(_sub(), keycloak_username="ex-00001")
 
-        assert calls[0][1].to_dict()["user_id"] == "gl-00001"
+        assert calls[0][1].to_dict()["user_id"] == "ex-00001"
 
     async def test_without_one_the_email_reaches_the_registry(self, monkeypatch, _configured):
         calls = _stub_client(monkeypatch, 201)

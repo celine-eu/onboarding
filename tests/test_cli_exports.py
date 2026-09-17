@@ -82,7 +82,7 @@ def test_a_refused_recipient_is_reported_and_writes_nothing(api, tmp_path):
     api.post("/api/admin/rec-a/exports/pod-list").mock(
         return_value=httpx.Response(
             422,
-            json={"detail": "Recipient 'dso' is an alias of 'set-distribuzione'."},
+            json={"detail": "Recipient 'dso' is an alias of 'example-dso'."},
         )
     )
 
@@ -198,7 +198,7 @@ def test_local_refusal_is_reported_and_not_audited(local, monkeypatch, tmp_path)
     from celine.onboarding.outputs import csv_export
 
     async def _refuse(db, path, **kw):
-        raise ValueError("Recipient 'dso' is an alias of 'set-distribuzione'.")
+        raise ValueError("Recipient 'dso' is an alias of 'example-dso'.")
 
     monkeypatch.setattr(csv_export, "export_pod_list", _refuse)
 

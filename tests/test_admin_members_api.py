@@ -29,8 +29,8 @@ from celine.onboarding.security.middleware import AdminAuthMiddleware
 from celine.onboarding.services import provisioning as pv
 
 PROVISIONING = "http://provisioning.test"
-ORG = "greenland"
-COMMUNITY = "greenland"
+ORG = "example-rec"
+COMMUNITY = "example-rec"
 OTHER_ORG = "blueland"
 MEMBER = "M-0042"
 

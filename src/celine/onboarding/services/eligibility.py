@@ -40,7 +40,7 @@ class EligibilityResult:
 # coverage rule names.
 #
 # So neither order works: preferring `village` rejects every frazione, and
-# preferring `municipality` rejects nine of Green Land's eleven comuni. A
+# preferring `municipality` rejects most of a real community's comuni. A
 # `municipality` rule is therefore matched against **all** of these, and only
 # the display value is chosen by precedence.
 MUNICIPALITY_KEYS = ("city", "town", "village", "municipality")

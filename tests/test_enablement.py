@@ -294,13 +294,13 @@ class TestEnable:
 
         async def _kc(sub):
             happy_path.append("keycloak_user")
-            return ParticipantProvisionResult(user_id="kc-123", username="gl-00001", created=False)
+            return ParticipantProvisionResult(user_id="kc-123", username="ex-00001", created=False)
 
         monkeypatch.setattr(provisioning, "provision_participant", _kc)
 
         await enablement.enable(db, submission)
 
-        assert "rec_registry_member(user=gl-00001)" in happy_path
+        assert "rec_registry_member(user=ex-00001)" in happy_path
 
     async def test_counts_attempts(self, db, submission, happy_path):
         rows = await enablement.enable(db, submission)

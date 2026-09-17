@@ -28,7 +28,7 @@ from celine.onboarding.services import provisioning as pv
 from celine.onboarding.services.errors import ConfigurationError
 
 PROVISIONING = "http://provisioning.test"
-COMMUNITY = "greenland"
+COMMUNITY = "example-rec"
 
 
 def _sub(**overrides):
@@ -372,9 +372,9 @@ class TestProvisioningAParticipant:
         every account the platform created and silently wrong for every account
         it adopted, and the value is what reaches `Member.user_id`.
         """
-        upsert_route(api, username="gl-00001", created=False)
+        upsert_route(api, username="ex-00001", created=False)
         result = await pv.provision_participant(_sub())
-        assert result.username == "gl-00001"
+        assert result.username == "ex-00001"
         assert result.created is False
 
     async def test_the_user_id_is_the_keycloak_uuid(self, bound, enabled, api):
@@ -450,7 +450,7 @@ class TestWhenProvisioningRefuses:
     async def test_an_unknown_community_is_a_configuration_error(self, bound, enabled, api):
         """The manifest binds a community the registry does not hold: no retry fixes it."""
         api.put(f"/participants/{COMMUNITY}/20260727-abcd").mock(
-            return_value=error(404, "community_not_found", "no community 'greenland'")
+            return_value=error(404, "community_not_found", "no community 'example-rec'")
         )
         with pytest.raises(ConfigurationError) as exc:
             await pv.provision_participant(_sub())
@@ -515,7 +515,7 @@ class TestRevokingALogin:
         longer true.
         """
         api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
-            return_value=error(404, code, "greenland has no member '…'")
+            return_value=error(404, code, "example-rec has no member '…'")
         )
         assert await pv.disable_participant(_sub()) == detail
 
@@ -527,7 +527,7 @@ class TestRevokingALogin:
         still sign in.
         """
         api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
-            return_value=error(404, "community_not_found", "no community 'greenland'")
+            return_value=error(404, "community_not_found", "no community 'example-rec'")
         )
         with pytest.raises(ConfigurationError) as exc:
             await pv.disable_participant(_sub())
@@ -559,7 +559,7 @@ class TestRevokingALogin:
         from celine.onboarding.services import enablement
 
         api.post(f"/participants/{COMMUNITY}/20260727-abcd/disable").mock(
-            return_value=error(404, "community_not_found", "no community 'greenland'")
+            return_value=error(404, "community_not_found", "no community 'example-rec'")
         )
         db = FakeDb()
         submission = FakeSubmission(ref="20260727-abcd", rec_slug="example")
