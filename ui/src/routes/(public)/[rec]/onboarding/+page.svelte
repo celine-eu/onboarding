@@ -197,8 +197,43 @@
 			.join('');
 	}
 
+	// A primary offer, when the community declares one and it is published, is the
+	// switch the others depend on: their data exists only because of it. It is
+	// shown first, the others stay inactive until it is accepted, and turning it
+	// off clears them. The backend refuses the same combination.
+	let primaryOfferId = $derived.by(() => {
+		const id = config?.consent?.data_sharing?.primary;
+		return id && sharingOffers.some((o) => o.id === id && o.requires_consent) ? id : null;
+	});
+	let primaryAccepted = $derived(primaryOfferId ? !!dataSharingSelections[primaryOfferId] : true);
+	let orderedSharingOffers = $derived(
+		primaryOfferId
+			? [
+					...sharingOffers.filter((o) => o.id === primaryOfferId),
+					...sharingOffers.filter((o) => o.id !== primaryOfferId)
+				]
+			: sharingOffers
+	);
+
+	function dependsOnPrimary(offer: SharingOffer): boolean {
+		return !!primaryOfferId && offer.id !== primaryOfferId;
+	}
+
+	function setSharing(offer: SharingOffer, accepted: boolean) {
+		if (offer.id === primaryOfferId && !accepted) {
+			dataSharingSelections = {};
+			return;
+		}
+		dataSharingSelections = { ...dataSharingSelections, [offer.id]: accepted };
+	}
+
 	let acceptedOffers = $derived(
-		sharingOffers.filter((o) => o.requires_consent && dataSharingSelections[o.id])
+		sharingOffers.filter(
+			(o) =>
+				o.requires_consent &&
+				dataSharingSelections[o.id] &&
+				(!dependsOnPrimary(o) || primaryAccepted)
+		)
 	);
 
 	// Phone verification (SMS OTP) step
@@ -666,6 +701,11 @@
 					data_sharing_consent_text_version: versions || null,
 					data_sharing_consent_locale: $locale,
 					data_sharing_consent_text_sha256: sha,
+					// Every offer the step showed a control for, accepted or not, so
+					// the web app later asks only about what is new or changed.
+					data_sharing_offers_presented: sharingOffers
+						.filter((o) => o.requires_consent)
+						.map((o) => ({ id: o.id, version: o.consent_text_version ?? null })),
 				};
 			}
 			await saveSubmission(submissionId, {
@@ -1076,8 +1116,8 @@
 						<div class="data-sharing">
 							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
 							<p class="consent-intro">{$t('onboarding.data_sharing_intro')}</p>
-							{#each sharingOffers as offer (offer.id)}
-								<div class="offer-card">
+							{#each orderedSharingOffers as offer (offer.id)}
+								<div class="offer-card" class:offer-primary={offer.id === primaryOfferId}>
 									<div class="offer-head">
 										<span class="offer-label">{offer.fallback_text_en.purpose_label}</span>
 										{#if !offer.requires_consent}
@@ -1097,15 +1137,14 @@
 											<input
 												type="checkbox"
 												checked={!!dataSharingSelections[offer.id]}
-												onchange={(e) => {
-													dataSharingSelections = {
-														...dataSharingSelections,
-														[offer.id]: e.currentTarget.checked,
-													};
-												}}
+												disabled={dependsOnPrimary(offer) && !primaryAccepted}
+												onchange={(e) => setSharing(offer, e.currentTarget.checked)}
 											/>
 											<span>{$t('onboarding.data_sharing_accept')}</span>
 										</label>
+										{#if dependsOnPrimary(offer) && !primaryAccepted}
+											<p class="offer-disclosed-note">{$t('onboarding.data_sharing_requires_primary')}</p>
+										{/if}
 									{:else}
 										<p class="offer-disclosed-note">{$t('onboarding.data_sharing_disclosed_note')}</p>
 									{/if}
@@ -1317,6 +1356,9 @@
 		border-top: 1px solid var(--celine-border);
 	}
 
+	.offer-primary {
+		border-color: var(--celine-primary);
+	}
 	.data-sharing-title {
 		font-size: 0.9375rem;
 		font-weight: 700;

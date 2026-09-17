@@ -194,6 +194,9 @@ async def _validate_sharing_offer_ids(rec_slug: str, offer_ids: list[str]) -> No
     ``POST /consent/admin/shares`` refuses a contract offer, ``POST
     /admin/disclosure`` accepts one.
 
+    ``consent.data_sharing.primary``, when set to a published offer, must be among
+    the accepted ids whenever any other one is.
+
     Fails closed when the vocabulary cannot be reached: an unverifiable consent is
     not recorded. `SharingOffersUnavailableError` propagates for the route to answer
     503, which is the honest code — the claim is not wrong, it is unchecked.
@@ -217,6 +220,51 @@ async def _validate_sharing_offer_ids(rec_slug: str, offer_ids: list[str]) -> No
             "These offers are disclosed, not consented, and cannot be recorded as "
             f"a data-sharing consent: {', '.join(sorted(contract_based))}"
         )
+
+    # **A primary offer, when the community declares one, gates the others.** The
+    # data the other offers use exists only because of it — a distributor releasing
+    # a member's readings, say — so accepting them without it would record a
+    # consent to a use of data that will never arrive. The wizard enforces the
+    # same rule; this is where a client that does not is refused.
+    primary = (
+        (template_service.load_manifest(rec_slug).get("consent") or {}).get("data_sharing") or {}
+    ).get("primary")
+    if primary and primary in by_id and offer_ids and primary not in offer_ids:
+        raise ValueError(
+            f"{', '.join(sorted(offer_ids))} depend(s) on {primary!r}, which was not accepted"
+        )
+
+
+async def _validate_presented_offers(
+    rec_slug: str, presented: list[dict], accepted: list[str] | None
+) -> None:
+    """Refuse a presented set that is not what this REC publishes right now.
+
+    The set is what the web app trusts to decide that a member has already been
+    asked, so a wrong one silences a question. Each entry must be a consent-based
+    offer this REC publishes, at its current version; and an accepted offer that
+    was not presented is a claim about the step that cannot be true.
+    """
+    from celine.onboarding.services import template_service
+
+    offers = await template_service.get_sharing_offers(rec_slug)
+    by_id = {str(o.get("id")): o for o in offers if o.get("id")}
+
+    problems: list[str] = []
+    for item in presented:
+        offer = by_id.get(item["id"])
+        if offer is None or not offer.get("requires_consent"):
+            problems.append(f"{item['id']} is not a consent-based offer of this community")
+        elif item.get("version") != offer.get("consent_text_version"):
+            problems.append(
+                f"{item['id']} was presented at version {item.get('version')!r}, "
+                f"but the published one is {offer.get('consent_text_version')!r}"
+            )
+    missing = sorted(set(accepted or []) - {item["id"] for item in presented})
+    if missing:
+        problems.append(f"accepted but not presented: {', '.join(missing)}")
+    if problems:
+        raise ValueError("Presented data-sharing offers refused: " + "; ".join(problems))
 
 
 async def update_submission(
@@ -249,6 +297,13 @@ async def update_submission(
     if updates.get("data_sharing_consent_offer_ids"):
         await _validate_sharing_offer_ids(
             submission.rec_slug, list(updates["data_sharing_consent_offer_ids"])
+        )
+
+    if updates.get("data_sharing_offers_presented") is not None:
+        await _validate_presented_offers(
+            submission.rec_slug,
+            list(updates["data_sharing_offers_presented"]),
+            updates.get("data_sharing_consent_offer_ids"),
         )
 
     target_status = updates.pop("status", None)

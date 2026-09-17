@@ -135,6 +135,12 @@ class Submission(Base):
     )
     data_sharing_consent_locale: Mapped[str | None] = mapped_column(String(20), nullable=True)
     data_sharing_consent_text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Every consent-based offer the wizard *presented*, accepted or not, as
+    # `[{"id", "version"}]`. The accepted ids above cannot say that a member was
+    # shown an offer and left it off; this can, so the web app asks about an offer
+    # that is new or changed and not about one already declined here. Ids and
+    # versions only — nothing about how the person went through the step.
+    data_sharing_offers_presented: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Whether the standing share was pushed to the connector after approval. A
     # failed push never fails approval (§3.5) — it is retried from the admin UI.
     share_provisioned: Mapped[bool] = mapped_column(default=False)

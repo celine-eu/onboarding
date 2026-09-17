@@ -120,7 +120,7 @@ export interface SiteConfig {
 	};
 	consent: Record<
 		string,
-		{ version?: string; file?: string; url?: string; required: boolean; offers?: string[] }
+		{ version?: string; file?: string; url?: string; required: boolean; offers?: string[]; primary?: string }
 	>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;

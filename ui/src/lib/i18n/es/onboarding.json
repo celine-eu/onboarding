@@ -88,6 +88,7 @@
 	"data_sharing_disclosed": "Información",
 	"data_sharing_disclosed_note": "Este tratamiento se basa en una obligación contractual, por lo que se indica a título informativo: no se requiere un consentimiento aparte.",
 	"data_sharing_optional": "Compartir datos es totalmente opcional y nunca es una condición para adherirse a la comunidad.",
+	"data_sharing_requires_primary": "Disponible después de aceptar la primera opción de arriba.",
 	"ds_measures": "Datos",
 	"ds_resolution": "Frecuencia",
 	"ds_coverage": "Periodo",

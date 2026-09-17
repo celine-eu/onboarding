@@ -88,6 +88,7 @@
 	"data_sharing_disclosed": "Disclosed",
 	"data_sharing_disclosed_note": "This use rests on a contractual basis, so it is disclosed for your information — no separate consent is required.",
 	"data_sharing_optional": "Sharing is entirely optional and is never a condition of joining the community.",
+	"data_sharing_requires_primary": "Available once you accept the first option above.",
 	"ds_measures": "Data",
 	"ds_resolution": "Frequency",
 	"ds_coverage": "Time span",

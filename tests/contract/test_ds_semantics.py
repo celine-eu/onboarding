@@ -25,6 +25,7 @@ from .conftest import (
     CONTRACT_OFFER,
     FIXTURE_IDS,
     IR_URL,
+    NO_CONTRACT_OFFER,
     OWNER_ALIAS,
     OWNER_ID,
     PROBE_SUBJECT,
@@ -100,6 +101,7 @@ def test_the_admin_route_still_does_not_accept_an_alias(auth):
     )
 
 
+@pytest.mark.needs_contract_offer
 def test_a_contract_offer_cannot_be_provisioned_as_consent(auth):
     """The rule Phase 0 enforces at capture, verified at its source.
 
@@ -162,7 +164,24 @@ def test_a_consent_offer_is_still_published_and_consent_based(auth):
         "submission naming it would now be refused at capture"
     )
     assert offers[CONSENT_OFFER]["requires_consent"] is True
-    assert offers[CONTRACT_OFFER]["requires_consent"] is False
+    if not NO_CONTRACT_OFFER:
+        assert offers[CONTRACT_OFFER]["requires_consent"] is False
+
+
+@pytest.mark.declares_no_contract_offer
+def test_a_deployment_declaring_no_contract_offer_publishes_none(auth):
+    """The declaration `DS_CONTRACT_CONTRACT_OFFER=none`, checked rather than trusted.
+
+    It deselects the contract-offer checks, so it must not be able to hide an offer
+    that exists: if the vocabulary publishes one, the deployment has to name it.
+    """
+    r = httpx.get(f"{CONNECTOR_URL}/ns/sharing-offers", timeout=10)
+    assert r.status_code == 200
+    contract = sorted(o["id"] for o in r.json() if o["requires_consent"] is False)
+    assert contract == [], (
+        f"DS_CONTRACT_CONTRACT_OFFER=none, but the connector publishes {contract} — "
+        "name one of them so its checks run"
+    )
 
 
 # ── reading the consent plane ─────────────────────────────────────
@@ -233,6 +252,7 @@ def test_the_audience_read_refuses_the_wildcard_consumer(auth):
     )
 
 
+@pytest.mark.needs_contract_offer
 def test_a_contract_offer_has_no_audience_to_read(auth):
     """Disclosed, not consented — the same rule the write side enforces.
 

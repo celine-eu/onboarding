@@ -42,7 +42,7 @@ community's offers.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/me/data-sharing` | Every offer this member's community publishes, with their decision on it. **Provisions a dataspace identity** for a preregistered member who holds none — see below. `state` says why `has_identity` is false; `identity` carries the DID, role and dates |
+| `GET` | `/api/me/data-sharing` | Every offer this member's community publishes, with their decision on it. **Provisions a dataspace identity** for a preregistered member who holds none — see below. `state` says why `has_identity` is false; `identity` carries the DID, role and dates. Each offer carries `decided_version`/`outdated`, and `presented_version` — the version the onboarding form showed it at, accepted or not, so a caller can tell a decline from an offer never asked |
 | `POST` | `/api/me/data-sharing/{offer_id}` | Grant or withdraw one offer. `409` when the offer is not consent-based, not published by this REC, or the member is in a state with nothing to decide |
 | `GET` | `/api/me/data-sharing/history` | The member's own provenance record. Empty when `DS_PROVENANCE_URL` is unset. **Never provisions** — a member with no identity has no history |
 

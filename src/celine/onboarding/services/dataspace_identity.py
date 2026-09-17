@@ -943,6 +943,107 @@ def _evidence_problems(submission: Submission) -> list[str]:
     return problems
 
 
+async def _offers_controlled_elsewhere(submission: Submission, offer_ids: list[str]) -> set[str]:
+    """The accepted offers whose controller is not the member's own community.
+
+    ds records a standing share from a service only for a subject who belongs to
+    the offer's controller (`POST /consent/admin/shares`, 403 otherwise). A member
+    of a community can accept, in the form, an offer controlled by another
+    organisation — the distributor releasing their readings, the operator training
+    models — and those decisions can only be recorded by the member's own
+    credential. This finds them.
+
+    Compared by DID, because an offer may name its controller by an alias.
+
+    **A lookup that fails leaves the offer on the service path**, which is the
+    safe side: ds refuses there anything it would not grant, and the refusal is
+    reported and retryable. Guessing the member path from a failed lookup is what
+    must not happen.
+    """
+    try:
+        binding = template_service.dataspace_binding(submission.rec_slug)
+    except (KeyError, ValueError):
+        return set()
+    community = binding.organization_did
+    if not community and binding.organization:
+        try:
+            community = await resolve_consumer_did(binding.organization)
+        except Exception as exc:  # noqa: BLE001 — any failure keeps the service path
+            logger.warning(
+                "Could not resolve %s's own organisation (%s); recording every offer as a service",
+                submission.ref,
+                exc,
+            )
+            return set()
+    if not community:
+        return set()
+
+    elsewhere: set[str] = set()
+    for offer_id in offer_ids:
+        try:
+            offer = await template_service.get_sharing_offer(submission.rec_slug, offer_id)
+            controller = str((offer.get("recipients") or {}).get("controller") or "").strip()
+            if controller and await resolve_consumer_did(controller) != community:
+                elsewhere.add(offer_id)
+        except Exception as exc:  # noqa: BLE001 — any failure keeps the service path
+            logger.warning(
+                "Could not tell who controls offer %s for %s (%s); recording it as a service",
+                offer_id,
+                submission.ref,
+                exc,
+            )
+    return elsewhere
+
+
+async def _set_shares_as_member(
+    client: httpx.AsyncClient,
+    connector_url: str,
+    submission: Submission,
+    offer_ids: list[str],
+    *,
+    enabled: bool,
+) -> list[str]:
+    """Record the member's own decisions with the member's own credential.
+
+    The decision is the one the member made in the form; this carries it to the
+    connector through the route a member uses (`POST /consent/my/shares`), which
+    verifies the credential onboarding has just issued. Only offers the member
+    accepted ever reach here, and nothing is decided on their behalf.
+
+    What the route does not carry is the form's evidence — text version, locale,
+    rendered-text hash. It stays on the submission; the connector stamps the
+    offer's own version and hash.
+    """
+    if not offer_ids:
+        return []
+    access = await registry_access()
+    credential = await resolve_subject_credential(access, email=submission.email)
+    if credential is None:
+        return [f"{o}: the member holds no credential to record it with" for o in offer_ids]
+    if credential.subject_id != submission.dataspace_did:
+        return [
+            f"{o}: the member's credential names {credential.subject_id}, "
+            f"not {submission.dataspace_did}"
+            for o in offer_ids
+        ]
+
+    failures: list[str] = []
+    for offer_id in offer_ids:
+        try:
+            resp = await client.post(
+                f"{connector_url}/consent/my/shares",
+                json={"offer_id": offer_id, "enabled": enabled},
+                headers=credential.headers,
+            )
+        except httpx.HTTPError as exc:
+            failures.append(f"{offer_id}: {exc}")
+            continue
+        # On a withdrawal, nothing to withdraw is the state we want.
+        if resp.status_code >= 400 and not (not enabled and resp.status_code == 404):
+            failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
+    return failures
+
+
 async def provision_user_shares(submission: Submission, *, raise_on_error: bool = False) -> bool:
     """Push the subject's standing data-sharing consent to the connector.
 
@@ -950,6 +1051,12 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
     retry endpoint.  Names an ``offer_id`` per recorded offer — never a dataset —
     so the connector expands each into the datasets the offer describes and the
     onboarding config can never drift from what the person read.
+
+    **Two routes, one acceptance.** An offer controlled by the member's own
+    community is recorded here as a service, with the form's evidence. An offer
+    controlled by another organisation cannot be — ds refuses a service that — so
+    it is recorded right after, with the member's own freshly issued credential
+    (:func:`_set_shares_as_member`). The member accepts once, in the form.
 
     ``raise_on_error`` is False on the approval path (a failure must not fail
     approval) and True on explicit retry (the operator wants to see it fail).
@@ -991,9 +1098,20 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
         else None
     )
 
+    as_member = await _offers_controlled_elsewhere(submission, offer_ids)
+
     failures: list[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
+        failures += await _set_shares_as_member(
+            client,
+            connector_url,
+            submission,
+            [o for o in offer_ids if o in as_member],
+            enabled=True,
+        )
         for offer_id in offer_ids:
+            if offer_id in as_member:
+                continue
             legal_basis = {
                 "source": "onboarding",
                 "rec_slug": submission.rec_slug,
@@ -1072,9 +1190,23 @@ async def withdraw_user_shares(
     headers = await _auth_headers()
     detail = reason or f"Membership revoked in {submission.rec_slug}"
 
+    # The mirror of provisioning, route for route: a decision recorded with the
+    # member's credential is withdrawn with it — which is why this runs before the
+    # credential is deleted.
+    as_member = await _offers_controlled_elsewhere(submission, offer_ids)
+
     failures: list[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
+        failures += await _set_shares_as_member(
+            client,
+            connector_url,
+            submission,
+            [o for o in offer_ids if o in as_member],
+            enabled=False,
+        )
         for offer_id in offer_ids:
+            if offer_id in as_member:
+                continue
             try:
                 resp = await client.post(
                     f"{connector_url}/consent/admin/shares",

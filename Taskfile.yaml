@@ -142,7 +142,9 @@ tasks:
         seeded data  DS_CONTRACT_OWNER_ID and DS_CONTRACT_OWNER_ALIAS (which
                      must differ — the id/alias check proves nothing where they
                      are the same), DS_CONTRACT_CONSENT_OFFER,
-                     DS_CONTRACT_CONTRACT_OFFER, DS_CONTRACT_PROBE_SUBJECT
+                     DS_CONTRACT_CONTRACT_OFFER (or `none` for a deployment
+                     that publishes no contract-based offer — checked, not
+                     trusted), DS_CONTRACT_PROBE_SUBJECT
 
       The values belong to whichever deployment is being checked, and stay
       there. Point the suite at one with its own env file:

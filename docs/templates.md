@@ -57,6 +57,7 @@ consent:
   data_sharing:                                     # optional; collected in the statute step
     required: false                                 # GDPR Art. 7(4): NEVER required, never blocks submission
     offers: [household-energy-flexibility]          # optional allow-list; omit to offer every consent-based offer the connector publishes
+    primary: household-energy-flexibility         # optional; the offer the others depend on — shown first, the others inactive until it is accepted, and refused without it
     # No version/file here — the version comes from each offer's consent_text_version served by the connector.
 coverage:
   rules:

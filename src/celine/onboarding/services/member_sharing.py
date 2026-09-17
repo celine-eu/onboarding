@@ -361,7 +361,40 @@ async def _list_decisions(credential: dataspace_identity.SubjectCredential) -> l
     return body if isinstance(body, list) else body.get("items", [])
 
 
-def _merge(offers: list[dict[str, Any]], decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _presented_offers(did: str) -> dict[str, str | None]:
+    """The offers the wizard presented to the member holding ``did``, by id.
+
+    Read from their newest submission carrying that DID. A member reconciled from
+    the community dashboard has none, and gets an empty map: they were never shown
+    anything here. A database failure also answers empty — the web app then asks
+    once more than needed, which is the safe way to be wrong.
+    """
+    from sqlalchemy import select
+
+    from celine.onboarding.models.database import async_session
+    from celine.onboarding.models.submission import Submission
+
+    try:
+        async with async_session() as db:
+            presented = (
+                await db.execute(
+                    select(Submission.data_sharing_offers_presented)
+                    .where(Submission.dataspace_did == did)
+                    .order_by(Submission.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning("Could not read the presented offers for %s", did, exc_info=True)
+        return {}
+    return {str(item.get("id")): item.get("version") for item in presented or [] if item.get("id")}
+
+
+def _merge(
+    offers: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    presented: dict[str, str | None] | None = None,
+) -> list[dict[str, Any]]:
     """One offer per row, with this member's decision on it.
 
     The offer is the published projection — the same facts the person was shown —
@@ -371,10 +404,12 @@ def _merge(offers: list[dict[str, Any]], decisions: list[dict[str, Any]]) -> lis
     standing = {
         d.get("offer_id"): d for d in decisions if d.get("offer_id") and d.get("status") in _GRANTED
     }
+    presented = presented or {}
 
     merged: list[dict[str, Any]] = []
     for offer in offers:
         decision = standing.get(offer.get("id"))
+        decided_version = ((decision or {}).get("legal_basis") or {}).get("consent_text_version")
         merged.append(
             {
                 **offer,
@@ -387,6 +422,17 @@ def _merge(offers: list[dict[str, Any]], decisions: list[dict[str, Any]]) -> lis
                 # decision was made, never anything about the person.
                 "evidence": (decision or {}).get("legal_basis"),
                 "decided_at": (decision or {}).get("decided_at"),
+                # The offer version the standing consent was given under, and
+                # whether the offer has changed since. ds keeps granting a consent
+                # after its offer's version moves and never asks again, so this is
+                # where the change becomes visible — the web app asks for review.
+                "decided_version": decided_version,
+                "outdated": decided_version is not None
+                and decided_version != offer.get("consent_text_version"),
+                # The version the onboarding form showed this offer at, whether or
+                # not it was accepted; `None` if the form never showed it. With it
+                # the web app tells a decline apart from an offer never asked.
+                "presented_version": presented.get(str(offer.get("id"))),
             }
         )
     return merged
@@ -438,7 +484,11 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
 
     return SharingView(
         state=state,
-        offers=_merge(offers, await _list_decisions(credential)),
+        offers=_merge(
+            offers,
+            await _list_decisions(credential),
+            await _presented_offers(credential.subject_id),
+        ),
         identity=_identity_of(credential),
     )
 

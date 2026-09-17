@@ -26,6 +26,7 @@ _OriginalAsyncClient = httpx.AsyncClient
 OFFER_CONSENT = {
     "id": "household-energy-flexibility",
     "requires_consent": True,
+    "consent_text_version": "1.0",
     "controller": "rec-example",
 }
 OFFER_CONTRACT = {
@@ -110,6 +111,16 @@ def _member(
         claims=claims,
         organizations=organizations,
     )
+
+
+@pytest.fixture(autouse=True)
+def _nothing_presented(monkeypatch):
+    """No submission to read the presented offers from, unless a test says so."""
+
+    async def none(did):
+        return {}
+
+    monkeypatch.setattr(ms, "_presented_offers", none)
 
 
 @pytest.fixture()
@@ -394,6 +405,66 @@ class TestTheMerge:
         assert granted["granted"] is True
         assert granted["decided_at"] == "2026-09-01T10:00:00Z"
         assert granted["evidence"] == {"consent_text_version": "v3"}
+
+    @pytest.mark.parametrize(
+        ("decided_under", "outdated"),
+        [("current", False), ("older", True)],
+    )
+    async def test_a_consent_given_under_an_older_version_is_outdated(
+        self, monkeypatch, bind_rec, _dataspace, decided_under, outdated
+    ):
+        """ds keeps granting after an offer's version moves; this is where it shows."""
+        current = OFFER_CONSENT["consent_text_version"]
+        version = current if decided_under == "current" else f"{current}-old"
+        _patch_httpx(
+            monkeypatch,
+            _handler(
+                shares=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "offer_id": OFFER_CONSENT["id"],
+                            "status": "granted",
+                            "legal_basis": {"consent_text_version": version},
+                        }
+                    ],
+                )
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+        offer = next(o for o in view.offers if o["id"] == OFFER_CONSENT["id"])
+
+        assert offer["decided_version"] == version
+        assert offer["outdated"] is outdated
+
+    async def test_an_offer_nobody_decided_is_not_outdated(self, monkeypatch, bind_rec, _dataspace):
+        _patch_httpx(monkeypatch, _handler())
+
+        view = await ms.get_data_sharing(_member())
+
+        assert all(o["outdated"] is False and o["decided_version"] is None for o in view.offers)
+
+    async def test_the_version_the_form_presented_is_carried_per_offer(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        """A decline in the form leaves no decision; this is what says it was asked."""
+        seen: list[str] = []
+
+        async def presented(did):
+            seen.append(did)
+            return {OFFER_CONSENT["id"]: "1.0"}
+
+        monkeypatch.setattr(ms, "_presented_offers", presented)
+        _patch_httpx(monkeypatch, _handler())
+
+        view = await ms.get_data_sharing(_member())
+        by_id = {o["id"]: o for o in view.offers}
+
+        assert seen == [RESOLVE_WITH_CREDENTIAL["did"]]
+        assert by_id[OFFER_CONSENT["id"]]["presented_version"] == "1.0"
+        assert by_id[OFFER_CONSENT["id"]]["granted"] is False
+        assert by_id[OFFER_CONTRACT["id"]]["presented_version"] is None
 
     async def test_a_revoked_decision_is_not_granted(self, monkeypatch, bind_rec, _dataspace):
         _patch_httpx(

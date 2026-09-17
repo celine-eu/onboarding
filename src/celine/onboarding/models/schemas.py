@@ -19,6 +19,13 @@ class ConsentCreate(BaseModel):
     statute_consent_version: str = Field(max_length=20)
 
 
+class PresentedOffer(BaseModel):
+    """One offer as the wizard showed it: which, and at which version."""
+
+    id: str = Field(max_length=200)
+    version: str | None = Field(None, max_length=50)
+
+
 class SubmissionUpdate(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
@@ -43,6 +50,8 @@ class SubmissionUpdate(BaseModel):
     data_sharing_consent_text_version: str | None = Field(None, max_length=200)
     data_sharing_consent_locale: str | None = Field(None, max_length=20)
     data_sharing_consent_text_sha256: str | None = Field(None, max_length=64)
+    # The consent-based offers the step showed, accepted or not.
+    data_sharing_offers_presented: list[PresentedOffer] | None = Field(None, max_length=50)
     keep_me_updated: bool | None = None
     # The language the person is using the wizard in, sent with every update so
     # the stored value is the last one they chose. Approval hands it to the
@@ -141,6 +150,7 @@ class SubmissionRead(BaseModel):
     data_sharing_consent_text_version: str | None
     data_sharing_consent_locale: str | None
     data_sharing_consent_text_sha256: str | None
+    data_sharing_offers_presented: list[PresentedOffer] | None = None
     share_provisioned: bool
     keep_me_updated: bool
     phone_verified: bool

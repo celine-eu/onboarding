@@ -53,6 +53,12 @@ OWNER_ID = _env("DS_CONTRACT_OWNER_ID")
 OWNER_ALIAS = _env("DS_CONTRACT_OWNER_ALIAS")
 CONSENT_OFFER = _env("DS_CONTRACT_CONSENT_OFFER")
 CONTRACT_OFFER = _env("DS_CONTRACT_CONTRACT_OFFER")
+#: A deployment may publish **no** contract-based offer, and says so with the
+#: literal `none` — distinct from unset, which still skips as unconfigured. The
+#: checks that need such an offer are then *deselected*, not skipped, and
+#: `test_a_deployment_declaring_no_contract_offer_publishes_none` checks the claim
+#: itself, so the declaration cannot hide an offer that is really there.
+NO_CONTRACT_OFFER = CONTRACT_OFFER == "none"
 #: A subject DID under the deployment's own participant, used only in requests
 #: that must be refused before anything is created.
 PROBE_SUBJECT = _env("DS_CONTRACT_PROBE_SUBJECT")
@@ -76,6 +82,34 @@ FIXTURE_IDS = {
 }
 
 BASES = {"ir": IR_URL, "connector": CONNECTOR_URL, "provenance": PROVENANCE_URL}
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "needs_contract_offer: needs the deployment to publish a contract-based offer",
+    )
+    config.addinivalue_line(
+        "markers",
+        "declares_no_contract_offer: runs only where DS_CONTRACT_CONTRACT_OFFER=none",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Deselect whichever contract-offer checks do not apply to this deployment.
+
+    Deselected rather than skipped because a skip means "could not check" and a
+    deployment with no contract offer is a checked fact, asserted by its own test.
+    The count still shows in pytest's summary line.
+    """
+    # Exactly one of the two sets applies to a deployment, so neither ever skips.
+    unwanted = "needs_contract_offer" if NO_CONTRACT_OFFER else "declares_no_contract_offer"
+    kept, dropped = [], []
+    for item in items:
+        (dropped if item.get_closest_marker(unwanted) else kept).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept
 
 
 def skip_unconfigured(
