@@ -39,17 +39,45 @@ cleanup() {
 trap cleanup EXIT
 
 # --- database -----------------------------------------------------------------
-if ! pg_isready -h localhost -p "$E2E_PG_PORT" -q 2>/dev/null; then
+#
+# **No host Postgres binaries.** This called `pg_isready` and `psql` directly,
+# which made the whole suite unrunnable on a machine that has Docker but not
+# postgresql-client — and it failed badly rather than clearly: the readiness loop
+# printed `pg_isready: command not found` forty times and fell through to `psql:
+# command not found`, because the `||` guards swallow what `set -e` would
+# otherwise catch. This script already starts a Postgres *container*; needing the
+# client on the host as well was an avoidable second dependency.
+#
+# `psql_q` prefers a host `psql` where there is one — it is faster, and it is
+# what somebody with the tools installed expects — and otherwise borrows the one
+# inside the image already being pulled. `--network host` is what lets that reach
+# both the throwaway container's published port and an external server named
+# through `E2E_PG_PORT`.
+psql_q() {
+  if command -v psql >/dev/null 2>&1; then
+    PGPASSWORD=securepassword123 psql -h localhost -p "$E2E_PG_PORT" -U postgres -q "$@"
+  else
+    docker run --rm --network host -e PGPASSWORD=securepassword123 postgres:16 \
+      psql -h 127.0.0.1 -p "$E2E_PG_PORT" -U postgres -q "$@"
+  fi
+}
+
+# Readiness is "it answers a query", not "the port is open". Postgres accepts a
+# connection for a moment before it will serve one, and that difference is a
+# flake in the place hardest to read it from.
+pg_ready() { psql_q -c 'SELECT 1' >/dev/null 2>&1; }
+
+if ! pg_ready; then
   echo "==> starting throwaway Postgres on :$E2E_PG_PORT"
   docker run -d --rm --name onb-e2e-pg -e POSTGRES_PASSWORD=securepassword123 \
     -e POSTGRES_DB=postgres -p "$E2E_PG_PORT:5432" postgres:16 >/dev/null
   STARTED_PG=1
-  for _ in $(seq 1 40); do pg_isready -h localhost -p "$E2E_PG_PORT" -q && break; sleep 1; done
+  for _ in $(seq 1 40); do pg_ready && break; sleep 1; done
+  # Say so here rather than letting the next command fail on a missing database.
+  pg_ready || { echo "Postgres on :$E2E_PG_PORT never answered a query" >&2; exit 1; }
 fi
-PGPASSWORD=securepassword123 psql -h localhost -p "$E2E_PG_PORT" -U postgres -q \
-  -c "SELECT 1 FROM pg_database WHERE datname='${E2E_DB}'" | grep -q 1 || \
-  PGPASSWORD=securepassword123 psql -h localhost -p "$E2E_PG_PORT" -U postgres -q \
-    -c "CREATE DATABASE ${E2E_DB}"
+psql_q -c "SELECT 1 FROM pg_database WHERE datname='${E2E_DB}'" | grep -q 1 || \
+  psql_q -c "CREATE DATABASE ${E2E_DB}"
 
 # --- python suite -------------------------------------------------------------
 # It boots and tears down its own API, so it needs nothing else running.
