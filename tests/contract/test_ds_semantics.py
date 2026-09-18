@@ -12,7 +12,10 @@ A third kind joined them: **who may call a route at all**. ds decides that from
 the class of the caller's token, and no schema says so — a consent is registered
 by an organisation's own client, and the plain service client this suite
 authenticates as is refused. Those checks are written so that a grant quietly
-reappearing on the service client fails here rather than passing everywhere.
+reappearing on the service client fails here rather than passing everywhere —
+**and both halves are asserted**, because "the service client is refused" goes on
+passing on a ds that refuses everybody, and the step that writes a member's
+consent is non-fatal, so nothing else would say so.
 
 So these call ds and assert behaviour. They are read-only or deliberately
 invalid: nothing here creates a participant, issues a credential or records a
@@ -20,6 +23,9 @@ disclosure, because a check that mutates a shared dev stack gets switched off.
 """
 
 from __future__ import annotations
+
+import base64
+import json
 
 import httpx
 import pytest
@@ -164,6 +170,112 @@ def test_the_collectors_read_back_exists_and_is_not_a_service_route(auth):
     assert r.status_code == 403, (
         f"expected 403 for the plain service client {CLIENT_ID}, got "
         f"{r.status_code}: {r.text[:200]}"
+    )
+
+
+def test_the_organisation_client_carries_its_participant_as_its_subject(org_token):
+    """The invisible link the whole registration path hangs from.
+
+    ds classifies a caller as an *organisation* by the client id prefix, and then
+    takes the participant it speaks for from that token's `sub` — a hardcoded
+    claim on the client, not anything Keycloak produces by itself. That value
+    becomes the `collector` on every consent row this service writes, so if the
+    mapper is ever dropped the token still authenticates, still carries the
+    scopes, and every registration is refused or attributed to nobody.
+
+    Decoded without verifying: the connector verifies it on every call below, and
+    what is checked here is the *shape of the claim*, not the signature.
+    """
+    payload = org_token.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+    assert str(claims.get("azp", "")).startswith("svc-ds-connector-"), (
+        f"ds recognises an organisation by the client id prefix "
+        f"`svc-ds-connector-`; this token's azp is {claims.get('azp')!r}, so ds "
+        f"would classify it as a plain service and refuse every registration"
+    )
+    assert str(claims.get("sub", "")).startswith("did:"), (
+        f"the organisation client's `sub` must be its participant DID — it is "
+        f"what ds records as the collector — and this one is {claims.get('sub')!r}"
+    )
+
+
+def test_an_organisation_must_say_whose_decision_it_is(org_auth):
+    """`decided_by`, and it is not a field with a default.
+
+    A community registering on a member's behalf is relaying **their** decision
+    (`subject`); withdrawing a consent because it revoked the membership is
+    **its own** (`collector`). ds refuses to guess, and this service maps the two
+    cases deliberately. A default appearing on either side would silently
+    attribute one to the other, which is the kind of change nothing else notices.
+
+    The offer is nonsense, so this is refused whichever rule bites first — and
+    what is asserted is that *this* one bites before the offer is looked up.
+    """
+    r = httpx.post(
+        f"{CONNECTOR_URL}/consent/admin/shares",
+        headers=org_auth,
+        timeout=10,
+        json={
+            "subject_id": PROBE_SUBJECT,
+            "offer_id": "no-such-offer-contract-check",
+            "enabled": True,
+            "legal_basis": {
+                "source": "onboarding-contract-check",
+                "consent_text_version": "0",
+                "rendered_text_sha256": "0" * 64,
+            },
+        },
+    )
+    assert r.status_code == 422, (
+        f"expected 422 for an organisation registration with no `decided_by`, "
+        f"got {r.status_code}: {r.text[:200]}"
+    )
+    assert "decided_by" in r.text, (
+        f"the refusal no longer names `decided_by`: {r.text[:200]}. Either ds "
+        f"now defaults it — in which case a relayed decision and the community's "
+        f"own become indistinguishable — or the field was renamed."
+    )
+
+
+def test_the_organisation_client_is_the_caller_that_may_register_a_consent(org_auth):
+    """The other half of `test_a_service_token_may_not_register_a_consent`.
+
+    That one proves the plain service client is refused; on its own it would go
+    on passing if ds refused *everybody*, and the first anybody would hear of it
+    is a member whose consent reached no connector — a non-fatal enablement step
+    that fails quietly by design. So this asserts the positive: the community's
+    own organisation client gets **past** the caller-class check.
+
+    Nothing is created. The offer does not exist, so the furthest this can reach
+    is the offer lookup — and reaching the offer lookup at all is the proof,
+    because that is on the far side of the refusal the service client gets.
+    """
+    r = httpx.post(
+        f"{CONNECTOR_URL}/consent/admin/shares",
+        headers=org_auth,
+        timeout=10,
+        json={
+            "subject_id": PROBE_SUBJECT,
+            "offer_id": "no-such-offer-contract-check",
+            "enabled": True,
+            "decided_by": "subject",
+            "legal_basis": {
+                "source": "onboarding-contract-check",
+                "consent_text_version": "0",
+                "rendered_text_sha256": "0" * 64,
+            },
+        },
+    )
+    assert r.status_code not in (401, 403), (
+        f"the organisation client was refused at the door ({r.status_code}): "
+        f"{r.text[:200]}. Every consent this service records is written with "
+        f"this client; refused here, no member's sharing decision reaches any "
+        f"connector — and the enablement step that writes it is non-fatal, so "
+        f"approval still succeeds and nobody is told."
+    )
+    assert r.status_code == 422 and "offer" in r.text.lower(), (
+        f"expected the unknown offer to be what refuses this, got {r.status_code}: {r.text[:200]}"
     )
 
 

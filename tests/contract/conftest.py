@@ -63,6 +63,16 @@ NO_CONTRACT_OFFER = CONTRACT_OFFER == "none"
 #: that must be refused before anything is created.
 PROBE_SUBJECT = _env("DS_CONTRACT_PROBE_SUBJECT")
 
+#: The community's **organisation** client — `svc-ds-connector-<alias>` — which
+#: is the caller ds requires for a consent registration now that it has withdrawn
+#: the plain-service path. Deliberately separate from `DS_CONTRACT_CLIENT_*`:
+#: those name the service client this checkout authenticates as everywhere else,
+#: and the point of the checks that use this one is that the two are *not*
+#: interchangeable. Supplied by the deployment, absent by default, and its own
+#: skip group so a deployment that has not configured it still runs the rest.
+ORG_CLIENT_ID = _env("DS_CONTRACT_ORG_CLIENT_ID")
+ORG_CLIENT_SECRET = _env("DS_CONTRACT_ORG_CLIENT_SECRET")
+
 ADDRESSES = {
     "DS_CONTRACT_IR_URL": IR_URL,
     "DS_CONTRACT_CONNECTOR_URL": CONNECTOR_URL,
@@ -72,6 +82,11 @@ CREDENTIALS = {
     "DS_CONTRACT_TOKEN_URL": TOKEN_URL,
     "DS_CONTRACT_CLIENT_ID": CLIENT_ID,
     "DS_CONTRACT_CLIENT_SECRET": CLIENT_SECRET,
+}
+ORGANISATION_CREDENTIALS = {
+    "DS_CONTRACT_TOKEN_URL": TOKEN_URL,
+    "DS_CONTRACT_ORG_CLIENT_ID": ORG_CLIENT_ID,
+    "DS_CONTRACT_ORG_CLIENT_SECRET": ORG_CLIENT_SECRET,
 }
 FIXTURE_IDS = {
     "DS_CONTRACT_OWNER_ID": OWNER_ID,
@@ -193,3 +208,35 @@ def token() -> str:
 @pytest.fixture(scope="session")
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="session")
+def org_token() -> str:
+    """An access token for the community's own organisation client.
+
+    Not `allow_module_level`, unlike the service client's: this credential is
+    needed by three checks and by nothing else, so a deployment that has not
+    configured it should lose those three and keep the rest — where a missing
+    service client means the whole half could not run.
+    """
+    skip_unconfigured(ORGANISATION_CREDENTIALS, "the organisation client that registers consent")
+
+    try:
+        resp = httpx.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": ORG_CLIENT_ID,
+                "client_secret": ORG_CLIENT_SECRET,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(_unreachable("the ds token endpoint", TOKEN_URL, exc))
+
+
+@pytest.fixture(scope="session")
+def org_auth(org_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {org_token}"}
