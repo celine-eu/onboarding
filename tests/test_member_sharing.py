@@ -1096,6 +1096,39 @@ class TestTheRoutes:
         assert {o["id"] for o in body["offers"]} == {OFFER_CONSENT["id"], OFFER_CONTRACT["id"]}
         assert VC not in resp.text
 
+    def test_the_communitys_wording_reaches_both_surfaces(
+        self, client, issue_token, monkeypatch, bind_rec, _dataspace
+    ):
+        """`consent.data_sharing.texts` is on the offer wherever the offer is shown.
+
+        The wizard reads `/api/{rec}/sharing-offers`; the web app forwards
+        `/api/me/data-sharing`. A member deciding later must read the words a
+        member deciding in the form read.
+        """
+        text = {
+            "version": OFFER_CONSENT["consent_text_version"],
+            "en": {"title": "Share with the community", "body": "Plain words."},
+        }
+        template_service._cache["default"]["consent"]["data_sharing"]["texts"] = {
+            OFFER_CONSENT["id"]: text
+        }
+        _patch_httpx(monkeypatch, _handler())
+        token = issue_token(
+            sub="member-sub",
+            email="member@example.org",
+            organization={"rec-example": {"id": "org-uuid", "groups": []}},
+        )
+
+        member = client.get(
+            "/api/me/data-sharing", headers={"Authorization": f"Bearer {token}"}
+        ).json()
+        wizard = client.get("/api/default/sharing-offers").json()
+
+        for offers in (member["offers"], wizard):
+            by_id = {o["id"]: o for o in offers}
+            assert by_id[OFFER_CONSENT["id"]]["text"] == text
+            assert "text" not in by_id[OFFER_CONTRACT["id"]]
+
     def test_the_state_reaches_the_caller(
         self, client, issue_token, monkeypatch, bind_rec, _dataspace
     ):

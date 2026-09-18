@@ -134,3 +134,87 @@ async def test_an_unreadable_vocabulary_fails_closed(monkeypatch):
 
     with pytest.raises(ts.SharingOffersUnavailableError):
         await ts.get_sharing_offer("rec", "consent-a")
+
+
+# ── the community's own wording (`consent.data_sharing.texts`) ────
+
+
+_VERSIONED = [
+    {"id": "consent-a", "requires_consent": True, "consent_text_version": "1.0"},
+    {"id": "consent-b", "requires_consent": True, "consent_text_version": "1.0"},
+]
+
+_TEXT_A = {
+    "version": "1.0",
+    "it": {"title": "Titolo A", "body": "Testo A"},
+    "en": {"title": "Title A", "body": "Text A"},
+}
+
+
+def _with_texts(monkeypatch, texts):
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
+    monkeypatch.setattr(
+        ts, "load_manifest", lambda slug: {"consent": {"data_sharing": {"texts": texts}}}
+    )
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=_VERSIONED))
+
+
+async def test_text_is_attached_when_its_version_matches(monkeypatch):
+    _with_texts(monkeypatch, {"consent-a": _TEXT_A})
+
+    offers = {o["id"]: o for o in await ts.get_sharing_offers("rec")}
+
+    assert offers["consent-a"]["text"] == _TEXT_A
+    # An offer the community wrote nothing for keeps the connector's fallback only.
+    assert "text" not in offers["consent-b"]
+
+
+async def test_text_for_another_version_is_not_shown(monkeypatch, caplog):
+    """Wording written for another version describes a different offer.
+
+    Showing it would put words in front of the member that the published offer
+    no longer matches; the generic fallback is the lesser harm, and the operator
+    is told.
+    """
+    _with_texts(monkeypatch, {"consent-a": {**_TEXT_A, "version": "0.9"}})
+
+    with caplog.at_level("ERROR"):
+        offers = {o["id"]: o for o in await ts.get_sharing_offers("rec")}
+
+    assert "text" not in offers["consent-a"]
+    assert "consent-a" in caplog.text and "0.9" in caplog.text
+
+
+async def test_attaching_a_text_does_not_touch_the_manifest(monkeypatch):
+    """The manifest is a cached row shared by every request; never mutate it."""
+    texts = {"consent-a": _TEXT_A}
+    _with_texts(monkeypatch, texts)
+
+    offers = await ts.get_sharing_offers("rec")
+    offers[0]["text"]["it"]["title"] = "changed"
+
+    assert texts["consent-a"]["it"]["title"] == "Titolo A"
+
+
+def test_a_valid_texts_block_passes():
+    ts.validate_data_sharing_texts({"consent-a": _TEXT_A}, where="m")
+    ts.validate_data_sharing_texts(None, where="m")
+
+
+@pytest.mark.parametrize(
+    ("block", "reason"),
+    [
+        (["consent-a"], "mapping"),
+        ({"consent-a": "text"}, "mapping"),
+        ({"consent-a": {"it": {"title": "t", "body": "b"}}}, "version"),
+        ({"consent-a": {"version": 1.0, "it": {"title": "t", "body": "b"}}}, "version"),
+        ({"consent-a": {"version": "1.0"}}, "no locale"),
+        ({"consent-a": {"version": "1.0", "ita": {"title": "t", "body": "b"}}}, "locale"),
+        ({"consent-a": {"version": "1.0", "it": {"title": "t"}}}, "body"),
+        ({"consent-a": {"version": "1.0", "it": {"title": " ", "body": "b"}}}, "title"),
+        ({"consent-a": {"version": "1.0", "it": {"title": "t", "body": "b", "x": 1}}}, "x"),
+    ],
+)
+def test_a_malformed_texts_block_is_refused(block, reason):
+    with pytest.raises(ValueError, match=reason):
+        ts.validate_data_sharing_texts(block, where="m")

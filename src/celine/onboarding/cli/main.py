@@ -79,6 +79,7 @@ def import_templates(
         # and a typo should fail where an operator is already looking — not the
         # first time a REC manager approves somebody.
         from celine.onboarding.services.template_service import (
+            validate_data_sharing_texts,
             validate_dataspace_block,
             validate_organization,
             validate_rec_registry_block,
@@ -88,6 +89,10 @@ def import_templates(
             validate_organization(manifest, where=str(manifest_path))
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
             validate_rec_registry_block(manifest.get("rec_registry"), where=str(manifest_path))
+            validate_data_sharing_texts(
+                ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
+                where=str(manifest_path),
+            )
         except ValueError as exc:
             typer.echo(f"  {exc}", err=True)
             raise typer.Exit(1) from exc

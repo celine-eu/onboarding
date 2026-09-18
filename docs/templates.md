@@ -59,6 +59,11 @@ consent:
     offers: [household-energy-flexibility]          # optional allow-list; omit to offer every consent-based offer the connector publishes
     primary: household-energy-flexibility         # optional; the offer the others depend on — shown first, the others inactive until it is accepted, and refused without it
     # No version/file here — the version comes from each offer's consent_text_version served by the connector.
+    texts:                                          # optional; this community's own wording, per offer and locale (docs/data-sharing.md)
+      household-energy-flexibility:
+        version: "1.0"                              # must equal the offer's consent_text_version, or the text is not shown
+        it: { title: "...", body: "..." }
+        en: { title: "...", body: "..." }
 coverage:
   rules:
     - type: municipality

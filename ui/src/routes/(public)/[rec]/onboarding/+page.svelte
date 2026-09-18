@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t, locale, isSupported } from '$lib/i18n';
-	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi, type SharingOffer } from '$lib/api/client';
+	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi, type SharingOffer, type OfferWording } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -173,10 +173,25 @@
 		return facts;
 	}
 
+	/** The community's wording for an offer: the visitor's locale, then the
+	 *  community's, then the first one written. `null` → the connector's fallback. */
+	function offerWording(offer: SharingOffer): OfferWording | null {
+		const text = offer.text;
+		if (!text) return null;
+		const pick = (key: string | undefined) => {
+			const value = key && key !== 'version' ? text[key] : undefined;
+			return value && typeof value === 'object' ? value : null;
+		};
+		const first = Object.keys(text).find((k) => k !== 'version');
+		return pick($locale) ?? pick(config?.locale) ?? pick(first);
+	}
+
 	/** The exact text shown for an accepted offer, hashed for the audit trail. */
 	function offerRenderedText(offer: SharingOffer): string {
 		const fb = offer.fallback_text_en;
+		const wording = offerWording(offer);
 		return [
+			...(wording ? [`title=${wording.title}`, `body=${wording.body}`] : []),
 			`purpose=${offer.purpose}`,
 			`label=${fb.purpose_label}`,
 			`definition=${fb.purpose_definition}`,
@@ -1119,12 +1134,14 @@
 							{#each orderedSharingOffers as offer (offer.id)}
 								<div class="offer-card" class:offer-primary={offer.id === primaryOfferId}>
 									<div class="offer-head">
-										<span class="offer-label">{offer.fallback_text_en.purpose_label}</span>
+										<span class="offer-label">{offerWording(offer)?.title ?? offer.fallback_text_en.purpose_label}</span>
 										{#if !offer.requires_consent}
 											<span class="offer-badge">{$t('onboarding.data_sharing_disclosed')}</span>
 										{/if}
 									</div>
-									{#if offer.fallback_text_en.purpose_definition}
+									{#if offerWording(offer)}
+										<p class="offer-def offer-body">{offerWording(offer)?.body}</p>
+									{:else if offer.fallback_text_en.purpose_definition}
 										<p class="offer-def">{offer.fallback_text_en.purpose_definition}</p>
 									{/if}
 									<ul class="offer-facts">
@@ -1405,6 +1422,12 @@
 		font-size: 0.875rem;
 		color: var(--celine-text-secondary);
 		margin: 0;
+	}
+
+	/* A community's wording is written in paragraphs; keep its line breaks. */
+	.offer-body {
+		white-space: pre-line;
+		color: var(--celine-text);
 	}
 
 	.offer-facts {

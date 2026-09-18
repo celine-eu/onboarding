@@ -31,6 +31,7 @@ async def _validate_dataspace_config() -> None:
         load_manifest,
         organization_for,
         rec_registry_binding,
+        validate_data_sharing_texts,
         validate_organization,
     )
 
@@ -42,6 +43,10 @@ async def _validate_dataspace_config() -> None:
         validate_organization(manifest, where=f"REC {slug!r}")
         binding = dataspace_binding(slug)  # raises on a malformed block
         registry = rec_registry_binding(slug)  # raises on a malformed block
+        validate_data_sharing_texts(
+            ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
+            where=f"REC {slug!r}",
+        )
 
         if not organization_for(slug):
             # Not fatal: a single-community deployment can be run entirely by

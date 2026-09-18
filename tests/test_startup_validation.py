@@ -560,3 +560,16 @@ def test_an_unset_realm_with_no_issuer_realm_refuses_to_start(
 
     with pytest.raises(RuntimeError, match="DATASPACE_KEYCLOAK_REALM is required"):
         app_main._validate_provisioning_config()
+
+
+async def test_malformed_sharing_texts_refuse_to_start(seed_rec, monkeypatch):
+    """Same gate as the organisation: a manifest imported by an older build is re-checked."""
+    seed_rec(
+        "rec-a",
+        organization="community-a",
+        consent={"data_sharing": {"texts": {"offer-a": {"it": {"title": "t", "body": "b"}}}}},
+    )
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with pytest.raises(ValueError, match="version"):
+        await app_main._validate_dataspace_config()

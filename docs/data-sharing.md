@@ -209,6 +209,43 @@ uninformed consent.
   (`data_sharing_consent_text_sha256`) alongside the accepted offer ids, text
   version, locale, and timestamp on the submission.
 
+#### The community's own wording — `consent.data_sharing.texts`
+
+The connector serves codes and an English fallback, never prose. A community whose
+consent must name its parties in its members' language adds its own text per offer:
+
+```yaml
+consent:
+  data_sharing:
+    texts:
+      <offer-id>:
+        version: "1.0"          # the offer's consent_text_version this text was written for
+        it: { title: "…", body: "…" }
+        en: { title: "…", body: "…" }
+```
+
+- **Validated at import and at startup.** `import-templates` and the API's boot
+  check refuse a `texts` block that is not a mapping of offer ids, an entry without a string `version`, an entry with no
+  locale, a key that is neither `version` nor a two-letter locale code, or a
+  locale without a non-empty `title` and `body`.
+- **Tied to the offer's version.** `get_sharing_offers` attaches the entry to an
+  offer as `text` only when `version` equals the offer's `consent_text_version`.
+  A text written for another version is **not shown** and is logged as an error:
+  wording that describes a different offer is worse than the generic fallback.
+  Changing the words therefore means raising the offer's version in the
+  connector's offer file and the text's `version` together.
+- **Shown wherever the offer is.** The wizard (`GET /api/{rec}/sharing-offers`)
+  and the member's view (`GET /api/me/data-sharing`, forwarded by the web app)
+  both carry `text`. A frontend shows `title` and `body` for the member's locale,
+  then the community's `locale`, then the first one given; with no `text` it
+  falls back to the connector's label and definition. The offer's facts
+  (measures, resolution, coverage, retention, recipients) are still rendered from
+  the codes.
+- **Part of the evidence.** The wizard's hashed rendering includes the title and
+  body it showed, so `data_sharing_consent_text_sha256` changes with the words.
+- The text is not checked against the codes. Keeping the two consistent is the
+  deployment's job, beside its offer file.
+
 **Optional by design (GDPR Art. 7(4)).** Data-sharing consent is *never*
 required and never blocks submission: REC membership must not be conditioned on
 dataspace sharing, so `can_submit()` does not list it and a participant can

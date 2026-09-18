@@ -1,3 +1,4 @@
+import copy
 import logging
 import re
 import time
@@ -463,8 +464,71 @@ async def get_sharing_offers(rec_slug: str) -> list[dict[str, Any]]:
             # failure read as the member declining. That is now checked at capture
             # by `submission_service._validate_sharing_offer_ids`.
             continue
-        result.append(offer)
+        text = _text_for(rec_slug, offer, data_sharing.get("texts") or {})
+        result.append({**offer, "text": text} if text else offer)
     return result
+
+
+_LOCALE_KEY = re.compile(r"^[a-z]{2}$")
+
+
+def validate_data_sharing_texts(block: Any, *, where: str) -> None:
+    """Refuse a malformed ``consent.data_sharing.texts`` block.
+
+    ``{offer_id: {version: str, <locale>: {title: str, body: str}}}``. The words
+    are shown to a person as what they consent to, so a half-written entry is
+    refused where an operator is looking rather than rendered as a blank card.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: consent.data_sharing.texts must be a mapping of offer ids")
+    for offer_id, entry in block.items():
+        at = f"{where}: consent.data_sharing.texts.{offer_id}"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{at} must be a mapping")
+        version = entry.get("version")
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError(f"{at} needs a string 'version' (the offer's consent_text_version)")
+        locales = {k: v for k, v in entry.items() if k != "version"}
+        if not locales:
+            raise ValueError(f"{at} has no locale")
+        for locale, text in locales.items():
+            if not _LOCALE_KEY.match(str(locale)):
+                raise ValueError(f"{at}: {locale!r} is not a two-letter locale code")
+            if not isinstance(text, dict):
+                raise ValueError(f"{at}.{locale} must be a mapping with 'title' and 'body'")
+            extra = set(text) - {"title", "body"}
+            if extra:
+                raise ValueError(f"{at}.{locale}: unknown key(s) {', '.join(sorted(extra))}")
+            for key in ("title", "body"):
+                value = text.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{at}.{locale} needs a non-empty '{key}'")
+
+
+def _text_for(rec_slug: str, offer: dict[str, Any], texts: dict[str, Any]) -> dict[str, Any] | None:
+    """The community's wording for *offer*, if it was written for this version.
+
+    A text for another version describes a different offer: showing it would put
+    words in front of a member that the published offer no longer matches, so the
+    generic fallback is shown instead and the operator is told.
+    """
+    entry = texts.get(offer.get("id"))
+    if not entry:
+        return None
+    if entry.get("version") != offer.get("consent_text_version"):
+        logger.error(
+            "REC %r: the text for offer %r was written for version %r but the "
+            "connector publishes %r; the text is not shown until both agree",
+            rec_slug,
+            offer.get("id"),
+            entry.get("version"),
+            offer.get("consent_text_version"),
+        )
+        return None
+    # A copy: the manifest is a cached row shared by every request.
+    return copy.deepcopy(entry)
 
 
 async def get_sharing_offer(rec_slug: str, offer_id: str) -> dict[str, Any]:

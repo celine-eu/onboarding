@@ -132,6 +132,18 @@ export interface SiteConfig {
 	features?: { document_upload: boolean; document_scan: boolean; phone_verification?: boolean };
 }
 
+/** A community's own wording for one offer (`consent.data_sharing.texts`),
+ *  attached only when written for the offer's current version. */
+export interface OfferWording {
+	title: string;
+	body: string;
+}
+
+export interface OfferText {
+	version: string;
+	[locale: string]: string | OfferWording;
+}
+
 export interface SharingOffer {
 	id: string;
 	purpose: string;
@@ -157,6 +169,7 @@ export interface SharingOffer {
 		purpose_definition: string;
 		processor_category: string;
 	};
+	text?: OfferText;
 }
 
 export interface RecSummary {
