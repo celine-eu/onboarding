@@ -25,6 +25,12 @@ Three things worth knowing before changing this:
 * **Never put a credential in a response**, and never cache one across requests.
   :class:`~celine.onboarding.services.dataspace_identity.SubjectCredential`
   redacts its own repr for the same reason.
+* **The decisions are not all in one place.** A consent is recorded at the
+  connector that *serves* the data, so a community that shares its own data holds
+  its members' decisions and a grid operator holds the decision to release their
+  readings. The read merges both and the write routes each; which connector a
+  member's toggle reaches is configuration (`dataspace.connectors` in the REC's
+  manifest), never something inferred from the offer.
 * **Only consent-based offers get a control.** A contract-based offer is
   disclosed, not toggled: presenting a choice that does not exist is what
   invalidates consent. Refused here rather than left to the connector's 409, so
@@ -49,6 +55,7 @@ from celine.sdk.auth import JwtUser
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.services import dataspace_identity, rec_registry, template_service
+from celine.onboarding.services.errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -342,8 +349,24 @@ async def _resolve(
     return SharingState.OK, rec_slug, credential
 
 
-async def _list_decisions(credential: dataspace_identity.SubjectCredential) -> list[dict[str, Any]]:
-    """The member's current decisions, as themselves."""
+async def _list_decisions(
+    credential: dataspace_identity.SubjectCredential, rec_slug: str
+) -> list[dict[str, Any]]:
+    """The member's current decisions, from every connector that holds one.
+
+    **Two sources, because the decisions are in two places.** The ones about this
+    community's own data are the member's to read as themselves, and they are
+    read that way (`/consent/my/shares`, their credential). The one that matters
+    most — may the grid operator release my readings — is recorded at the grid
+    operator, where the member has no standing at all: their credential is linked
+    to their own community's participant and that connector refuses it, and
+    `/consent/my/*` refuses an organisation token by design. So their community
+    reads it back for them, per subject, as the collector.
+
+    **Fails closed.** A holder that cannot be reached would otherwise render as
+    "not granted", which invites a member to grant again what they already
+    granted and hides a withdrawal that has not taken effect.
+    """
     base = (settings.ds_connector_url or "").rstrip("/")
     if not base:
         raise SharingUnavailableError("DS_CONNECTOR_URL is not configured")
@@ -358,7 +381,22 @@ async def _list_decisions(credential: dataspace_identity.SubjectCredential) -> l
         raise SharingUnavailableError(f"Connector answered {resp.status_code}")
 
     body = resp.json()
-    return body if isinstance(body, list) else body.get("items", [])
+    decisions = list(body if isinstance(body, list) else body.get("items", []))
+
+    try:
+        decisions += await dataspace_identity.subject_shares_at_holders(
+            rec_slug, subject_id=credential.subject_id
+        )
+    except ConfigurationError:
+        # Caught apart, and its message deliberately not passed on: the reason is
+        # this deployment's own settings, the member can do nothing with it, and
+        # `_unavailable` puts whatever it is given into a 503 body.
+        logger.exception("Cannot read a holder's decisions for %s", credential.subject_id)
+        raise SharingUnavailableError("Data sharing is not fully configured here") from None
+    except (RuntimeError, httpx.HTTPError, ValueError) as exc:
+        raise SharingUnavailableError(str(exc)) from exc
+
+    return decisions
 
 
 async def _presented_offers(did: str) -> dict[str, str | None]:
@@ -414,6 +452,16 @@ def _merge(
             {
                 **offer,
                 "granted": decision is not None,
+                # Which participant recorded it, when it was not this community's
+                # own connector. A member reading "granted" is entitled to know it
+                # is the grid operator holding the decision, and a support call
+                # about a decision nobody can find starts here.
+                "holder": (decision or {}).get("holder"),
+                # ds's answer, not this service's: the offers this one is admitted
+                # only together with that the member has not granted *there*. A
+                # non-empty list is a decision that is recorded and admits nobody
+                # — "I consented and nothing happened", explained.
+                "missing_prerequisites": list((decision or {}).get("missing_prerequisites") or []),
                 # Whether this offer is the member's to decide. A contract-based
                 # offer is disclosed and not toggled; rendering a control for it
                 # would present a choice that does not exist.
@@ -486,20 +534,99 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
         state=state,
         offers=_merge(
             offers,
-            await _list_decisions(credential),
+            await _list_decisions(credential, rec_slug),
             await _presented_offers(credential.subject_id),
         ),
         identity=_identity_of(credential),
     )
 
 
+def _rendered_text(offer: dict[str, Any], wording: dict[str, Any] | None) -> str:
+    """The canonical rendering of one offer, exactly as the wizard composes it.
+
+    Same fields, same order, same separator as `offerRenderedText` in the wizard,
+    so a hash taken here and one taken there describe the same thing when the
+    same wording was shown. Diverging would make the two evidence records
+    incomparable while looking like one scheme.
+
+    ``controller=`` keeps its name although the field behind it is now
+    ``recipients.recipient``. The key names a fact somebody read, not a field:
+    renaming it would change the hash of every offer for a rename that is ours
+    alone — which is why ds kept the same key in its own user-visible facts.
+    """
+    fallback = offer.get("fallback_text_en") or {}
+    coverage = offer.get("coverage") or {}
+    parts: list[str] = []
+    if wording:
+        parts += [f"title={wording.get('title', '')}", f"body={wording.get('body', '')}"]
+    parts += [
+        f"purpose={offer.get('purpose', '')}",
+        f"label={fallback.get('purpose_label', '')}",
+        f"definition={fallback.get('purpose_definition', '')}",
+        f"controller={template_service.offer_recipient(offer)}",
+        f"processors={fallback.get('processor_category', '')}",
+        f"measures={','.join(offer.get('measures') or [])}",
+        f"resolution={offer.get('resolution') or ''}",
+        f"coverage={coverage.get('retrospective') or ''}/{coverage.get('prospective') or ''}",
+        f"retention={offer.get('retention') or ''}",
+        f"version={offer.get('consent_text_version', '')}",
+    ]
+    return "|".join(parts)
+
+
+def _relayed_evidence(offer: dict[str, Any], rec_slug: str) -> dict[str, Any]:
+    """What this member was shown, for a decision their community relays.
+
+    A decision the member takes at their **own** connector needs none of this —
+    they present their credential and the connector stamps the offer's own
+    version and hash. A decision recorded *for* them by their community does:
+    ds requires evidence with any grant a organisation registers, because an
+    organisation asserting that somebody consented, with nothing about what they
+    were shown, is an assertion nobody can defend later (GDPR Art. 7(1)).
+
+    So the evidence is built from what this service served for that offer — the
+    published projection and the community's own wording — and hashed with the
+    wizard's algorithm. It is honest about being a **server-side** rendering:
+    the exact bytes on the member's screen are the web app's, and `source` says
+    which surface asked so the two records are never mistaken for one.
+
+    The locale is the community's, not the member's: this service does not see
+    which rendering the browser picked. Recorded rather than guessed at, so the
+    record says which wording was hashed.
+    """
+    import hashlib
+
+    locale = str(template_service.load_manifest(rec_slug).get("locale") or "") or None
+    text = offer.get("text") or {}
+    wording = text.get(locale) if locale else None
+    if not isinstance(wording, dict):
+        wording = next((v for k, v in text.items() if k != "version" and isinstance(v, dict)), None)
+
+    rendered = _rendered_text(offer, wording)
+    return {
+        "source": "onboarding-member",
+        "rec_slug": rec_slug,
+        "consent_text_version": str(offer.get("consent_text_version") or ""),
+        "locale": locale,
+        "rendered_text_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+    }
+
+
 async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> SharingView:
     """Grant or withdraw one offer, as the member.
 
-    No evidence record is sent. The connector derives it from the resolved offer
-    server-side, which is what stops this service recording consent to something
-    other than what it displayed — the asymmetry with the onboarding wizard,
-    which renders its own text and therefore has to prove what it showed.
+    **Two routes, and which one is used is not the member's business.** An offer
+    whose data this community holds is decided at its own connector with the
+    member's own credential, and no evidence record is sent: the connector
+    derives it from the resolved offer, which is what stops this service
+    recording consent to something other than what it displayed. An offer whose
+    data another participant holds cannot be decided that way — the member has no
+    standing at that connector — so their community relays the decision as the
+    collector, says it is the member's (`decided_by: subject`), and carries the
+    evidence of what was shown, which the relayed route requires.
+
+    A relayed **withdrawal** is recorded as the member's own, which is what makes
+    it final: nothing the community or a service does afterwards lifts it.
     """
     state, rec_slug, credential = await _resolve(user)
     if state is not SharingState.OK:
@@ -525,6 +652,31 @@ async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> Sh
     base = (settings.ds_connector_url or "").rstrip("/")
     if not base:
         raise SharingUnavailableError("DS_CONNECTOR_URL is not configured")
+
+    binding = template_service.dataspace_binding(rec_slug)
+    if binding.connector_for(offer_id) is not None:
+        registration = await dataspace_identity.relay_member_decision(
+            rec_slug,
+            subject_id=credential.subject_id,
+            offer_id=offer_id,
+            enabled=enabled,
+            legal_basis=_relayed_evidence(offer, rec_slug) if enabled else None,
+        )
+        if not registration.ok:
+            # The detail names the holder, its status code, or this deployment's
+            # own settings. All three are for the log and for an operator; the
+            # member is told the change did not happen, because `_unavailable`
+            # turns whatever this carries into a 503 body they can read.
+            logger.error(
+                "Relaying %s for %s was refused: %s",
+                offer_id,
+                credential.subject_id,
+                registration.detail,
+            )
+            raise SharingUnavailableError(
+                f"The connector holding the data for {offer_id!r} did not record the change"
+            )
+        return await get_data_sharing(user)
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:

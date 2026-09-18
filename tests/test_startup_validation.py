@@ -573,3 +573,55 @@ async def test_malformed_sharing_texts_refuse_to_start(seed_rec, monkeypatch):
 
     with pytest.raises(ValueError, match="version"):
         await app_main._validate_dataspace_config()
+
+
+# ── the client a consent is registered as ─────────────────────────────────────
+
+
+async def test_collecting_consent_without_the_organisation_secret_warns(
+    seed_rec, monkeypatch, caplog
+):
+    """A missing credential that only shows up at the first approval, said at boot.
+
+    A consent is registered as the community's own client; the connector refuses
+    a plain service token. Without the secret every approval leaves
+    `share_provisioned=false`, which is visible in one submission at a time and
+    nowhere in aggregate.
+
+    A warning and not a refusal: onboarding somebody without recording their
+    sharing consent is degraded, not broken.
+    """
+    seed_rec(
+        "rec-a",
+        organization="community-a",
+        dataspace={"organization": "community-a"},
+        consent={"data_sharing": {}},
+    )
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
+    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "")
+
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+
+    assert "DS_ORG_CLIENT_SECRET" in caplog.text
+    # Names the client to create, because the id is derivable and the operator
+    # should not have to find the convention.
+    assert "svc-ds-connector-community-a" in caplog.text
+
+
+async def test_the_secret_being_set_says_nothing(seed_rec, monkeypatch, caplog):
+    seed_rec(
+        "rec-a",
+        organization="community-a",
+        dataspace={"organization": "community-a"},
+        consent={"data_sharing": {}},
+    )
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
+    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "org-secret")
+
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+
+    assert "DS_ORG_CLIENT_SECRET" not in caplog.text

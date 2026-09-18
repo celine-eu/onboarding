@@ -85,12 +85,35 @@ CALLS: tuple[Call, ...] = (
         "/ns/sharing-offers",
         why="Render the statute step's offers, and validate recorded ids.",
     ),
+    # The two below are made as the **community's own organisation client**
+    # (`svc-ds-connector-<alias>`), not as this service. ds classifies the caller
+    # from its token and refuses a plain service client on both: one shared
+    # service account is bound to no participant and could write a consent at any
+    # connector for anybody's members. They are also the only calls that may go
+    # to *another* participant's connector — the holder that accepted this
+    # community as a consent collector.
     Call(
         "connector",
         "post",
         "/consent/admin/shares",
-        sends=frozenset({"subject_id", "offer_id", "enabled", "legal_basis"}),
-        why="Provision standing sharing consent after approval.",
+        sends=frozenset({"subject_id", "offer_id", "enabled", "legal_basis", "decided_by", "keys"}),
+        why=(
+            "Register a member's standing decision at the connector that holds "
+            "the data. `decided_by` says whose decision it is — the member's, "
+            "relayed, or the community's own — and `keys` carry their supply "
+            "points to a holder whose data plane has no other way to find them."
+        ),
+    ),
+    Call(
+        "connector",
+        "get",
+        "/consent/admin/subject-shares",
+        why=(
+            "Read back what a holder recorded for one of our members. The member "
+            "cannot: their credential has no standing at that connector and "
+            "`/consent/my/*` refuses an organisation token. Per subject and "
+            "never a roster."
+        ),
     ),
     Call(
         "connector",
@@ -98,8 +121,9 @@ CALLS: tuple[Call, ...] = (
         "/consent/admin/shares",
         why=(
             "Read that decision back before exporting against it: who currently "
-            "consents to this offer. The read counterpart to the POST above, and "
-            "what lets the POD export stop reading the intake form."
+            "consents to this offer. This one is still the service client's — "
+            "`connector.consent.audience` did not move — and what lets the POD "
+            "export stop reading the intake form."
         ),
     ),
     # The three below are made **as the member**, with the credential this

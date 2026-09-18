@@ -8,6 +8,12 @@ Two of the three failures this plan repairs were invisible to OpenAPI:
 - `POST /consent/admin/shares` refuses a contract-based offer with 409. That is a
   rule about `requires_consent`, not a constraint any schema carries.
 
+A third kind joined them: **who may call a route at all**. ds decides that from
+the class of the caller's token, and no schema says so — a consent is registered
+by an organisation's own client, and the plain service client this suite
+authenticates as is refused. Those checks are written so that a grant quietly
+reappearing on the service client fails here rather than passing everywhere.
+
 So these call ds and assert behaviour. They are read-only or deliberately
 invalid: nothing here creates a participant, issues a credential or records a
 disclosure, because a check that mutates a shared dev stack gets switched off.
@@ -101,12 +107,73 @@ def test_the_admin_route_still_does_not_accept_an_alias(auth):
     )
 
 
-@pytest.mark.needs_contract_offer
-def test_a_contract_offer_cannot_be_provisioned_as_consent(auth):
-    """The rule Phase 0 enforces at capture, verified at its source.
+def test_a_service_token_may_not_register_a_consent(auth):
+    """The breaking change this service was rebuilt around, asserted at its source.
 
-    Deliberately invalid: the subject does not exist, so nothing is created
-    whichever way this goes. The 409 must arrive *before* any of that matters.
+    Registering a consent is an act of an *organisation*. `{CLIENT_ID}` is a
+    plain service client, bound to no participant, so ds refuses it here — and
+    this service now authenticates as the community's own
+    `svc-ds-connector-<alias>` instead. If this ever answers anything but 403,
+    somebody has put the grant back on a client that could write a consent at any
+    connector for anybody's members, and the switch below it would go unnoticed.
+
+    Deliberately invalid besides: the subject does not exist and the offer is
+    nonsense, so nothing is created whichever way it goes.
+    """
+    r = httpx.post(
+        f"{CONNECTOR_URL}/consent/admin/shares",
+        headers=auth,
+        timeout=10,
+        json={
+            "subject_id": PROBE_SUBJECT,
+            "offer_id": "no-such-offer-contract-check",
+            "enabled": True,
+            "legal_basis": {
+                "source": "onboarding-contract-check",
+                "consent_text_version": "0",
+                "rendered_text_sha256": "0" * 64,
+            },
+        },
+    )
+    assert r.status_code == 403, (
+        f"expected 403 for the plain service client {CLIENT_ID}, got "
+        f"{r.status_code}: {r.text[:200]}. Consent is registered by an "
+        f"organisation's own client; a service client writing one is the hole "
+        f"ds closed."
+    )
+
+
+def test_the_collectors_read_back_exists_and_is_not_a_service_route(auth):
+    """`GET /consent/admin/subject-shares`, and the same refusal.
+
+    It is how a member sees a decision recorded at a holder they have no standing
+    at. Same caller class as the write, so the same 403 for a service token — a
+    404 here would mean the route is gone and the member's page shows a granted
+    release as ungranted.
+    """
+    r = httpx.get(
+        f"{CONNECTOR_URL}/consent/admin/subject-shares",
+        params={"subject_id": PROBE_SUBJECT},
+        headers=auth,
+        timeout=10,
+    )
+    assert r.status_code != 404, (
+        "GET /consent/admin/subject-shares is gone; nothing can read back what a "
+        "holder recorded for a member, and the sharing page under-reports it"
+    )
+    assert r.status_code == 403, (
+        f"expected 403 for the plain service client {CLIENT_ID}, got "
+        f"{r.status_code}: {r.text[:200]}"
+    )
+
+
+@pytest.mark.needs_contract_offer
+def test_a_contract_offer_is_refused_before_anything_else(auth):
+    """Disclosed, not consented — the rule Phase 0 enforces at capture.
+
+    Since a service token is refused outright (above), this can no longer see the
+    409 from this client. What it still proves is that the refusal is not a 200:
+    a contract-based offer never yields a recorded consent, whoever asks.
     """
     r = httpx.post(
         f"{CONNECTOR_URL}/consent/admin/shares",
@@ -123,10 +190,10 @@ def test_a_contract_offer_cannot_be_provisioned_as_consent(auth):
             },
         },
     )
-    assert r.status_code == 409, (
-        f"expected 409 for the contract-based offer {CONTRACT_OFFER!r}, got "
-        f"{r.status_code}: {r.text[:200]}. Phase 0 rejects these at capture on "
-        f"the strength of this rule."
+    assert r.status_code in (403, 409), (
+        f"expected 403 (service client) or 409 (not consent-based) for "
+        f"{CONTRACT_OFFER!r}, got {r.status_code}: {r.text[:200]}. Phase 0 "
+        f"rejects these at capture on the strength of this rule."
     )
 
 
@@ -166,6 +233,22 @@ def test_a_consent_offer_is_still_published_and_consent_based(auth):
     assert offers[CONSENT_OFFER]["requires_consent"] is True
     if not NO_CONTRACT_OFFER:
         assert offers[CONTRACT_OFFER]["requires_consent"] is False
+
+
+def test_an_offers_prerequisites_are_published(auth):
+    """`requires_offers` is the connector's, and this service only presents it.
+
+    An offer admitted only together with another is enforced by ds; the member's
+    page says so beside the toggle. If the field stops being published, a member
+    grants something that admits nobody and nothing on this side can explain why.
+    """
+    r = httpx.get(f"{CONNECTOR_URL}/ns/sharing-offers", timeout=10)
+    assert r.status_code == 200
+    offers = {o["id"]: o for o in r.json()}
+    assert "requires_offers" in offers[CONSENT_OFFER], (
+        "the published projection no longer names an offer's prerequisites; the "
+        "sharing page cannot tell a member what their decision waits for"
+    )
 
 
 @pytest.mark.declares_no_contract_offer
@@ -273,13 +356,19 @@ def test_a_contract_offer_has_no_audience_to_read(auth):
 
 
 def test_the_whole_recipient_chain_resolves(auth):
-    """Offer to controller to DID to audience, in the order the export walks it.
+    """Offer to recipient to DID to audience, in the order the export walks it.
 
-    Each hop is published and none of them is inferred: the offer names its
-    controller by alias, the registry maps that alias to the identifier the
+    Each hop is published and none of them is inferred: the offer names the party
+    the data goes to by alias, the registry maps that alias to the identifier the
     consent plane is keyed by, and the consent plane answers for it. If any hop
     stops working the export cannot name a recipient, and the failure is worth
     seeing here rather than at the moment somebody exports.
+
+    **Either spelling.** ds renamed `recipients.controller` to
+    `recipients.recipient`; this service reads the new one and falls back, so
+    that an upgrade of the two need not be simultaneous. Asserting only the new
+    name here would report drift the code does not have — what matters is that
+    *a* recipient is published, and that it is the same one the registry knows.
 
     It also asserts the shape the export refuses to flatten — one subject set
     per dataset, never merged. A caller reading the first element is correct
@@ -287,10 +376,11 @@ def test_the_whole_recipient_chain_resolves(auth):
     """
     offers = httpx.get(f"{CONNECTOR_URL}/ns/sharing-offers", timeout=10).json()
     offer = next(o for o in offers if o["id"] == CONSENT_OFFER)
-    controller = (offer.get("recipients") or {}).get("controller")
+    recipients = offer.get("recipients") or {}
+    controller = recipients.get("recipient") or recipients.get("controller")
     assert controller, (
-        f"{CONSENT_OFFER!r} names no controller — the export has nothing to "
-        "resolve a recipient from, and must not guess one"
+        f"{CONSENT_OFFER!r} names no recipient under either spelling — the export "
+        "has nothing to resolve a recipient from, and must not guess one"
     )
 
     owner = httpx.get(

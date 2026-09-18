@@ -107,11 +107,12 @@ async def _resolve_audience(
     read, and the set of subject DIDs the connector authorises — ``None`` when
     there is no connector and the local columns decide instead.
 
-    **The recipient comes from the offer.** ``recipients.controller`` is an owner
-    alias and the consent plane is keyed by DID, so the identity registry
+    **The recipient comes from the offer.** ``recipients.recipient`` — the field
+    ds renamed from ``controller``, and the old spelling is still read — is an
+    owner alias, and the consent plane is keyed by DID, so the identity registry
     resolves one to the other. Nothing else may name the recipient: the person
-    consented to disclosure to the controller *this offer* names, and sourcing it
-    from a manifest binding or the community's grid operator could hand data to a
+    consented to disclosure to the party *this offer* names, and sourcing it from
+    a manifest binding or the community's grid operator could hand data to a
     party the offer does not name.
     """
     if not settings.ds_connector_url:
@@ -122,7 +123,7 @@ async def _resolve_audience(
         return _Audience(source="submission"), None, None
 
     offer = await template_service.get_sharing_offer(rec_slug, offer_id)
-    controller = str((offer.get("recipients") or {}).get("controller") or "").strip()
+    controller = template_service.offer_recipient(offer)
     if not controller:
         # Required by the connector's own sharing-offers schema, so an offer
         # without one means the published vocabulary is not what this code was
@@ -240,8 +241,12 @@ def _offer_terms(offer: dict | None) -> list[str]:
         return []
     lines: list[str] = []
     recipients = offer.get("recipients") or {}
-    controller = recipients.get("controller")
-    role = recipients.get("controller_role")
+    # The header keeps saying "Controller" although the field is now
+    # `recipients.recipient`: the word describes what a reader of this file was
+    # told, and renaming it would change what past and future exports call the
+    # same party. `recipient_role` is read the same way, old spelling included.
+    controller = template_service.offer_recipient(offer)
+    role = recipients.get("recipient_role") or recipients.get("controller_role")
     if controller:
         lines.append(f"# Controller: {controller}" + (f" ({role})" if role else ""))
     if offer.get("purpose"):

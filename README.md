@@ -261,13 +261,15 @@ After approval a participant manages and withdraws their sharing decisions in th
 | `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | OIDC issuer URL for M2M token acquisition — the same issuer the admin console verifies inbound tokens against |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M auth |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M auth |
+| `DS_ORG_CLIENT_ID` | *(derived)* | The community's own client, which is what registers a consent — a service client is refused. Empty derives `svc-ds-connector-<alias>` from the manifest's `dataspace.organization` |
+| `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret. Required to register or withdraw any sharing consent |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
 | `DATASPACE_SUBJECT_SOURCE` | `email_hash` | Subject ID source (`email_hash` delegates derivation to the identity-registry's `GET /users/resolve?derive=true`) |
 
-Which organization a community's members join, its DID and the linked participant are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
-| `DS_CONNECTOR_URL` | *(none)* | Connector base URL for provisioning data-sharing consent on approval (`POST /consent/admin/shares`). Empty disables share provisioning |
+Which organization a community's members join, its DID, the linked participant and **which connector holds each offer's data** are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
+| `DS_CONNECTOR_URL` | *(none)* | The community's **own** connector: its members' decisions about its own data. Empty disables share provisioning. A decision about data another participant holds is recorded at that participant's connector instead, named in the manifest's `dataspace.connectors` |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from; empty falls back to the connector's `/ns` path |
 | `DS_PROVENANCE_URL` | *(none)* | Provenance base URL the member-facing data-sharing view reads events from; empty disables it. Disclosures are recorded through the connector (`POST /admin/disclosure`), not here |
 

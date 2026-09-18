@@ -1178,3 +1178,261 @@ class TestTheRoutes:
 
         assert resp.status_code == 409
         assert "not consent-based" in resp.json()["detail"]
+
+
+# ── a decision the community does not hold ────────────────────────
+#
+# One of the offers a member decides is about data another participant holds:
+# may the grid operator release my readings. That decision is enforced where the
+# rows are served, so it is recorded at the grid operator's connector — where
+# the member has no standing at all. Their community relays it as the collector,
+# says it is theirs, and reads it back for them.
+
+HOLDER_URL = "http://dso-connector:30001"
+RELEASE_OFFER = {
+    "id": "meter-data-release",
+    "requires_consent": True,
+    "consent_text_version": "2.0",
+    "recipients": {"recipient": "example-rec", "processors": {"category": "none"}},
+    "measures": ["energy_consumption"],
+    "coverage": {"retrospective": "P1Y", "prospective": None},
+    "fallback_text_en": {
+        "purpose_label": "Meter data release",
+        "purpose_definition": "Release of metering data",
+        "processor_category": "none",
+    },
+}
+
+
+class TestTheDecisionGoesToTheHolder:
+    @pytest.fixture()
+    def _routed(self, monkeypatch, bind_rec, _dataspace):
+        """The community routes the release offer to the grid operator."""
+        manifest = template_service._cache["default"]
+        manifest["dataspace"]["connectors"] = [
+            {"holder": "example-dso", "url": HOLDER_URL, "offers": [RELEASE_OFFER["id"]]}
+        ]
+        manifest["consent"]["data_sharing"]["offers"] = [
+            OFFER_CONSENT["id"],
+            RELEASE_OFFER["id"],
+        ]
+        monkeypatch.setattr(di.settings, "ds_org_client_id", "")
+        monkeypatch.setattr(di.settings, "ds_org_client_secret", "org-secret")
+
+        from celine.onboarding.services import rec_registry, service_auth
+
+        monkeypatch.setattr(service_auth, "_provider_for", lambda *a: _mock_token_provider())
+
+        async def _ensure(rec_slug, *, user_id, did):
+            return "ok"
+
+        async def _pods(dids, *, rec_slug):
+            return {RESOLVE_WITH_CREDENTIAL["did"]: ["EX000E00000001"]}
+
+        monkeypatch.setattr(rec_registry, "ensure_member_did", _ensure)
+        monkeypatch.setattr(rec_registry, "supply_points_by_did", _pods)
+
+    def _transport(self, *, holder_shares=None, holder_post=None, requests=None):
+        base = _handler(offers=httpx.Response(200, json=[OFFER_CONSENT, RELEASE_OFFER]))
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if requests is not None:
+                requests.append(req)
+            url = str(req.url)
+            if url.startswith(HOLDER_URL):
+                if "subject-shares" in url:
+                    return holder_shares or httpx.Response(200, json=[])
+                return holder_post or httpx.Response(200, json=[{"id": "row"}])
+            return base(req)
+
+        return handle
+
+    async def test_the_read_merges_both_connectors(self, monkeypatch, _routed):
+        """A decision the member cannot read is still theirs to see.
+
+        `/consent/my/*` is the member's own route and the holder refuses their
+        credential there, so their community reads it back per subject — the
+        narrow exception ds grants a collector, never a roster.
+        """
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "offer_id": RELEASE_OFFER["id"],
+                            "status": "granted",
+                            "decided_at": "2026-09-18T10:00:00Z",
+                            "decided_by": "subject",
+                            "missing_prerequisites": [],
+                            "legal_basis": {"consent_text_version": "2.0"},
+                        }
+                    ],
+                )
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        by_id = {o["id"]: o for o in view.offers}
+        assert by_id[RELEASE_OFFER["id"]]["granted"] is True
+        # Which participant holds it, because "granted where?" is a question a
+        # support call starts with.
+        assert by_id[RELEASE_OFFER["id"]]["holder"] == "example-dso"
+        # The community's own offer is read as the member, and nobody consented.
+        assert by_id[OFFER_CONSENT["id"]]["granted"] is False
+
+    async def test_the_read_never_carries_the_keys_back_to_the_page(self, monkeypatch, _routed):
+        """The holder returns the supply points to the organisation that sent them.
+
+        They are personal data and the page has no use for them, so they are
+        dropped where the two lists are merged rather than at the template.
+        """
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "offer_id": RELEASE_OFFER["id"],
+                            "status": "granted",
+                            "keys": ["pod:EX000E00000001"],
+                        }
+                    ],
+                )
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        assert "pod:EX000E00000001" not in json.dumps(view.offers)
+
+    async def test_an_unreachable_holder_fails_closed(self, monkeypatch, _routed):
+        """ "Not granted" is the wrong answer to "I could not ask".
+
+        It invites a member to grant again what they already granted, and hides a
+        withdrawal that has not taken effect.
+        """
+        _patch_httpx(
+            monkeypatch,
+            self._transport(holder_shares=httpx.Response(503, text="unavailable")),
+        )
+
+        with pytest.raises(ms.SharingUnavailableError):
+            await ms.get_data_sharing(_member())
+
+    async def test_a_prerequisite_the_holder_is_waiting_for_is_shown(self, monkeypatch, _routed):
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "offer_id": RELEASE_OFFER["id"],
+                            "status": "granted",
+                            "missing_prerequisites": ["some-other-offer"],
+                        }
+                    ],
+                )
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        release = next(o for o in view.offers if o["id"] == RELEASE_OFFER["id"])
+        assert release["missing_prerequisites"] == ["some-other-offer"]
+
+    async def test_a_toggle_is_relayed_as_the_members_own_decision(self, monkeypatch, _routed):
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=True)
+
+        posted = [
+            (str(r.url), json.loads(r.read().decode())) for r in requests if r.method == "POST"
+        ]
+        assert len(posted) == 1
+        url, body = posted[0]
+        assert url == f"{HOLDER_URL}/consent/admin/shares"
+        # Relayed, not decided for them: a withdrawal sent this way is the
+        # member's own and nothing else lifts it.
+        assert body["decided_by"] == "subject"
+        assert body["subject_id"] == RESOLVE_WITH_CREDENTIAL["did"]
+        assert body["keys"] == ["pod:EX000E00000001"]
+        # The evidence the relayed route requires: what was shown, and when.
+        assert body["legal_basis"]["consent_text_version"] == "2.0"
+        assert len(body["legal_basis"]["rendered_text_sha256"]) == 64
+
+    async def test_a_relayed_withdrawal_takes_no_keys(self, monkeypatch, _routed):
+        """ds refuses them: a withdrawal drops the keys the row held."""
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=False)
+
+        body = next(json.loads(r.read().decode()) for r in requests if r.method == "POST")
+        assert body["enabled"] is False
+        assert body["decided_by"] == "subject"
+        assert "keys" not in body
+        assert "legal_basis" not in body
+
+    async def test_the_communitys_own_offer_is_still_decided_by_the_member(
+        self, monkeypatch, _routed
+    ):
+        """Routing changes nothing for an offer the community holds.
+
+        A member acting as themselves is better evidence than a relay, so the
+        relay is only for where they cannot act.
+        """
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), OFFER_CONSENT["id"], enabled=True)
+
+        posted = [r for r in requests if r.method == "POST"]
+        assert [str(r.url) for r in posted] == ["http://connector:8000/consent/my/shares"]
+        assert posted[0].headers.get("X-User-VC") == VC
+
+    async def test_a_relay_the_holder_refuses_is_reported_not_swallowed(
+        self, monkeypatch, _routed, caplog
+    ):
+        """The member is told it did not happen; the reason goes to the log.
+
+        A holder's refusal names a participant, a status code, or this
+        deployment's own credentials — all of it for whoever can act on it, and
+        none of it something a 503 body should carry to a member.
+        """
+        _patch_httpx(
+            monkeypatch,
+            self._transport(holder_post=httpx.Response(403, text="not a collector")),
+        )
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(ms.SharingUnavailableError) as raised:
+                await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=True)
+
+        assert "not a collector" not in str(raised.value)
+        assert RELEASE_OFFER["id"] in str(raised.value)
+        assert "not a collector" in caplog.text
+
+    async def test_a_missing_organisation_secret_is_not_told_to_the_member(
+        self, monkeypatch, _routed, caplog
+    ):
+        """A misconfiguration is the deployment's, and the member cannot act on it.
+
+        `ConfigurationError` deliberately does not inherit `ValueError` for this
+        reason; the read path keeps that promise, because the route puts whatever
+        it is given into a 503 body.
+        """
+        monkeypatch.setattr(di.settings, "ds_org_client_secret", "")
+        _patch_httpx(monkeypatch, self._transport())
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(ms.SharingUnavailableError) as raised:
+                await ms.get_data_sharing(_member())
+
+        assert "DS_ORG_CLIENT_SECRET" not in str(raised.value)
+        assert "DS_ORG_CLIENT_SECRET" in caplog.text

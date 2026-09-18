@@ -150,3 +150,129 @@ def test_get_config_does_not_expose_the_binding(bind_rec):
     """
     bind_rec("rec-a", organization="rec-a", organization_did="did:web:rec-a")
     assert "dataspace" not in ts.get_config("rec-a")
+
+
+# ── per-offer connector routing ───────────────────────────────────────────────
+#
+# A consent is recorded at the connector that serves the data, which is not
+# always the community's own: a grid operator holds its members' meter readings,
+# and a decision to release them recorded anywhere else enforces nothing. Which
+# offer goes where is configuration — never inferred from the offer — and the
+# manifest is where it is written, per REC, like every other dataspace binding.
+
+
+def test_no_connectors_block_keeps_every_offer_here(bind_rec):
+    """The ordinary community: all of its data is its own."""
+    bind_rec("rec-a", organization="example-rec")
+    binding = ts.dataspace_binding("rec-a")
+    assert binding.connectors == ()
+    assert binding.connector_for("meter-data-release") is None
+
+
+def test_a_routed_offer_resolves_to_the_holder(bind_rec):
+    bind_rec(
+        "rec-a",
+        organization="example-rec",
+        connectors=[
+            {
+                "holder": "example-dso",
+                "url": "http://dso:30001/",
+                "offers": ["meter-data-release", "forecasting-and-research"],
+            }
+        ],
+    )
+    binding = ts.dataspace_binding("rec-a")
+    connector = binding.connector_for("meter-data-release")
+    assert connector is not None
+    assert connector.holder == "example-dso"
+    # The trailing slash is dropped once, here, so no caller has to think about it.
+    assert connector.url == "http://dso:30001"
+    assert binding.connector_for("forecasting-and-research") is connector
+    # An offer nobody routed stays at the community's own connector.
+    assert binding.connector_for("household-energy-flexibility") is None
+
+
+def test_two_recs_route_independently(bind_rec):
+    """Multi-tenancy again: one community's routing is not another's."""
+    bind_rec(
+        "rec-a",
+        organization="example-rec",
+        connectors=[{"holder": "example-dso", "url": "http://dso:30001", "offers": ["release"]}],
+    )
+    bind_rec("rec-b", organization="other-rec")
+    assert ts.dataspace_binding("rec-a").connector_for("release").holder == "example-dso"
+    assert ts.dataspace_binding("rec-b").connector_for("release") is None
+
+
+def test_connectors_must_be_a_list():
+    with pytest.raises(ValueError, match="'dataspace.connectors' must be a list"):
+        ts.validate_dataspace_block(
+            {"organization": "example-rec", "connectors": {"holder": "example-dso"}},
+            where="test",
+        )
+
+
+def test_a_connector_must_name_its_holder():
+    with pytest.raises(ValueError, match="has no 'holder'"):
+        ts.validate_dataspace_block(
+            {
+                "organization": "example-rec",
+                "connectors": [{"url": "http://dso:30001", "offers": ["release"]}],
+            },
+            where="test",
+        )
+
+
+def test_a_holder_is_an_owner_alias():
+    with pytest.raises(ValueError, match="'holder' must be lowercase"):
+        ts.validate_dataspace_block(
+            {
+                "organization": "example-rec",
+                "connectors": [
+                    {"holder": "Example DSO", "url": "http://dso:30001", "offers": ["release"]}
+                ],
+            },
+            where="test",
+        )
+
+
+@pytest.mark.parametrize("url", ["", "dso:30001", "/consent"])
+def test_a_connector_must_carry_a_base_url(url):
+    with pytest.raises(ValueError, match="'url' must be the holder's connector base URL"):
+        ts.validate_dataspace_block(
+            {
+                "organization": "example-rec",
+                "connectors": [{"holder": "example-dso", "url": url, "offers": ["release"]}],
+            },
+            where="test",
+        )
+
+
+@pytest.mark.parametrize("offers", [None, [], "release", [""]])
+def test_a_connector_must_route_at_least_one_offer(offers):
+    entry = {"holder": "example-dso", "url": "http://dso:30001"}
+    if offers is not None:
+        entry["offers"] = offers
+    with pytest.raises(ValueError, match="'offers'|must be an offer id"):
+        ts.validate_dataspace_block(
+            {"organization": "example-rec", "connectors": [entry]}, where="test"
+        )
+
+
+def test_one_offer_is_held_by_one_connector():
+    """Two entries for one offer are two answers to where a decision goes.
+
+    Picking one would route somebody's consent by dictionary order, and the
+    member would see a granted toggle either way.
+    """
+    with pytest.raises(ValueError, match="already routed to 'example-dso'"):
+        ts.validate_dataspace_block(
+            {
+                "organization": "example-rec",
+                "connectors": [
+                    {"holder": "example-dso", "url": "http://dso:30001", "offers": ["release"]},
+                    {"holder": "other-dso", "url": "http://other:30001", "offers": ["release"]},
+                ],
+            },
+            where="test",
+        )

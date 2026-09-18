@@ -205,6 +205,32 @@ class SharingOffersUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ConnectorBinding:
+    """Another participant's connector, and the offers it holds the data for.
+
+    A consent is recorded at the connector that **serves the data**, which is not
+    always the community's own: a grid operator holds its members' meter
+    readings, and the decision to release them has to reach the grid operator's
+    connector or it enforces nothing. The community is the *collector* — the
+    member's relationship is with it — and the holder accepts its registrations
+    because it has recorded the community as an accepted consent collector.
+
+    ``holder`` is the owner alias of the participant whose connector this is, in
+    the same one-identifier sense as :attr:`DataspaceBinding.organization`. It is
+    carried so a reader (and a log line) can say *whose* connector refused,
+    without resolving a URL back to a party.
+
+    ``offers`` are the offer ids routed here. An offer named by no entry stays at
+    the community's own connector — that is the ordinary case, and the absence of
+    this block is a community whose data is all its own.
+    """
+
+    holder: str
+    url: str
+    offers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class DataspaceBinding:
     """Which dataspace organisation a REC's approved members belong to.
 
@@ -222,6 +248,9 @@ class DataspaceBinding:
     organization: str = ""
     organization_did: str = ""
     linked_participant_did: str = ""
+    #: Other participants' connectors, by the offers they hold. See
+    #: :class:`ConnectorBinding`.
+    connectors: tuple[ConnectorBinding, ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -232,6 +261,25 @@ class DataspaceBinding:
         with no dataspace infrastructure at all.
         """
         return bool(self.organization)
+
+    def connector_for(self, offer_id: str) -> ConnectorBinding | None:
+        """The participant holding the data this offer reaches, or ``None``.
+
+        ``None`` means the community's own connector (``DS_CONNECTOR_URL``), and
+        it is the answer for every offer nobody routed — so a deployment with no
+        ``connectors:`` block behaves exactly as it did before routing existed.
+
+        The map is configuration and never inferred from the offer. An offer's
+        ``recipients.recipient`` names **who the data goes to**, which since ds's
+        rename is emphatically not who holds it: the release offer's recipient is
+        the community itself, and its data sits at the grid operator. Deriving
+        the route from the recipient would send every release decision to the
+        connector that does not serve the rows.
+        """
+        for connector in self.connectors:
+            if offer_id in connector.offers:
+                return connector
+        return None
 
 
 def validate_dataspace_block(block: Any, *, where: str) -> None:
@@ -266,6 +314,68 @@ def validate_dataspace_block(block: Any, *, where: str) -> None:
         if did and not did.startswith("did:"):
             raise ValueError(f"{where}: 'dataspace.{key}' must be a DID (got {did!r})")
 
+    _validate_connectors(block.get("connectors"), where=where)
+
+
+def _validate_connectors(block: Any, *, where: str) -> None:
+    """Refuse a malformed ``dataspace.connectors:`` block, at import.
+
+    Every failure here is a consent recorded at the wrong connector or at none,
+    and both are silent: the member sees a granted toggle either way. So the
+    block is checked where an operator is already looking rather than at the
+    first approval.
+
+    **One offer, one connector.** Listing an offer twice is two answers to "where
+    does this decision go", and picking one would route a person's consent by
+    dictionary order.
+    """
+    if block is None:
+        return
+    if not isinstance(block, list):
+        raise ValueError(f"{where}: 'dataspace.connectors' must be a list")
+
+    seen: dict[str, str] = {}
+    for index, entry in enumerate(block):
+        at = f"{where}: 'dataspace.connectors[{index}]'"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{at} must be a mapping")
+
+        holder = str(entry.get("holder", "")).strip()
+        if not holder:
+            raise ValueError(
+                f"{at} has no 'holder'. Name the participant whose connector this "
+                "is, by the owner alias — the same identifier as "
+                "'dataspace.organization'."
+            )
+        if not SAFE_ORG_ALIAS.fullmatch(holder):
+            raise ValueError(
+                f"{at}: 'holder' must be lowercase alphanumeric with inner hyphens (got {holder!r})"
+            )
+
+        url = str(entry.get("url", "")).strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"{at}: 'url' must be the holder's connector base URL, http(s) (got {url!r})"
+            )
+
+        offers = entry.get("offers")
+        if not isinstance(offers, list) or not offers:
+            raise ValueError(
+                f"{at}: 'offers' must be a non-empty list of offer ids. A "
+                "connector routing nothing routes nothing — omit the entry."
+            )
+        for offer_id in offers:
+            if not isinstance(offer_id, str) or not offer_id.strip():
+                raise ValueError(f"{at}: every entry in 'offers' must be an offer id")
+            offer_id = offer_id.strip()
+            if offer_id in seen:
+                raise ValueError(
+                    f"{at}: offer {offer_id!r} is already routed to {seen[offer_id]!r}. "
+                    "One offer is held by one connector; two entries are two "
+                    "answers to where a member's decision goes."
+                )
+            seen[offer_id] = holder
+
 
 def dataspace_binding(rec_slug: str) -> DataspaceBinding:
     """Resolve a REC's dataspace binding from its manifest."""
@@ -278,7 +388,34 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
         organization=str(block["organization"]).strip(),
         organization_did=str(block.get("organization_did", "") or "").strip(),
         linked_participant_did=str(block.get("linked_participant_did", "") or "").strip(),
+        connectors=tuple(
+            ConnectorBinding(
+                holder=str(entry["holder"]).strip(),
+                url=str(entry["url"]).strip().rstrip("/"),
+                offers=tuple(str(o).strip() for o in entry["offers"]),
+            )
+            for entry in (block.get("connectors") or [])
+        ),
     )
+
+
+def offer_recipient(offer: dict[str, Any]) -> str:
+    """The owner alias a published offer names as the party the data goes to.
+
+    ``recipients.recipient`` since ds renamed it; ``recipients.controller`` is
+    the deprecated spelling, still served by an older connector and still read
+    here so an upgrade of the two services need not be simultaneous. ds accepts
+    both on input for the same reason.
+
+    The rename was not cosmetic: the old name meant the recipient, the subject's
+    home organisation and the GDPR controller at once, and only the first reading
+    held in every offer. So this answers *who receives the data* and nothing
+    else — in particular it is **not** where the consent is recorded, which is
+    :meth:`DataspaceBinding.connector_for`.
+    """
+    recipients = offer.get("recipients") or {}
+    value = recipients.get("recipient") or recipients.get("controller") or ""
+    return str(value).strip()
 
 
 @dataclass(frozen=True)

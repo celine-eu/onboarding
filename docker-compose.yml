@@ -62,6 +62,13 @@ services:
       OIDC_BASE_URL: ${OIDC_BASE_URL:-http://keycloak.celine.localhost/realms/celine}
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
       DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
+      # The community's own client, `svc-ds-connector-<alias>`, which is what
+      # registers a consent — the connector refuses a plain service token there.
+      # The id is derived from the REC's `dataspace.organization`, so only the
+      # secret is passed. No default: an id can be guessed and a credential
+      # cannot, and a made-up one fails as a 401 far from anything saying why.
+      DS_ORG_CLIENT_ID: ${DS_ORG_CLIENT_ID:-}
+      DS_ORG_CLIENT_SECRET: ${DS_ORG_CLIENT_SECRET:-}
       # celine-policies' provisioning service, which is the only writer of
       # participant accounts in the realm and the only way this service gives
       # anybody a login — it holds no Keycloak grant of its own. INTERNAL

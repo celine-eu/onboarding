@@ -102,11 +102,13 @@ task export-pod-list -- --rec my-rec \
   purpose-scoped: agreeing to a different offer is not agreeing to this
   handover, and the connector enforces that server-side by keying its answer on
   the offer.
-- **The recipient comes from the offer.** Its `recipients.controller` is an owner
+- **The recipient comes from the offer.** Its `recipients.recipient` is an owner
   alias; the identity registry resolves that to the DID the consent plane is
   keyed by. Nothing else names the recipient — the person consented to
-  disclosure to the controller *that offer* names, so a manifest binding or the
-  community's grid operator must not stand in for it.
+  disclosure to the party *that offer* names, so a manifest binding or the
+  community's grid operator must not stand in for it. (The field was called
+  `controller` and meant three things at once; the old spelling is still read, so
+  a connector that has not been upgraded keeps working.)
 - **And the recipient has to be that controller — the organisation, not an
   alias.** `--recipient` (the console's `recipient_ref`) is accepted only when it
   is the offer's controller, named by its identity-registry `id` or its DID. An
@@ -251,14 +253,61 @@ required and never blocks submission: REC membership must not be conditioned on
 dataspace sharing, so `can_submit()` does not list it and a participant can
 complete onboarding with it off.
 
+### Where a decision is recorded
+
+**A consent is enforced at the connector that serves the data.** Most of what a
+member decides is about their own community's datasets and is recorded on its
+connector. One is not: whether the grid operator may release their meter
+readings. Those rows are served by the grid operator's data plane, which reads
+the grid operator's consent registry — so a release decision recorded anywhere
+else enforces nothing at all.
+
+So the community is the **collector**: the member's relationship is with it, it
+collects the decision, and it registers it at the holder. The holder admits that
+only because it has recorded this community as an accepted consent collector; it
+answers `403` otherwise.
+
+Which offer goes where is the REC manifest's `dataspace.connectors` — a holder, a
+connector URL, and the offers it holds. An offer named by no entry stays at
+`DS_CONNECTOR_URL`, which is every offer in a community whose data is its own.
+
+**It is configuration and never inferred from the offer.** An offer's
+`recipients.recipient` names who the data goes *to*, which is not who holds it:
+the release offer's recipient is the community itself, and the rows are at the
+grid operator. Routing by the recipient would send every release decision to the
+connector that does not serve them.
+
+**Registered as the community, not as this service.** The connector decides what
+a caller may do from the organisation its token names; a plain service client
+names none, so one that could register a consent could register it at any
+connector for anybody's members. `svc-ds-onboarding` is refused. The call is made
+as `svc-ds-connector-<alias>` — the community's own client, alias from
+`dataspace.organization`, secret `DS_ORG_CLIENT_SECRET`.
+
+**Whose decision it is, is stated.** `decided_by: subject` relays a decision the
+member took — the form, or their own toggle later — and a relayed *withdrawal* is
+then theirs, which nothing else can lift. `decided_by: collector` is the
+community deciding itself, which is what a withdrawal on revoked membership is:
+nobody withdrew, a membership was revoked and the consent went with it.
+
+**The member's supply points travel with a holder's registration.** `keys:
+["pod:…"]`, read from the rec-registry. That data plane keys its rows by supply
+point and knows nothing about this community's members, so they are what turn the
+consent into rows — and a member with no recorded supply point is refused here
+rather than registered, because a consent that can never yield a row is worse
+than a visible failure. They are not sent to the community's own connector, which
+resolves its members without them, and the connector refuses them on a withdrawal
+(a withdrawal drops the keys it had).
+
 ### Provisioning on approval
 
 When a submission is approved with `DS_CONNECTOR_URL` set and
 `data_sharing_consent` true, provisioning runs as the **last step** of identity
 provisioning, after the Keycloak DID sync. For each recorded offer id it POSTs
-to `{DS_CONNECTOR_URL}/consent/admin/shares` with the participant's dataspace
-DID as `subject_id`, `enabled: true`, and a `legal_basis` block carrying the
-consent provenance (source, REC slug, `consent_text_version`, locale,
+to `{connector}/consent/admin/shares` — the one that offer is routed to — with
+the participant's dataspace DID as `subject_id`, `enabled: true`,
+`decided_by: "subject"`, and a `legal_basis` block carrying the consent
+provenance (source, REC slug, `consent_text_version`, locale,
 `rendered_text_sha256`, `accepted_at`, submission ref). It names an **offer**,
 never a dataset. The call is idempotent and sets `share_provisioned=true` on
 success.
@@ -270,8 +319,9 @@ failed share never rolls back the identity or the approval — it just leaves
 `raise_on_error=True`, returning 422 on connector rejection). See
 [dataspace-integration.md](dataspace-integration.md) for the full sequence.
 
-Onboarding authenticates to the connector with its `svc-ds-onboarding` service
-token (scope `connector.consent.provision`, audience `svc-ds-connector`).
+Onboarding reads the offers vocabulary and records the disclosure with its
+`svc-ds-onboarding` service token, and registers the consent with the community's
+own client, as above.
 
 ### Changing the decision afterwards
 
@@ -297,6 +347,24 @@ Three things about it are load-bearing:
 - **A contract-based offer is disclosed, not toggled.** `can_decide` is false for
   it and the write route refuses it by name. Presenting a choice that does not
   exist is what invalidates the consent beside it.
+- **A decision held elsewhere is read back and relayed for them.** A member has
+  no standing at the grid operator's connector — their credential is linked to
+  their own community's participant, and `/consent/my/*` refuses an organisation
+  token in the other direction — so for a routed offer the page reads
+  `GET /consent/admin/subject-shares?subject_id=…` there, per subject, and a
+  toggle is relayed as `decided_by: subject` with their supply points. A
+  withdrawal relayed that way is the member's own and nothing else lifts it. The
+  read **fails closed**: a holder that cannot be reached would otherwise render a
+  granted decision as ungranted, which invites re-granting and hides a withdrawal
+  that has not taken effect. The keys the holder returns are dropped before the
+  page sees them.
+- **A prerequisite is presented, not enforced.** ds decides admission: an offer
+  with `requires_offers` admits a subject only while each required offer is also
+  granted at that connector. The page carries `requires_offers` from the
+  published vocabulary and `missing_prerequisites` from the holder's answer, so
+  "I consented and nothing happened" has an explanation on screen. Onboarding
+  does not enforce it, because two enforcers of one rule is how they come to
+  disagree.
 
 `GET /api/me/data-sharing/history` reads the member's own provenance record
 (`GET {DS_PROVENANCE_URL}/prov/my/events`) under the same credential. That

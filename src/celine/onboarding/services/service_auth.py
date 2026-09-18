@@ -1,6 +1,6 @@
-"""The identities this service presents when it acts as itself.
+"""The identities this service presents when it acts as itself, or for a community.
 
-There are two, and the split is not historical — they are granted by different
+There are three, and the split is not historical — they are granted by different
 people for different things:
 
 ``svc-onboarding`` — ``OIDC_CLIENT_ID`` / ``OIDC_CLIENT_SECRET``
@@ -11,6 +11,13 @@ people for different things:
 ``svc-ds-onboarding`` — ``DS_ONBOARDING_CLIENT_ID`` / ``DS_ONBOARDING_CLIENT_SECRET``
     the dataspace's client, carrying the grants a dataspace deployment gives
     this service: the identity registry, the connector, the registry lookups.
+
+``svc-ds-connector-<alias>`` — derived per REC / ``DS_ORG_CLIENT_SECRET``
+    **a community's own client, not this service's.** Registering a consent is an
+    act of an organisation — the collector — and a connector reads which
+    organisation from the token. A service client names none, so ds refuses one
+    there. See :func:`organisation_token_provider`; it is used for the consent
+    registration and its per-subject read-back, and for nothing else.
 
 Keycloak provisioning used to be neither, and is now neither a Keycloak
 credential at all. It logged in as a *person* — a realm administrator's username
@@ -57,6 +64,59 @@ def _provider_for(client_id: str, client_secret: str) -> OidcClientCredentialsPr
 def service_token_provider() -> OidcClientCredentialsProvider:
     """The dataspace-facing identity: the identity registry and the connector."""
     return _provider_for(settings.ds_onboarding_client_id, settings.ds_onboarding_client_secret)
+
+
+def organisation_client_id(organization_alias: str) -> str:
+    """The client a community registers consent as: ``svc-ds-connector-<alias>``.
+
+    ds's own naming — the client ``ir-cli keycloak org-sync`` and the
+    provisioning bundle create beside the participant — so deriving it here reads
+    a convention rather than inventing one. ``DS_ORG_CLIENT_ID`` overrides it for
+    a deployment whose client is named otherwise.
+    """
+    if settings.ds_org_client_id.strip():
+        return settings.ds_org_client_id.strip()
+    alias = organization_alias.strip()
+    if not alias:
+        raise ConfigurationError(
+            "No dataspace organisation alias, so the organisation client that "
+            "registers consent cannot be named. Set the REC manifest's "
+            "'dataspace.organization', or DS_ORG_CLIENT_ID."
+        )
+    return f"svc-ds-connector-{alias}"
+
+
+def organisation_token_provider(organization_alias: str) -> OidcClientCredentialsProvider:
+    """The identity a **community** acts under when it registers a consent.
+
+    Not ``svc-ds-onboarding``. A connector decides what a caller may do from the
+    organisation its token names, and a plain service client names none — so one
+    shared service client could write a consent at any connector, for anybody's
+    members. ds refuses it for that reason, and this is the client it names
+    instead: the community's own, which carries ``connector.consent.provision``
+    and is the one exception to "an organisation token is bound to its own
+    participant" — it may also write at a holder that has accepted the community
+    as a consent collector.
+
+    Used for ``POST /consent/admin/shares`` and ``GET
+    /consent/admin/subject-shares``, and nothing else. The registry calls, the
+    audience read and ``/admin/disclosure`` stay with the service client, whose
+    grants for those never moved.
+    """
+    client_id = organisation_client_id(organization_alias)
+    if not settings.ds_org_client_secret:
+        raise ConfigurationError(
+            f"DS_ORG_CLIENT_SECRET is not set, so this service cannot "
+            f"authenticate as {client_id} — and only an organisation's own "
+            "client may register a consent. A service token is refused (403)."
+        )
+    return _provider_for(client_id, settings.ds_org_client_secret)
+
+
+async def organisation_auth_headers(organization_alias: str) -> dict[str, str]:
+    """``Authorization`` for a consent registration, as the community itself."""
+    token = await organisation_token_provider(organization_alias).get_token()
+    return {"Authorization": f"Bearer {token.access_token}"}
 
 
 def celine_token_provider() -> OidcClientCredentialsProvider:

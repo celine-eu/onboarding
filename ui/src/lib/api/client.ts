@@ -151,8 +151,13 @@ export interface SharingOffer {
 	legal_basis: string;
 	requires_consent: boolean;
 	recipients: {
-		controller: string;
-		controller_role: string | null;
+		/** The party the data goes to, as an owner alias. The connector renamed
+		 *  this from `controller`; an older one still serves the old spelling, so
+		 *  both are declared and `offerRecipient` reads whichever is there. */
+		recipient?: string;
+		recipient_role?: string | null;
+		controller?: string;
+		controller_role?: string | null;
 		processors: { category: string };
 	};
 	subject_scope: string;
@@ -164,12 +169,26 @@ export interface SharingOffer {
 	retention: string | null;
 	user_visible_hash: string;
 	dataset_count: number;
+	/** Offers this one takes effect only together with. The connector enforces
+	 *  it; a frontend says so beside the toggle. */
+	requires_offers?: string[];
 	fallback_text_en: {
 		purpose_label: string;
 		purpose_definition: string;
 		processor_category: string;
 	};
 	text?: OfferText;
+}
+
+/** The party an offer sends the data to.
+ *
+ *  Reads `recipients.recipient`, falling back to the deprecated `controller`.
+ *  It is load-bearing: this value goes into the hashed rendering that records
+ *  what somebody was shown, so reading only the old name against a renamed
+ *  connector would hash `undefined` for every member — evidence of a consent to
+ *  nobody. */
+export function offerRecipient(offer: SharingOffer): string {
+	return offer.recipients.recipient ?? offer.recipients.controller ?? '';
 }
 
 export interface RecSummary {

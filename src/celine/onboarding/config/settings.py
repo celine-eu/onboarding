@@ -177,6 +177,24 @@ class Settings(BaseSettings):
     ds_connector_url: str = ""
     ds_ns_url: str = ""
 
+    # --- the community's own organisation client -------------------------
+    # Registering a consent is an act of an *organisation*, not of a service. A
+    # connector classifies its caller from the token, and a plain service client
+    # is bound to no participant — so it could write at any connector for
+    # anybody's members. ds retired that path: `svc-ds-onboarding` is now refused
+    # on `POST /consent/admin/shares` with a 403 naming the client to use.
+    #
+    # That client is `svc-ds-connector-<alias>`, the community's own, and the
+    # alias is the REC's `dataspace.organization` — so the id is derived per REC
+    # and this setting only overrides it. The secret has no default and no
+    # derivation, because it is a credential.
+    #
+    # One secret per process. A deployment serving two dataspace communities from
+    # a single instance would need two, and there is nowhere to put the second: a
+    # manifest is the per-REC home for configuration and is not a secret store.
+    ds_org_client_id: str = ""
+    ds_org_client_secret: str = ""
+
     # Provenance, for `GET /api/me/data-sharing/history` and **nothing else**.
     #
     # This setting was removed when `DataDisclosed` moved to the connector's

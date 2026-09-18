@@ -901,3 +901,32 @@ async def test_a_refused_disclosure_writes_no_file(tmp_path, monkeypatch, connec
         )
 
     assert not out.exists(), "a refused disclosure must leave no file behind"
+
+
+async def test_the_recipient_is_read_under_either_spelling(
+    tmp_path, connector, disclosures, owners
+):
+    """ds renamed `recipients.controller` to `recipients.recipient`.
+
+    The old name meant three things at once — the recipient, the subject's home
+    organisation and the GDPR controller — and only the first held in every
+    offer. Reading only the old name against an upgraded connector would resolve
+    nothing, and the export would refuse every handover it used to allow; the
+    fixture above still states the old spelling, which is what keeps both live.
+    """
+    connector.state["offer"] = {
+        **OFFER_RECORD,
+        "recipients": {
+            "recipient": CONTROLLER,
+            "recipient_role": "operations",
+            "processors": {"category": "appointed-service-providers"},
+        },
+    }
+    sub = _sub()
+    connector(sub.dataspace_did)
+
+    out = await _export_to(tmp_path, sub, CONSUMER_DID)
+
+    assert out.exists()
+    header = out.read_text().splitlines()
+    assert any(f"# Controller: {CONTROLLER} (operations)" == line for line in header)

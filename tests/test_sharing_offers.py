@@ -218,3 +218,35 @@ def test_a_valid_texts_block_passes():
 def test_a_malformed_texts_block_is_refused(block, reason):
     with pytest.raises(ValueError, match=reason):
         ts.validate_data_sharing_texts(block, where="m")
+
+
+# ── who an offer sends the data to ───────────────────────────────────────────
+
+
+class TestOfferRecipient:
+    """`recipients.controller` became `recipients.recipient` in the connector.
+
+    The value is load-bearing here: it names the party a disclosure is addressed
+    to, and it goes into the hashed rendering that records what somebody was
+    shown. Reading only one spelling would, against the other connector version,
+    resolve to nothing — an export refusing every handover, or evidence of a
+    consent to nobody.
+    """
+
+    def test_the_current_spelling_is_read(self):
+        assert ts.offer_recipient({"recipients": {"recipient": "example-dso"}}) == "example-dso"
+
+    def test_the_deprecated_spelling_is_still_read(self):
+        assert ts.offer_recipient({"recipients": {"controller": "example-dso"}}) == "example-dso"
+
+    def test_the_current_spelling_wins(self):
+        assert (
+            ts.offer_recipient({"recipients": {"recipient": "example-dso", "controller": "stale"}})
+            == "example-dso"
+        )
+
+    def test_an_offer_naming_nobody_answers_nothing(self):
+        """Refusing is the caller's job, and every caller does: guessing a
+        recipient is a disclosure nobody can detect in the answer."""
+        assert ts.offer_recipient({}) == ""
+        assert ts.offer_recipient({"recipients": {}}) == ""

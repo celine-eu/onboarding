@@ -166,6 +166,33 @@ consent:
 #   organization: example-community
 #   organization_did: did:web:example-community.dataspaces.localhost
 #   linked_participant_did: did:web:consumer.dataspaces.localhost
+#
+#   # Where a decision about somebody else's data is recorded.
+#   #
+#   # A consent is enforced at the connector that SERVES the data. Most of what
+#   # this community's members decide is about this community's own datasets, and
+#   # goes to DS_CONNECTOR_URL. But a grid operator holds their meter readings:
+#   # the decision to release those is enforced by the grid operator's data
+#   # plane, so it has to be recorded at the grid operator's connector or it
+#   # enforces nothing at all. The community is then the collector — the member's
+#   # relationship is with it — and the holder must have recorded this community
+#   # as an accepted consent collector for the write to be admitted.
+#   #
+#   # Configuration, never inferred. An offer's `recipients.recipient` says who
+#   # the data goes TO, which is not who holds it: a release offer's recipient is
+#   # this community, and the rows are at the grid operator.
+#   #
+#   # Offers named by no entry stay here, which is every offer in a community
+#   # whose data is its own. Registering at a holder also needs
+#   # DS_ORG_CLIENT_SECRET — a consent is written as the community, not as this
+#   # service — and the member's supply points, which are read from the registry
+#   # and sent with the decision because the holder can find their rows no other
+#   # way.
+#   connectors:
+#     - holder: example-dso
+#       url: http://connector.example-dso.localhost
+#       offers:
+#         - meter-data-release
 
 notifications:
   from: "noreply@example.com"

@@ -28,6 +28,28 @@ def _reset_token_provider():
     di._token_provider = None
 
 
+@pytest.fixture(autouse=True)
+def _org_client(monkeypatch):
+    """The community's own client, without a Keycloak to mint its token.
+
+    Only the network hop is stubbed: `organisation_token_provider` still derives
+    the client id from the REC's alias and still refuses a missing secret, which
+    is the part worth exercising. `used` records what it was asked for, so a test
+    can assert this service authenticated as the **community** rather than as
+    itself — the whole point of the change.
+    """
+    from celine.onboarding.services import service_auth
+
+    used: list[tuple[str, str]] = []
+
+    def _provider(client_id: str, client_secret: str):
+        used.append((client_id, client_secret))
+        return _mock_token_provider()
+
+    monkeypatch.setattr(service_auth, "_provider_for", _provider)
+    return used
+
+
 @pytest.fixture()
 def _enable_shares(monkeypatch, bind_rec):
     bind_rec(
@@ -35,6 +57,8 @@ def _enable_shares(monkeypatch, bind_rec):
         organization="rec-example",
         linked_participant_did="did:web:rec.example",
     )
+    monkeypatch.setattr(di.settings, "ds_org_client_id", "")
+    monkeypatch.setattr(di.settings, "ds_org_client_secret", "org-secret")
     monkeypatch.setattr(di.settings, "dataspace_enabled", True)
     monkeypatch.setattr(di.settings, "identity_registry_url", "http://ir:30005")
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
@@ -83,7 +107,9 @@ async def test_shares_skipped_without_connector_url(monkeypatch, submission, _en
     assert await di.provision_user_shares(submission) is False
 
 
-async def test_shares_provisioned_when_consented(monkeypatch, submission, _enable_shares):
+async def test_shares_provisioned_when_consented(
+    monkeypatch, submission, _enable_shares, _org_client
+):
     di._token_provider = _mock_token_provider()
     _consented(submission)
     captured = {}
@@ -107,6 +133,56 @@ async def test_shares_provisioned_when_consented(monkeypatch, submission, _enabl
     assert sent["legal_basis"]["submission_ref"] == submission.ref
     assert sent["legal_basis"]["rendered_text_sha256"] == "sha-of-shown-text"
     assert sent["legal_basis"]["source"] == "onboarding"
+    # The member ticked the box on a form; this relays their decision. It is the
+    # other half of the pair that matters: a relayed withdrawal is then theirs,
+    # and no later provisioning run lifts it.
+    assert sent["decided_by"] == "subject"
+    # Nothing about the person beyond the reference. The community's own
+    # connector resolves its members itself, so their supply points stay here.
+    assert "keys" not in sent
+
+
+async def test_the_registration_is_made_as_the_community_not_as_this_service(
+    monkeypatch, submission, _enable_shares, _org_client
+):
+    """ds refuses a plain service token on this route, and it is right to.
+
+    A shared service client is bound to no participant, so one could write a
+    consent at any connector for anybody's members. The client here is the
+    community's own, derived from the alias its manifest names.
+    """
+    di._token_provider = _mock_token_provider()
+    _consented(submission)
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=[{"id": "row-1"}]))
+
+    assert await di.provision_user_shares(submission) is True
+    assert _org_client == [("svc-ds-connector-rec-example", "org-secret")]
+
+
+async def test_without_the_organisation_secret_nothing_is_registered(
+    monkeypatch, submission, _enable_shares, caplog
+):
+    """Nothing is sent, and the log names the credential that is missing.
+
+    Sending it anyway would go out as `svc-ds-onboarding` and come back 403, two
+    hops away from anything that names the cause. The operator's answer says the
+    client is not configured and points at the log, where the setting is: a REC
+    manager retrying a share cannot act on a deployment's own settings
+    (`services.errors`).
+    """
+    monkeypatch.setattr(di.settings, "ds_org_client_secret", "")
+    di._token_provider = _mock_token_provider()
+    _consented(submission)
+    posts = []
+    _patch_httpx(monkeypatch, lambda req: posts.append(req) or httpx.Response(200, json=[]))
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ValueError, match="not configured") as raised:
+            await di.provision_user_shares(submission, raise_on_error=True)
+
+    assert posts == []
+    assert "DS_ORG_CLIENT_SECRET" not in str(raised.value)
+    assert "DS_ORG_CLIENT_SECRET" in caplog.text
 
 
 async def test_retry_unknown_offer_fails_loudly(monkeypatch, submission, _enable_shares):
@@ -209,6 +285,10 @@ async def test_withdrawal_flips_the_same_call_it_granted_with(
     # is recorded.
     assert sent["enabled"] is False
     assert sent["message"] == "Membership revoked in example"
+    # Nobody withdrew: the community revoked a membership and the consent goes
+    # with it. Recording it as the member's would attribute an act to somebody
+    # who did not take it — and lock it, since only they could lift it again.
+    assert sent["decided_by"] == "collector"
 
 
 async def test_withdrawal_is_skipped_when_there_is_nothing_to_withdraw(
@@ -243,63 +323,52 @@ async def test_withdrawal_reports_failure_rather_than_claiming_success(
     assert submission.share_provisioned is True
 
 
-# ── offers controlled by another organisation: the member's own route ─────────
+# ── the decision goes to the connector that holds the data ───────────────────
 #
-# ds records a service's standing share only for a member of the offer's
-# controller. An offer controlled elsewhere — the distributor, the operator's
-# research — is accepted in the same form, and recorded right after approval with
-# the member's own credential. One acceptance; nothing decided for the member.
+# A consent is enforced where the data is served. A community's own connector
+# holds its own datasets; the member's meter readings sit at the grid operator,
+# and a release decision recorded anywhere else enforces nothing — the data plane
+# answering for those rows never reads it. So the community writes at the
+# holder's connector, as the collector it has been accepted as, and sends the
+# member's supply points with the decision because that connector has no other
+# way to find their rows.
 
-OWN = "did:web:rec.example"
-DISTRIBUTOR = "did:web:dso.example"
+HOLDER_URL = "http://dso-connector:30001"
+RELEASE = "meter-data-release"
+OWN_OFFER = "household-energy-flexibility"
+POD = "EX000E00000001"
 
 
 @pytest.fixture()
-def two_controllers(monkeypatch, submission, _enable_shares, bind_rec):
-    """The member accepted one offer of their community's and one of the distributor's."""
-    from celine.onboarding.services import template_service
-
+def two_connectors(monkeypatch, submission, _enable_shares, bind_rec):
+    """The member accepted one of the community's offers and one release offer."""
     bind_rec(
         "default",
         organization="rec-example",
-        organization_did=OWN,
+        organization_did="did:web:rec.example",
         linked_participant_did="did:web:rec.example",
+        connectors=[{"holder": "example-dso", "url": HOLDER_URL, "offers": [RELEASE]}],
     )
     di._token_provider = _mock_token_provider()
     _consented(submission)
     submission.email = "member@example.org"
-    submission.data_sharing_consent_offer_ids = ["community-offer", "release-offer"]
+    submission.pod_code = POD
+    submission.data_sharing_consent_offer_ids = [OWN_OFFER, RELEASE]
 
-    controllers = {"community-offer": "rec-example", "release-offer": "dso-org"}
-    dids = {"rec-example": OWN, "dso-org": DISTRIBUTOR}
+    state: dict = {"pods": {submission.dataspace_did: [POD]}}
 
-    async def _offer(rec_slug, offer_id):
-        return {"id": offer_id, "recipients": {"controller": controllers[offer_id]}}
+    async def _supply_points(dids, *, rec_slug):
+        return state["pods"]
 
-    async def _did(alias):
-        return dids[alias]
+    from celine.onboarding.services import rec_registry
 
-    async def _access():
-        return di.RegistryAccess(base_url="http://ir:30005", headers={})
-
-    state = {
-        "credential": di.SubjectCredential(subject_id=submission.dataspace_did, vc_jws="vc.jws")
-    }
-
-    async def _credential(access, *, email):
-        assert email == "member@example.org"
-        return state["credential"]
-
-    monkeypatch.setattr(template_service, "get_sharing_offer", _offer)
-    monkeypatch.setattr(di, "resolve_consumer_did", _did)
-    monkeypatch.setattr(di, "registry_access", _access)
-    monkeypatch.setattr(di, "resolve_subject_credential", _credential)
+    monkeypatch.setattr(rec_registry, "supply_points_by_did", _supply_points)
 
     requests: list[httpx.Request] = []
 
     def handler(req):
         requests.append(req)
-        return httpx.Response(200, json=[{"id": "row"}])
+        return httpx.Response(200, json=[{"id": "row", "missing_prerequisites": []}])
 
     _patch_httpx(monkeypatch, handler)
     state["requests"] = requests
@@ -309,79 +378,173 @@ def two_controllers(monkeypatch, submission, _enable_shares, bind_rec):
 def _posts(requests):
     import json
 
-    return [
-        (r.url.path, json.loads(r.read().decode()), r.headers.get("X-User-VC"))
-        for r in requests
-        if r.method == "POST"
-    ]
+    return {str(r.url): json.loads(r.read().decode()) for r in requests if r.method == "POST"}
 
 
-async def test_each_offer_goes_by_the_route_ds_accepts(submission, two_controllers):
+async def test_each_decision_goes_to_the_connector_that_holds_the_data(submission, two_connectors):
     ok = await di.provision_user_shares(submission)
 
     assert ok is True
-    posts = _posts(two_controllers["requests"])
-    by_path = {path: (body, vc) for path, body, vc in posts}
-    member_body, member_vc = by_path["/consent/my/shares"]
-    assert member_body == {"offer_id": "release-offer", "enabled": True}
-    assert member_vc == "vc.jws"
-    service_body, service_vc = by_path["/consent/admin/shares"]
-    assert service_body["offer_id"] == "community-offer"
-    assert service_body["legal_basis"]["submission_ref"] == submission.ref
-    assert service_vc is None
-    assert len(posts) == 2
+    posts = _posts(two_connectors["requests"])
+    assert set(posts) == {
+        "http://connector:30001/consent/admin/shares",
+        f"{HOLDER_URL}/consent/admin/shares",
+    }
+    here = posts["http://connector:30001/consent/admin/shares"]
+    there = posts[f"{HOLDER_URL}/consent/admin/shares"]
+    assert here["offer_id"] == OWN_OFFER
+    assert there["offer_id"] == RELEASE
+    # One acceptance, on one form. Both are the member's decision, relayed.
+    assert here["decided_by"] == there["decided_by"] == "subject"
+    assert here["legal_basis"] == there["legal_basis"]
 
 
-async def test_no_credential_means_the_distributor_offer_is_not_recorded(
-    submission, two_controllers
+async def test_the_release_decision_carries_the_members_supply_points(submission, two_connectors):
+    """Typed keys, and only where they are needed.
+
+    The holder's data plane keys its rows by supply point and knows nothing about
+    this community's members, so these are what turn the consent into rows. The
+    community's own connector resolves its members without them, and they are
+    personal data, so they do not go there.
+    """
+    await di.provision_user_shares(submission)
+
+    posts = _posts(two_connectors["requests"])
+    assert posts[f"{HOLDER_URL}/consent/admin/shares"]["keys"] == [f"pod:{POD}"]
+    assert "keys" not in posts["http://connector:30001/consent/admin/shares"]
+
+
+async def test_a_member_with_no_supply_point_is_not_registered_at_the_holder(
+    submission, two_connectors
 ):
-    two_controllers["credential"] = None
+    """A consent that can never yield a row is refused, not recorded.
+
+    The holder finds this member only by the keys sent with the decision. With
+    none, the registration would succeed, the member would see a granted toggle,
+    and nothing would ever be released — visible to nobody.
+    """
+    two_connectors["pods"] = {}
 
     ok = await di.provision_user_shares(submission)
 
     assert ok is False
     assert submission.share_provisioned is False
-    paths = [path for path, _, _ in _posts(two_controllers["requests"])]
-    assert "/consent/my/shares" not in paths
+    posts = _posts(two_connectors["requests"])
+    assert f"{HOLDER_URL}/consent/admin/shares" not in posts
+    # The community's own offer is unaffected: one member, two decisions.
+    assert "http://connector:30001/consent/admin/shares" in posts
 
 
-async def test_a_credential_for_somebody_else_is_never_presented(submission, two_controllers):
-    two_controllers["credential"] = di.SubjectCredential(
-        subject_id="did:web:users.example:someone-else", vc_jws="other.jws"
-    )
+async def test_the_registry_is_asked_before_the_intake_form(submission, two_connectors):
+    """Two records of one fact, and the running system is the one that is right.
 
-    with pytest.raises(ValueError, match="someone-else"):
-        await di.provision_user_shares(submission, raise_on_error=True)
-    assert all(vc != "other.jws" for _, _, vc in _posts(two_controllers["requests"]))
-
-
-async def test_an_offer_whose_controller_cannot_be_told_stays_a_service_share(
-    monkeypatch, submission, two_controllers
-):
-    """Failing to look it up must never select the member's credential."""
-    from celine.onboarding.services import template_service
-
-    async def _broken(rec_slug, offer_id):
-        raise template_service.SharingOffersUnavailableError("vocabulary down")
-
-    monkeypatch.setattr(template_service, "get_sharing_offer", _broken)
+    A POD an operator corrected or retired in the registry never reaches
+    `submissions.pod_code`, so the declared value is a fallback for a deployment
+    with no registry and not a second opinion.
+    """
+    two_connectors["pods"] = {submission.dataspace_did: ["EX000E00000999"]}
 
     await di.provision_user_shares(submission)
 
-    paths = [path for path, _, _ in _posts(two_controllers["requests"])]
-    assert paths == ["/consent/admin/shares", "/consent/admin/shares"]
+    posts = _posts(two_connectors["requests"])
+    assert posts[f"{HOLDER_URL}/consent/admin/shares"]["keys"] == ["pod:EX000E00000999"]
 
 
-async def test_withdrawal_takes_the_route_the_grant_took(submission, two_controllers):
+async def test_with_no_registry_the_declared_supply_point_is_used(
+    monkeypatch, submission, two_connectors
+):
+    from celine.onboarding.services import rec_registry
+
+    async def _no_registry(dids, *, rec_slug):
+        return None
+
+    monkeypatch.setattr(rec_registry, "supply_points_by_did", _no_registry)
+
+    assert await di.provision_user_shares(submission) is True
+    posts = _posts(two_connectors["requests"])
+    assert posts[f"{HOLDER_URL}/consent/admin/shares"]["keys"] == [f"pod:{POD}"]
+
+
+async def test_withdrawal_follows_the_route_the_grant_took(submission, two_connectors):
     submission.share_provisioned = True
 
     ok = await di.withdraw_user_shares(submission, reason="Membership revoked")
 
     assert ok is True
-    by_path = {path: (body, vc) for path, body, vc in _posts(two_controllers["requests"])}
-    assert by_path["/consent/my/shares"] == (
-        {"offer_id": "release-offer", "enabled": False},
-        "vc.jws",
-    )
-    assert by_path["/consent/admin/shares"][0]["offer_id"] == "community-offer"
-    assert by_path["/consent/admin/shares"][0]["enabled"] is False
+    posts = _posts(two_connectors["requests"])
+    there = posts[f"{HOLDER_URL}/consent/admin/shares"]
+    assert there["offer_id"] == RELEASE
+    assert there["enabled"] is False
+    assert there["decided_by"] == "collector"
+    # ds refuses keys on a withdrawal: a withdrawal drops the keys it had.
+    assert "keys" not in there
+
+
+async def test_a_holder_that_refuses_does_not_hide_behind_the_other_connector(
+    monkeypatch, submission, two_connectors
+):
+    def handler(req):
+        two_connectors["requests"].append(req)
+        if str(req.url).startswith(HOLDER_URL):
+            return httpx.Response(403, text="not an accepted collector")
+        return httpx.Response(200, json=[{"id": "row"}])
+
+    _patch_httpx(monkeypatch, handler)
+
+    with pytest.raises(ValueError, match="not an accepted collector"):
+        await di.provision_user_shares(submission, raise_on_error=True)
+    assert submission.share_provisioned is False
+
+
+async def test_an_unmet_prerequisite_is_recorded_and_reported(
+    monkeypatch, submission, two_connectors, caplog
+):
+    """ds records the decision and says it admits nobody yet.
+
+    An offer that takes effect only together with another is a real state a
+    member can be in — research granted, release not — and it is the explanation
+    for "I consented and nothing happened".
+    """
+
+    def handler(req):
+        two_connectors["requests"].append(req)
+        return httpx.Response(200, json=[{"id": "row", "missing_prerequisites": [RELEASE]}])
+
+    _patch_httpx(monkeypatch, handler)
+
+    with caplog.at_level("INFO"):
+        assert await di.provision_user_shares(submission) is True
+    assert RELEASE in caplog.text
+
+
+# ── which client the consent is written as ───────────────────────────────────
+
+
+class TestTheOrganisationClient:
+    """Naming it is a convention, not an invention.
+
+    ds creates `svc-ds-connector-<alias>` beside every participant, so deriving
+    the id from the community's alias means a deployment configures one secret
+    rather than a name it could get subtly wrong.
+    """
+
+    def test_the_id_is_derived_from_the_communitys_alias(self, monkeypatch):
+        from celine.onboarding.services import service_auth
+
+        monkeypatch.setattr(service_auth.settings, "ds_org_client_id", "")
+        assert service_auth.organisation_client_id("example-rec") == "svc-ds-connector-example-rec"
+
+    def test_a_deployment_may_name_its_own(self, monkeypatch):
+        from celine.onboarding.services import service_auth
+
+        monkeypatch.setattr(service_auth.settings, "ds_org_client_id", "svc-something-else")
+        assert service_auth.organisation_client_id("example-rec") == "svc-something-else"
+
+    def test_a_community_out_of_the_dataspace_has_none(self, monkeypatch):
+        """And says so, rather than deriving `svc-ds-connector-`."""
+        from celine.onboarding.services import service_auth
+        from celine.onboarding.services.errors import ConfigurationError
+
+        monkeypatch.setattr(service_auth.settings, "ds_org_client_id", "")
+        with pytest.raises(ConfigurationError, match="dataspace.organization"):
+            service_auth.organisation_client_id("")

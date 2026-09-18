@@ -13,7 +13,10 @@ from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.models.verification import CREDENTIAL_METHOD_PREFIX
 from celine.onboarding.services import template_service
-from celine.onboarding.services.service_auth import service_token_provider
+from celine.onboarding.services.service_auth import (
+    organisation_auth_headers,
+    service_token_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -943,120 +946,358 @@ def _evidence_problems(submission: Submission) -> list[str]:
     return problems
 
 
-async def _offers_controlled_elsewhere(submission: Submission, offer_ids: list[str]) -> set[str]:
-    """The accepted offers whose controller is not the member's own community.
+@dataclass(frozen=True, slots=True)
+class ConsentRoute:
+    """Where one offer's decision is recorded, and on whose authority.
 
-    ds records a standing share from a service only for a subject who belongs to
-    the offer's controller (`POST /consent/admin/shares`, 403 otherwise). A member
-    of a community can accept, in the form, an offer controlled by another
-    organisation — the distributor releasing their readings, the operator training
-    models — and those decisions can only be recorded by the member's own
-    credential. This finds them.
+    **A consent belongs at the connector that serves the data**, which is not
+    always the community's own. A grid operator holds its members' meter
+    readings; a decision to release them recorded at the community's connector
+    enforces nothing, because the data plane that answers for those rows never
+    reads it. The community is then the *collector* — the member's relationship
+    is with it — and the holder accepts its registrations because it has recorded
+    the community as an accepted consent collector.
 
-    Compared by DID, because an offer may name its controller by an alias.
-
-    **A lookup that fails leaves the offer on the service path**, which is the
-    safe side: ds refuses there anything it would not grant, and the refusal is
-    reported and retryable. Guessing the member path from a failed lookup is what
-    must not happen.
+    ``collector`` is the community's organisation alias, and it is what the token
+    is fetched for: the registration is an act of that organisation, whichever
+    connector it lands at.
     """
-    try:
-        binding = template_service.dataspace_binding(submission.rec_slug)
-    except (KeyError, ValueError):
-        return set()
-    community = binding.organization_did
-    if not community and binding.organization:
-        try:
-            community = await resolve_consumer_did(binding.organization)
-        except Exception as exc:  # noqa: BLE001 — any failure keeps the service path
-            logger.warning(
-                "Could not resolve %s's own organisation (%s); recording every offer as a service",
-                submission.ref,
-                exc,
-            )
-            return set()
-    if not community:
-        return set()
 
-    elsewhere: set[str] = set()
-    for offer_id in offer_ids:
-        try:
-            offer = await template_service.get_sharing_offer(submission.rec_slug, offer_id)
-            controller = str((offer.get("recipients") or {}).get("controller") or "").strip()
-            if controller and await resolve_consumer_did(controller) != community:
-                elsewhere.add(offer_id)
-        except Exception as exc:  # noqa: BLE001 — any failure keeps the service path
-            logger.warning(
-                "Could not tell who controls offer %s for %s (%s); recording it as a service",
-                offer_id,
-                submission.ref,
-                exc,
-            )
-    return elsewhere
+    offer_id: str
+    connector_url: str
+    collector: str
+    #: The participant whose connector this is, when it is not the community's
+    #: own. ``None`` is the ordinary case and means *here*.
+    holder: str | None = None
+
+    @property
+    def is_holder(self) -> bool:
+        """Whether this registration crosses into another participant's connector."""
+        return self.holder is not None
+
+    @property
+    def where(self) -> str:
+        return f"{self.holder}'s connector" if self.holder else "this community's connector"
 
 
-async def _set_shares_as_member(
-    client: httpx.AsyncClient,
-    connector_url: str,
-    submission: Submission,
+@dataclass(frozen=True, slots=True)
+class ShareRegistration:
+    """What one connector answered about one offer.
+
+    ``missing_prerequisites`` is ds's: the offers this one is admitted only
+    together with (`requires_offers`) that the subject has not granted *there*.
+    A registration with a non-empty list is recorded and admits nobody yet, which
+    is worth carrying back rather than discovering as an empty row filter — the
+    member granted research but not release, and only the holder can say so.
+    """
+
+    offer_id: str
+    ok: bool
+    detail: str = ""
+    missing_prerequisites: tuple[str, ...] = ()
+
+
+def consent_routes(
+    binding: template_service.DataspaceBinding,
+    own_connector_url: str,
     offer_ids: list[str],
-    *,
-    enabled: bool,
-) -> list[str]:
-    """Record the member's own decisions with the member's own credential.
+) -> list[ConsentRoute]:
+    """One route per offer, from the REC's manifest.
 
-    The decision is the one the member made in the form; this carries it to the
-    connector through the route a member uses (`POST /consent/my/shares`), which
-    verifies the credential onboarding has just issued. Only offers the member
-    accepted ever reach here, and nothing is decided on their behalf.
-
-    What the route does not carry is the form's evidence — text version, locale,
-    rendered-text hash. It stays on the submission; the connector stamps the
-    offer's own version and hash.
+    Configuration, never inference. An offer's ``recipients.recipient`` says who
+    the data goes *to*, which since ds's rename is emphatically not who holds it:
+    a release offer's recipient is the community, and the rows sit at the grid
+    operator. Routing by the recipient would send every release decision to the
+    connector that does not serve them.
     """
-    if not offer_ids:
-        return []
-    access = await registry_access()
-    credential = await resolve_subject_credential(access, email=submission.email)
-    if credential is None:
-        return [f"{o}: the member holds no credential to record it with" for o in offer_ids]
-    if credential.subject_id != submission.dataspace_did:
-        return [
-            f"{o}: the member's credential names {credential.subject_id}, "
-            f"not {submission.dataspace_did}"
-            for o in offer_ids
-        ]
-
-    failures: list[str] = []
+    routes: list[ConsentRoute] = []
     for offer_id in offer_ids:
-        try:
-            resp = await client.post(
-                f"{connector_url}/consent/my/shares",
-                json={"offer_id": offer_id, "enabled": enabled},
-                headers=credential.headers,
+        connector = binding.connector_for(offer_id)
+        routes.append(
+            ConsentRoute(
+                offer_id=offer_id,
+                connector_url=(connector.url if connector else own_connector_url).rstrip("/"),
+                collector=binding.organization,
+                holder=connector.holder if connector else None,
             )
+        )
+    return routes
+
+
+async def subject_supply_keys(
+    rec_slug: str, did: str, *, declared_pod: str | None = None
+) -> list[str]:
+    """The member's supply points, typed, for a registration at a holder.
+
+    ``["pod:EX000E00000001"]``. The holder's data plane keys its rows by supply
+    point and knows nothing about the community's members, so these are what
+    turns a consent into rows: ds stores them on the consent row and carries them
+    in the row filter beside the principals, and the dataset-api matches them.
+
+    **The registry is the source, and the intake form only when there is no
+    registry.** A POD an operator corrected or retired never reaches
+    ``submissions.pod_code``, and the export learned the same lesson: two records
+    of one fact disagree, and the running system is the one that is right. A
+    community with no ``REC_REGISTRY_URL`` (or no ``rec_registry`` block) has
+    only the declared value, which is better than nothing and is why the fallback
+    exists at all.
+
+    An empty answer is an answer: the member holds nothing the registry knows of,
+    and the caller refuses the registration rather than recording a consent that
+    can never yield a row.
+    """
+    from celine.onboarding.services import rec_registry
+
+    pods: list[str] | None = None
+    try:
+        found = await rec_registry.supply_points_by_did([did], rec_slug=rec_slug)
+    except Exception as exc:  # noqa: BLE001 — reported by the caller as a refusal
+        logger.warning("Could not read supply points for %s from the registry: %s", did, exc)
+        found = None
+    else:
+        if found is not None:
+            pods = found.get(did, [])
+
+    if pods is None:
+        # No registry to ask. Not the same as "the registry knows of none", which
+        # is `[]` and stands.
+        pods = [declared_pod.strip()] if declared_pod and declared_pod.strip() else []
+
+    return [f"pod:{pod}" for pod in dict.fromkeys(pods) if pod]
+
+
+async def register_share(
+    client: httpx.AsyncClient,
+    route: ConsentRoute,
+    *,
+    subject_id: str,
+    enabled: bool,
+    decided_by: str,
+    legal_basis: dict[str, Any] | None = None,
+    keys: list[str] | None = None,
+    message: str | None = None,
+) -> ShareRegistration:
+    """Register one standing decision at the connector that holds the data.
+
+    **As the community, never as this service.** ds classifies the caller from
+    the verified token and refuses a plain service client: one shared service
+    account is bound to no participant, so it could write at any connector for
+    anybody's members. The token here is the collector's own organisation client,
+    which is also what lets it write at a holder that accepted it as a collector.
+
+    ``decided_by`` is not optional and not a detail. ``subject`` relays a decision
+    the member took — and a relayed *withdrawal* is then the member's, which
+    nothing else can lift; ``collector`` records one the organisation took
+    itself, which it may lift again. Sending the wrong one is a decision
+    attributed to the wrong person.
+
+    ``keys`` travel with a grant only. ds refuses them on a withdrawal — a
+    withdrawal drops the keys it had — and they are personal data, so they are
+    sent only where they are needed: a holder's data plane has no other way to
+    find this member's rows, and the community's own connector resolves its
+    members without them.
+    """
+    body: dict[str, Any] = {
+        "subject_id": subject_id,
+        "offer_id": route.offer_id,
+        "enabled": enabled,
+        "decided_by": decided_by,
+    }
+    if legal_basis is not None:
+        body["legal_basis"] = legal_basis
+    if message:
+        body["message"] = message
+    if enabled and keys:
+        body["keys"] = keys
+
+    try:
+        headers = await organisation_auth_headers(route.collector)
+    except Exception:  # noqa: BLE001 — reported per offer, never raised from here
+        # Logged in full and summarised in the answer. The reason names this
+        # deployment's own settings, and the answer reaches an operator's console
+        # as a 422 body: the person who can fix it is reading the log, and the
+        # REC manager retrying a share is not (`services.errors`).
+        logger.exception(
+            "Cannot authenticate as %s to register consent at %s",
+            route.collector or "<no organisation>",
+            route.where,
+        )
+        return ShareRegistration(
+            route.offer_id,
+            ok=False,
+            detail=(
+                "this community's own dataspace client is not configured, so the "
+                "decision cannot be registered — see the server log"
+            ),
+        )
+
+    try:
+        resp = await client.post(
+            f"{route.connector_url}/consent/admin/shares", json=body, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        return ShareRegistration(route.offer_id, ok=False, detail=f"{route.where}: {exc}")
+
+    # Nothing to withdraw is the state a withdrawal wants.
+    if resp.status_code == 404 and not enabled:
+        return ShareRegistration(route.offer_id, ok=True, detail="nothing to withdraw")
+
+    if resp.status_code >= 400:
+        logger.error(
+            "Consent registration for offer %s at %s failed (%s): %s",
+            route.offer_id,
+            route.where,
+            resp.status_code,
+            resp.text,
+        )
+        return ShareRegistration(
+            route.offer_id,
+            ok=False,
+            detail=f"{route.where}: {resp.status_code} {resp.text}",
+        )
+
+    missing: tuple[str, ...] = ()
+    try:
+        rows = resp.json()
+    except ValueError:
+        rows = []
+    if isinstance(rows, list):
+        missing = tuple(
+            dict.fromkeys(
+                str(offer)
+                for row in rows
+                if isinstance(row, dict)
+                for offer in (row.get("missing_prerequisites") or [])
+            )
+        )
+    if missing:
+        # Recorded, and admitting nobody yet. Not a failure — the decision is
+        # exactly what the member made — but silence here is how "I consented and
+        # nothing happened" becomes unexplainable.
+        logger.info(
+            "Offer %s is recorded at %s and waits for %s",
+            route.offer_id,
+            route.where,
+            ", ".join(missing),
+        )
+    return ShareRegistration(route.offer_id, ok=True, missing_prerequisites=missing)
+
+
+async def relay_member_decision(
+    rec_slug: str,
+    *,
+    subject_id: str,
+    offer_id: str,
+    enabled: bool,
+    legal_basis: dict[str, Any] | None = None,
+) -> ShareRegistration:
+    """Carry a decision the member just took to the connector that holds the data.
+
+    For an offer the community does not hold. The member cannot act there
+    themselves — their credential is linked to their own community's participant
+    and the holder refuses it — so their community relays it, as the collector,
+    and says the decision is **theirs** (``decided_by="subject"``). A withdrawal
+    relayed this way is the member's own, which is the whole point: nothing the
+    community or a service does afterwards can lift it.
+
+    Their supply points go with a grant, because the holder's data plane has no
+    other way to find their rows.
+    """
+    binding = template_service.dataspace_binding(rec_slug)
+    route = consent_routes(binding, settings.ds_connector_url, [offer_id])[0]
+
+    keys: list[str] | None = None
+    if enabled and route.is_holder:
+        keys = await subject_supply_keys(rec_slug, subject_id)
+        if not keys:
+            return ShareRegistration(
+                offer_id,
+                ok=False,
+                detail=(
+                    "no supply point is recorded for this member, so "
+                    f"{route.where} would have nothing to release"
+                ),
+            )
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        return await register_share(
+            client,
+            route,
+            subject_id=subject_id,
+            enabled=enabled,
+            decided_by="subject",
+            legal_basis=legal_basis,
+            keys=keys,
+        )
+
+
+async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[dict[str, Any]]:
+    """What every other participant's connector recorded for this member.
+
+    The read-back a collector needs: a member's decisions do not all live in one
+    place any more, and the one that matters most — the release — lives where the
+    member cannot read it. ``/consent/my/*`` is theirs and refuses an
+    organisation token by design, so this is ds's narrow exception: per subject,
+    limited to the caller's own members, and never a roster.
+
+    Raises rather than returning a partial list. A holder that cannot be reached
+    makes a granted decision look withdrawn, which is the direction that invites
+    somebody to grant again what they already granted — and hides a withdrawal
+    that has not taken effect.
+    """
+    binding = template_service.dataspace_binding(rec_slug)
+    decisions: list[dict[str, Any]] = []
+    for connector in binding.connectors:
+        headers = await organisation_auth_headers(binding.organization)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{connector.url}/consent/admin/subject-shares",
+                    params={"subject_id": subject_id},
+                    headers=headers,
+                )
         except httpx.HTTPError as exc:
-            failures.append(f"{offer_id}: {exc}")
-            continue
-        # On a withdrawal, nothing to withdraw is the state we want.
-        if resp.status_code >= 400 and not (not enabled and resp.status_code == 404):
-            failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
-    return failures
+            raise RuntimeError(
+                f"{connector.holder}'s connector could not be reached, so what it "
+                f"recorded for this member is unknown: {exc}"
+            ) from exc
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"{connector.holder}'s connector answered {resp.status_code} for "
+                "this member's decisions"
+            )
+        body = resp.json()
+        rows = body if isinstance(body, list) else body.get("items", [])
+        for row in rows:
+            if isinstance(row, dict):
+                # Where it was recorded, for a reader that now sees two sources
+                # in one list. Never the keys: they are on the row and this is
+                # rendered to the member's own page.
+                decisions.append(
+                    {**{k: v for k, v in row.items() if k != "keys"}, "holder": connector.holder}
+                )
+    return decisions
 
 
 async def provision_user_shares(submission: Submission, *, raise_on_error: bool = False) -> bool:
-    """Push the subject's standing data-sharing consent to the connector.
+    """Push the subject's standing data-sharing consent to the connectors.
 
     Called at the end of :func:`provision_user_identity` and again by the admin
     retry endpoint.  Names an ``offer_id`` per recorded offer — never a dataset —
     so the connector expands each into the datasets the offer describes and the
     onboarding config can never drift from what the person read.
 
-    **Two routes, one acceptance.** An offer controlled by the member's own
-    community is recorded here as a service, with the form's evidence. An offer
-    controlled by another organisation cannot be — ds refuses a service that — so
-    it is recorded right after, with the member's own freshly issued credential
-    (:func:`_set_shares_as_member`). The member accepts once, in the form.
+    **One acceptance, several connectors.** The member ticked the boxes once, in
+    the form; each accepted offer is then recorded at the connector that holds
+    the data it reaches (:func:`consent_routes`), as the community's own
+    organisation client and with the form's evidence. Offers whose data is this
+    community's go to its own connector, as before; a release offer goes to the
+    grid operator's, where the rows are.
+
+    **Whose decision it is: the member's** (``decided_by="subject"``). This
+    relays a decision somebody took on a form, not one the community made for
+    them — which matters most on the other side of the pair, because a relayed
+    withdrawal is then theirs and no later provisioning run lifts it.
 
     ``raise_on_error`` is False on the approval path (a failure must not fail
     approval) and True on explicit retry (the operator wants to see it fail).
@@ -1090,62 +1331,64 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
             raise ValueError(f"Consent evidence is incomplete: {detail}")
         return False
 
-    connector_url = settings.ds_connector_url.rstrip("/")
-    headers = await _auth_headers()
+    # The routing is in the manifest, so the cache has to be authoritative before
+    # it is read — this runs from the retry endpoint too, and a stale cache would
+    # send a release decision to the community's own connector, where it enforces
+    # nothing and still answers 200.
+    await template_service.ensure_fresh()
+    binding = template_service.dataspace_binding(submission.rec_slug)
+    routes = consent_routes(binding, settings.ds_connector_url, offer_ids)
     accepted_at = (
         submission.data_sharing_consent_at.isoformat()
         if submission.data_sharing_consent_at
         else None
     )
+    legal_basis = {
+        "source": "onboarding",
+        "rec_slug": submission.rec_slug,
+        "consent_text_version": submission.data_sharing_consent_text_version,
+        "locale": submission.data_sharing_consent_locale,
+        "rendered_text_sha256": submission.data_sharing_consent_text_sha256,
+        "accepted_at": accepted_at,
+        # The submission ref is the only identifier that leaves onboarding.
+        # Never a name, email, CF or POD — the connector DB is not a PII store.
+        "submission_ref": submission.ref,
+    }
 
-    as_member = await _offers_controlled_elsewhere(submission, offer_ids)
+    # Read once, for every offer that needs them. They are the member's supply
+    # points, so asking the registry per offer would only be a way for two offers
+    # to disagree about the same person.
+    keys: list[str] | None = None
+    if any(route.is_holder for route in routes):
+        keys = await subject_supply_keys(
+            submission.rec_slug, submission.dataspace_did, declared_pod=submission.pod_code
+        )
 
     failures: list[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
-        failures += await _set_shares_as_member(
-            client,
-            connector_url,
-            submission,
-            [o for o in offer_ids if o in as_member],
-            enabled=True,
-        )
-        for offer_id in offer_ids:
-            if offer_id in as_member:
-                continue
-            legal_basis = {
-                "source": "onboarding",
-                "rec_slug": submission.rec_slug,
-                "consent_text_version": submission.data_sharing_consent_text_version,
-                "locale": submission.data_sharing_consent_locale,
-                "rendered_text_sha256": submission.data_sharing_consent_text_sha256,
-                "accepted_at": accepted_at,
-                # The submission ref is the only identifier that leaves onboarding.
-                # Never a name, email, CF or POD — the connector DB is not a PII store.
-                "submission_ref": submission.ref,
-            }
-            try:
-                resp = await client.post(
-                    f"{connector_url}/consent/admin/shares",
-                    json={
-                        "subject_id": submission.dataspace_did,
-                        "offer_id": offer_id,
-                        "enabled": True,
-                        "legal_basis": legal_basis,
-                    },
-                    headers=headers,
+        for route in routes:
+            if route.is_holder and not keys:
+                # A release decision with no supply points is a consent that can
+                # never yield a row: the holder's data plane finds this member
+                # only by the keys sent with it. Refused, and retryable once the
+                # registry knows what they hold — silence here would read as a
+                # working consent for as long as nobody looked.
+                failures.append(
+                    f"{route.offer_id}: no supply point is recorded for this member, "
+                    f"so {route.where} would have nothing to release"
                 )
-            except httpx.HTTPError as exc:
-                logger.error("Share provisioning for offer %s failed: %s", offer_id, exc)
-                failures.append(f"{offer_id}: {exc}")
                 continue
-            if resp.status_code >= 400:
-                logger.error(
-                    "Share provisioning for offer %s failed (%s): %s",
-                    offer_id,
-                    resp.status_code,
-                    resp.text,
-                )
-                failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
+            registration = await register_share(
+                client,
+                route,
+                subject_id=submission.dataspace_did,
+                enabled=True,
+                decided_by="subject",
+                legal_basis=legal_basis,
+                keys=keys if route.is_holder else None,
+            )
+            if not registration.ok:
+                failures.append(f"{route.offer_id}: {registration.detail}")
 
     ok = not failures
     submission.share_provisioned = ok
@@ -1160,18 +1403,25 @@ async def withdraw_user_shares(
     """Withdraw the standing consent this service provisioned.
 
     The mirror of :func:`provision_user_shares`, and it exists because the two
-    have to be a pair. This service grants on the person's behalf at approval —
-    same endpoint, same `connector.consent.provision` scope — so declining to
-    un-grant on their behalf at revocation was an asymmetry, not a principle. It
+    have to be a pair. This service records the decision on the person's behalf
+    at approval — same route, same identity, same connectors — so declining to
+    un-record it on their behalf at revocation was an asymmetry, not a principle. It
     left a consent standing for somebody who is no longer a member, and (because
     revocation also deletes their credential) no way for them to withdraw it
     themselves.
 
     ``enabled: false`` is the same call with one boolean flipped: the connector
     moves the same row to ``revoked`` with a ``revocation_reason``, which is
-    where *why* is recorded. It is the identical row and status the subject's own
-    withdrawal produces — the two paths differ in which credential opens the
-    door, not in what they write.
+    where *why* is recorded. It follows the grant's route, offer by offer, so a
+    decision recorded at a holder is withdrawn there and not at a connector that
+    never held it.
+
+    **This one is the community's decision** (``decided_by="collector"``), and
+    that is the difference from a member's withdrawal. Nobody withdrew: the REC
+    revoked a membership, and the consent goes with it. Recording it as the
+    member's would be attributing to them an act they did not take — and would
+    lock it, since a subject's withdrawal is theirs alone to lift, leaving a
+    rejoining member unable to be re-provisioned.
 
     Runs **before** the credential is deleted. Afterwards the connector would
     still accept the call, but the ordering keeps the sequence readable: undo the
@@ -1186,44 +1436,27 @@ async def withdraw_user_shares(
     if not offer_ids:
         return False
 
-    connector_url = settings.ds_connector_url.rstrip("/")
-    headers = await _auth_headers()
+    # Same reason as the grant: a stale route would withdraw at a connector that
+    # never held the decision, and answer 404 — which this reads as "nothing to
+    # withdraw", the one failure that looks exactly like success.
+    await template_service.ensure_fresh()
+    binding = template_service.dataspace_binding(submission.rec_slug)
+    routes = consent_routes(binding, settings.ds_connector_url, offer_ids)
     detail = reason or f"Membership revoked in {submission.rec_slug}"
-
-    # The mirror of provisioning, route for route: a decision recorded with the
-    # member's credential is withdrawn with it — which is why this runs before the
-    # credential is deleted.
-    as_member = await _offers_controlled_elsewhere(submission, offer_ids)
 
     failures: list[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
-        failures += await _set_shares_as_member(
-            client,
-            connector_url,
-            submission,
-            [o for o in offer_ids if o in as_member],
-            enabled=False,
-        )
-        for offer_id in offer_ids:
-            if offer_id in as_member:
-                continue
-            try:
-                resp = await client.post(
-                    f"{connector_url}/consent/admin/shares",
-                    json={
-                        "subject_id": submission.dataspace_did,
-                        "offer_id": offer_id,
-                        "enabled": False,
-                        "message": detail,
-                    },
-                    headers=headers,
-                )
-            except httpx.HTTPError as exc:
-                failures.append(f"{offer_id}: {exc}")
-                continue
-            # 404 is success here: nothing to withdraw is the state we want.
-            if resp.status_code >= 400 and resp.status_code != 404:
-                failures.append(f"{offer_id}: {resp.status_code} {resp.text}")
+        for route in routes:
+            registration = await register_share(
+                client,
+                route,
+                subject_id=submission.dataspace_did,
+                enabled=False,
+                decided_by="collector",
+                message=detail,
+            )
+            if not registration.ok:
+                failures.append(f"{route.offer_id}: {registration.detail}")
 
     if failures:
         logger.error("Withdrawing shares for %s failed: %s", submission.ref, "; ".join(failures))

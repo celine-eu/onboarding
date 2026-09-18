@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t, locale, isSupported } from '$lib/i18n';
-	import { setSessionToken, getSessionToken, ValidationError, type SiteConfig, type RecApi, type SharingOffer, type OfferWording } from '$lib/api/client';
+	import { setSessionToken, getSessionToken, ValidationError, offerRecipient, type SiteConfig, type RecApi, type SharingOffer, type OfferWording } from '$lib/api/client';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -195,7 +195,11 @@
 			`purpose=${offer.purpose}`,
 			`label=${fb.purpose_label}`,
 			`definition=${fb.purpose_definition}`,
-			`controller=${offer.recipients.controller}`,
+			// The key keeps the old name on purpose: it labels a fact the person
+			// read, not a field, and renaming it would change the hash of every
+			// offer for a rename that is the platform's alone. The connector keeps
+			// the same key in its own user-visible facts for the same reason.
+			`controller=${offerRecipient(offer)}`,
 			`processors=${fb.processor_category}`,
 			`measures=${offer.measures.join(',')}`,
 			`resolution=${offer.resolution ?? ''}`,

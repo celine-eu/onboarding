@@ -96,6 +96,24 @@ async def _validate_dataspace_config() -> None:
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 
+        # Registering a consent is an act of an organisation: the connector reads
+        # which one from the caller's token and refuses a plain service client.
+        # Without the community's own client there is nothing to register with,
+        # and every approval would leave `share_provisioned=false`. A warning
+        # rather than a refusal — onboarding somebody without recording their
+        # sharing consent is degraded, not broken, and the wizard, the login and
+        # the registry all still work.
+        if declares_sharing and settings.ds_connector_url and not settings.ds_org_client_secret:
+            logger.warning(
+                "REC %r collects data-sharing consent and DS_ORG_CLIENT_SECRET is not "
+                "set, so no decision can be registered: a consent is written as the "
+                "community's own client (%s), and the connector refuses a service token.",
+                slug,
+                f"svc-ds-connector-{binding.organization}"
+                if binding.organization
+                else "svc-ds-connector-<alias>",
+            )
+
         if not (binding.enabled and settings.dataspace_enabled):
             continue
 
