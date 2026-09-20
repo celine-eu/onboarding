@@ -12,7 +12,7 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.models.verification import CREDENTIAL_METHOD_PREFIX
-from celine.onboarding.services import template_service
+from celine.onboarding.services import sharing_intent, template_service
 from celine.onboarding.services.service_auth import (
     organisation_auth_headers,
     service_token_provider,
@@ -1002,7 +1002,11 @@ def consent_routes(
     own_connector_url: str,
     offer_ids: list[str],
 ) -> list[ConsentRoute]:
-    """One route per offer, from the REC's manifest.
+    """One route per connector holding data each offer reaches, from the REC's manifest.
+
+    Usually one per offer. An offer whose data sits in several places — the
+    grid operator's readings *and* the community's own meter datasets — has one
+    route to each (ADR-0007), the community's own first when it is one of them.
 
     Configuration, never inference. An offer's ``recipients.recipient`` says who
     the data goes *to*, which since ds's rename is emphatically not who holds it:
@@ -1010,18 +1014,230 @@ def consent_routes(
     operator. Routing by the recipient would send every release decision to the
     connector that does not serve them.
     """
+    own = own_connector_url.rstrip("/")
     routes: list[ConsentRoute] = []
     for offer_id in offer_ids:
-        connector = binding.connector_for(offer_id)
-        routes.append(
-            ConsentRoute(
-                offer_id=offer_id,
-                connector_url=(connector.url if connector else own_connector_url).rstrip("/"),
-                collector=binding.organization,
-                holder=connector.holder if connector else None,
+        if binding.recorded_here(offer_id):
+            routes.append(
+                ConsentRoute(offer_id=offer_id, connector_url=own, collector=binding.organization)
             )
-        )
+        for connector in binding.connectors_for(offer_id):
+            routes.append(
+                ConsentRoute(
+                    offer_id=offer_id,
+                    connector_url=connector.url.rstrip("/"),
+                    collector=binding.organization,
+                    holder=connector.holder,
+                )
+            )
     return routes
+
+
+#: The authorities whose decision is **the member's**. ``subject`` is the member,
+#: or their community relaying them; ``operator`` is ds's evidenced override,
+#: taken at the member's own request (``SubjectWithdrawalOverride``). A
+#: ``collector`` withdrawal (a membership that ended) and a ``service`` one (the
+#: retired plain-service path) were decided *about* the member, not by them.
+_MEMBERS_OWN = frozenset({"subject", "operator"})
+
+#: What ds accepts back as evidence (``AdminShareLegalBasis``, ``extra="forbid"``).
+#: A stored row carries more — the connector's own ``offer_id``, ``recipient``,
+#: ``user_visible_hash`` — and sending those is refused.
+_EVIDENCE_FIELDS = (
+    "source",
+    "rec_slug",
+    "basis_iri",
+    "consent_text_version",
+    "locale",
+    "rendered_text_sha256",
+    "accepted_at",
+    "submission_ref",
+)
+_EVIDENCE_REQUIRED = ("source", "consent_text_version", "rendered_text_sha256")
+
+#: Older than any decision: a row carrying no time at all (ds always sends one).
+_NEVER = datetime.min.replace(tzinfo=UTC)
+
+#: How many times the retry reads, writes and reads again before it gives up on
+#: decisions that keep changing under it. Two writing passes and a verifying read:
+#: the second pass is what undoes a grant that landed after the member withdrew.
+_CONVERGE_PASSES = 3
+
+
+def _instant(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _decision_time(row: dict[str, Any]) -> datetime:
+    """When the decision a connector row records was **taken**.
+
+    ds's own rule (``consent_service.decision_time``): ``revoked_at``, then
+    ``decided_at``, then ``requested_at`` — because withdrawing a standing grant
+    *mutates* that row, stamps ``revoked_at`` and leaves ``decided_at`` at the
+    grant's time. Reading ``decided_at`` alone would date every withdrawal to
+    the grant it withdrew.
+
+    One addition, for a grant relayed with evidence: the evidence's
+    ``accepted_at`` says when the member accepted, which is earlier than the
+    moment the row was written whenever the write was a relay — the form's
+    acceptance, recorded at approval, or a decision the retry carried to a
+    second connector. Dating a relay by its write would let it outrank a
+    withdrawal the member made after the decision it relays, which is the race
+    this ranking exists to close. Never later than the row itself.
+
+    **Not for an ``operator`` row.** ds's evidenced override is itself the act —
+    taken when it was written, at the member's request, usually to lift a
+    withdrawal — and the evidence it carries may be the original consent's.
+    Dated by that, the override would rank before the withdrawal it lifted.
+    """
+    recorded = _NEVER
+    for key in ("revoked_at", "decided_at", "requested_at"):
+        moment = _instant(row.get(key))
+        if moment is not None:
+            recorded = moment
+            break
+    if row.get("status") == "granted" and row.get("decided_by") != "operator":
+        accepted = _instant((row.get("legal_basis") or {}).get("accepted_at"))
+        if accepted is not None and (recorded is _NEVER or accepted < recorded):
+            return accepted
+    return recorded
+
+
+@dataclass(frozen=True, slots=True)
+class _Decision:
+    """One decision the member took, where it is recorded, and when."""
+
+    granted: bool
+    at: datetime
+    where: str
+    #: A grant's stored evidence, relayed with it to a connector that lacks it.
+    evidence: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Held:
+    """What one connector records for one of the member's offers."""
+
+    #: Whether any of its rows stands (one row per dataset; the offer counts as
+    #: granted if any does — the rule the member's page reads with).
+    granted: bool
+    #: The member's own newest decision there, if it records one.
+    member: _Decision | None
+
+
+async def _subject_rows(
+    client: httpx.AsyncClient, route: ConsentRoute, *, subject_id: str
+) -> list[dict[str, Any]]:
+    """Every row ``route``'s connector lists for this member, as ds answers them.
+
+    ``GET /consent/admin/subject-shares`` as the community's own organisation
+    client — which ds admits at the community's connector and at a holder that
+    accepted it as a collector, for its own members only. It lists the latest
+    decision per dataset, with ``decided_by``, ``collector`` and the times.
+
+    Raises when the connector cannot say: what it records is then unknown.
+    """
+    try:
+        headers = await organisation_auth_headers(route.collector)
+    except Exception as exc:
+        # Same reasoning as `register_share`: the reason names this deployment's
+        # own settings and belongs in the log, not in a step row a REC manager
+        # reads.
+        logger.exception(
+            "Cannot authenticate as %s to read consent at %s",
+            route.collector or "<no organisation>",
+            route.where,
+        )
+        raise RuntimeError(
+            "this community's own dataspace client is not configured — see the server log"
+        ) from exc
+    try:
+        resp = await client.get(
+            f"{route.connector_url}/consent/admin/subject-shares",
+            params={"subject_id": subject_id},
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(str(exc) or type(exc).__name__) from exc
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{resp.status_code} {resp.text}")
+    body = resp.json()
+    rows = body if isinstance(body, list) else (body or {}).get("items", [])
+    return [row for row in rows if isinstance(row, dict)]
+
+
+async def _read_connector(
+    client: httpx.AsyncClient, route: ConsentRoute, *, subject_id: str
+) -> dict[str, _Held]:
+    """What ``route``'s connector records for this member, by offer.
+
+    Raises when the connector cannot say (:func:`_subject_rows`): the caller
+    must then not write, because without it the member's newest decision is
+    unknown.
+    """
+    rows = await _subject_rows(client, route, subject_id=subject_id)
+
+    by_offer: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not row.get("offer_id"):
+            continue
+        if row.get("status") == "pending":
+            # A consumer's ask, not a decision.
+            continue
+        by_offer.setdefault(str(row["offer_id"]), []).append(row)
+
+    held: dict[str, _Held] = {}
+    for offer_id, offer_rows in by_offer.items():
+        own = [r for r in offer_rows if r.get("decided_by", "subject") in _MEMBERS_OWN]
+        member = None
+        if own:
+            newest = max(own, key=lambda r: (_decision_time(r), r.get("status") != "granted"))
+            granted = newest.get("status") == "granted"
+            member = _Decision(
+                granted=granted,
+                at=_decision_time(newest),
+                where=route.where,
+                evidence=newest.get("legal_basis") if granted else None,
+            )
+        held[offer_id] = _Held(
+            granted=any(r.get("status") == "granted" for r in offer_rows), member=member
+        )
+    return held
+
+
+def _newest(decisions: list[_Decision]) -> _Decision:
+    """The member's newest decision. On a tie, the withdrawal (GDPR Art. 7(3))."""
+    return max(decisions, key=lambda d: (d.at, not d.granted))
+
+
+def _relayable(evidence: Any) -> dict[str, Any] | None:
+    """A stored legal basis cut down to what ds accepts back, if it proves anything."""
+    if not isinstance(evidence, dict):
+        return None
+    if not all(str(evidence.get(key) or "").strip() for key in _EVIDENCE_REQUIRED):
+        return None
+    return {key: evidence[key] for key in _EVIDENCE_FIELDS if evidence.get(key) is not None}
+
+
+def _held_in_several_places(binding: template_service.DataspaceBinding) -> list[str]:
+    """The offers the manifest records at more than one connector — the ones that can split."""
+    named = dict.fromkeys(
+        [*binding.own_offers, *(offer for c in binding.connectors for offer in c.offers)]
+    )
+    return [
+        offer
+        for offer in named
+        if len(binding.connectors_for(offer)) + int(binding.recorded_here(offer)) > 1
+    ]
 
 
 async def subject_supply_keys(
@@ -1075,7 +1291,7 @@ async def register_share(
     decided_by: str,
     legal_basis: dict[str, Any] | None = None,
     keys: list[str] | None = None,
-    message: str | None = None,
+    reason: str | None = None,
 ) -> ShareRegistration:
     """Register one standing decision at the connector that holds the data.
 
@@ -1096,7 +1312,21 @@ async def register_share(
     sent only where they are needed: a holder's data plane has no other way to
     find this member's rows, and the community's own connector resolves its
     members without them.
+
+    ``reason`` is why the community withdrew, and it travels **only** with the
+    community's own withdrawal (``enabled=False``, ``decided_by="collector"``) —
+    ds records it as the row's ``revocation_reason`` and refuses it anywhere
+    else (its ADR-0019): a relayed withdrawal is the member's, so the
+    community's words would be filed as the cause of a decision it did not take,
+    and a grant has no cause. Refused here before anything is sent, and passed
+    through :func:`withdrawal_reason` by the one caller that sends it. There is
+    no ``message``: ds never accepted one on this route.
     """
+    if reason is not None and (enabled or decided_by != "collector"):
+        raise ValueError(
+            "a reason is recorded only on the community's own withdrawal "
+            "(enabled=False, decided_by='collector')"
+        )
     body: dict[str, Any] = {
         "subject_id": subject_id,
         "offer_id": route.offer_id,
@@ -1105,8 +1335,8 @@ async def register_share(
     }
     if legal_basis is not None:
         body["legal_basis"] = legal_basis
-    if message:
-        body["message"] = message
+    if reason:
+        body["reason"] = reason
     if enabled and keys:
         body["keys"] = keys
 
@@ -1190,45 +1420,58 @@ async def relay_member_decision(
     offer_id: str,
     enabled: bool,
     legal_basis: dict[str, Any] | None = None,
-) -> ShareRegistration:
-    """Carry a decision the member just took to the connector that holds the data.
+) -> list[ShareRegistration]:
+    """Carry a decision the member just took to every other participant holding the data.
 
-    For an offer the community does not hold. The member cannot act there
-    themselves — their credential is linked to their own community's participant
-    and the holder refuses it — so their community relays it, as the collector,
-    and says the decision is **theirs** (``decided_by="subject"``). A withdrawal
-    relayed this way is the member's own, which is the whole point: nothing the
-    community or a service does afterwards can lift it.
+    For the part of an offer the community does not hold. The member cannot act
+    there themselves — their credential is linked to their own community's
+    participant and the holder refuses it — so their community relays it, as the
+    collector, and says the decision is **theirs** (``decided_by="subject"``). A
+    withdrawal relayed this way is the member's own, which is the whole point:
+    nothing the community or a service does afterwards can lift it.
 
-    Their supply points go with a grant, because the holder's data plane has no
-    other way to find their rows.
+    One registration per holder of the offer, every one attempted whatever the
+    others answer: a withdrawal that reaches one holder of two is a leak, not a
+    lag. Their supply points go with a grant, because a holder's data plane has
+    no other way to find their rows. Returns nothing for an offer no other
+    participant holds.
     """
     binding = template_service.dataspace_binding(rec_slug)
-    route = consent_routes(binding, settings.ds_connector_url, [offer_id])[0]
+    routes = [
+        r for r in consent_routes(binding, settings.ds_connector_url, [offer_id]) if r.is_holder
+    ]
+    if not routes:
+        return []
 
     keys: list[str] | None = None
-    if enabled and route.is_holder:
+    if enabled:
         keys = await subject_supply_keys(rec_slug, subject_id)
         if not keys:
-            return ShareRegistration(
-                offer_id,
-                ok=False,
-                detail=(
-                    "no supply point is recorded for this member, so "
-                    f"{route.where} would have nothing to release"
-                ),
-            )
+            return [
+                ShareRegistration(
+                    offer_id,
+                    ok=False,
+                    detail=(
+                        "no supply point is recorded for this member, so "
+                        f"{route.where} would have nothing to release"
+                    ),
+                )
+                for route in routes
+            ]
 
     async with httpx.AsyncClient(timeout=30) as client:
-        return await register_share(
-            client,
-            route,
-            subject_id=subject_id,
-            enabled=enabled,
-            decided_by="subject",
-            legal_basis=legal_basis,
-            keys=keys,
-        )
+        return [
+            await register_share(
+                client,
+                route,
+                subject_id=subject_id,
+                enabled=enabled,
+                decided_by="subject",
+                legal_basis=legal_basis,
+                keys=keys,
+            )
+            for route in routes
+        ]
 
 
 async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[dict[str, Any]]:
@@ -1279,13 +1522,18 @@ async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[d
     return decisions
 
 
-async def provision_user_shares(submission: Submission, *, raise_on_error: bool = False) -> bool:
-    """Push the subject's standing data-sharing consent to the connectors.
+async def provision_user_shares(
+    submission: Submission,
+    *,
+    raise_on_error: bool = False,
+    report: list[str] | None = None,
+) -> bool:
+    """Bring every connector holding the member's offers to the member's newest decision.
 
-    Called at the end of :func:`provision_user_identity` and again by the admin
-    retry endpoint.  Names an ``offer_id`` per recorded offer — never a dataset —
-    so the connector expands each into the datasets the offer describes and the
-    onboarding config can never drift from what the person read.
+    Called at the end of :func:`provision_user_identity`, by approval's step 4 and
+    by the operator's retry of it.  Names an ``offer_id`` per recorded offer —
+    never a dataset — so the connector expands each into the datasets the offer
+    describes and the onboarding config can never drift from what the person read.
 
     **One acceptance, several connectors.** The member ticked the boxes once, in
     the form; each accepted offer is then recorded at the connector that holds
@@ -1295,31 +1543,65 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
     grid operator's, where the rows are.
 
     **Whose decision it is: the member's** (``decided_by="subject"``). This
-    relays a decision somebody took on a form, not one the community made for
-    them — which matters most on the other side of the pair, because a relayed
-    withdrawal is then theirs and no later provisioning run lifts it.
+    relays a decision somebody took on a form or on their sharing page, not one
+    the community made for them — which matters most for a withdrawal: relayed
+    as theirs, nothing but the member can lift it.
+
+    **The newest decision wins, in either direction** (the maintainer,
+    2026-09-19). Every connector holding an offer is read first; the member's
+    newest decision on it — the form's acceptance, or a grant or withdrawal any
+    of those connectors records as theirs (:func:`_decision_time`) — is applied
+    at every connector that disagrees, and nothing is written where they agree.
+    So a retry writes the missing half of a partial grant, carries a withdrawal
+    that landed at one connector to the others, and never lifts a withdrawal
+    made after the decision it would relay. A grant carries its decision's time
+    (``accepted_at``); a collector's or a service's withdrawal is not the
+    member's decision and never outranks one. Then everything is read again, and
+    a decision that changed meanwhile is applied too — which is what undoes a
+    grant that landed just after the member withdrew.
+
+    **The member's own record ranks with the connectors** (:mod:`sharing_intent`,
+    the maintainer, 2026-09-19): what they last pressed on their page, per
+    offer, dated when they pressed. It is what a connector may not keep — a
+    withdrawal over a standing one is not stamped, and a relayed grant can
+    overwrite the one connector a withdrawal reached — and it is re-read with
+    the connectors on every pass.
+
+    **A connector, or the member's record, that cannot be read fails the whole
+    run and nothing is written**: the newest decision is not known without it.
+
+    Beyond the offers the form accepted, every offer the manifest records in
+    more than one place, and every offer the member decided on their page, is
+    examined too: a member may have granted one since, and it can split like any
+    other. A member who declined everything on the form is examined the same
+    way, with no form decision in the ranking.
 
     ``raise_on_error`` is False on the approval path (a failure must not fail
     approval) and True on explicit retry (the operator wants to see it fail).
-    Returns whether every offer was provisioned.  Idempotent: the connector's
-    ``set_subject_data_sharing`` returns the existing row on a re-run.
+    ``report`` collects one line per decision written, for the step row. Returns
+    whether every connector ended in agreement with the member's decision.
     """
     if not settings.ds_connector_url:
-        return False
-    if not submission.data_sharing_consent:
         return False
     if not submission.dataspace_did:
         logger.warning("Cannot provision shares for %s: no dataspace DID", submission.ref)
         return False
 
-    offer_ids = list(submission.data_sharing_consent_offer_ids or [])
-    if not offer_ids:
+    # A member who declined everything on the form has no form decision, and
+    # may still have decided on their page since — so they are examined too,
+    # with the form left out of the ranking (the maintainer, 2026-09-19).
+    accepted = (
+        list(submission.data_sharing_consent_offer_ids or [])
+        if submission.data_sharing_consent
+        else []
+    )
+    if submission.data_sharing_consent and not accepted:
         logger.warning("data_sharing_consent set but no offers recorded for %s", submission.ref)
         if raise_on_error:
             raise ValueError("No data-sharing offers recorded for this submission")
         return False
 
-    problems = _evidence_problems(submission)
+    problems = _evidence_problems(submission) if accepted else []
     if problems:
         # Refuse before posting rather than letting the connector 422. The
         # rejection would be identical on every retry — the evidence cannot be
@@ -1337,6 +1619,21 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
     # nothing and still answers 200.
     await template_service.ensure_fresh()
     binding = template_service.dataspace_binding(submission.rec_slug)
+    subject_id = submission.dataspace_did
+    # The member's own record of what they last pressed, per offer. Read before
+    # anything is written for the same reason a connector is: without it the
+    # member's newest decision is unknown.
+    try:
+        intents = await sharing_intent.for_subject(subject_id)
+    except Exception as exc:  # noqa: BLE001 — reported, and nothing written
+        logger.exception("Cannot read the recorded decisions of %s", submission.ref)
+        if raise_on_error:
+            raise ValueError(
+                "could not read the member's recorded decisions, so their newest "
+                "decision is unknown and nothing was written"
+            ) from exc
+        return False
+    offer_ids = list(dict.fromkeys([*accepted, *_held_in_several_places(binding), *intents]))
     routes = consent_routes(binding, settings.ds_connector_url, offer_ids)
     accepted_at = (
         submission.data_sharing_consent_at.isoformat()
@@ -1354,109 +1651,396 @@ async def provision_user_shares(submission: Submission, *, raise_on_error: bool 
         # Never a name, email, CF or POD — the connector DB is not a PII store.
         "submission_ref": submission.ref,
     }
+    # The form is a decision too: every offer it accepted, granted, when it was.
+    form = _Decision(
+        granted=True,
+        at=_instant(submission.data_sharing_consent_at) or _NEVER,
+        where="the onboarding form",
+        evidence=legal_basis,
+    )
 
-    # Read once, for every offer that needs them. They are the member's supply
-    # points, so asking the registry per offer would only be a way for two offers
-    # to disagree about the same person.
+    # Read once, and only when a grant is about to go to another participant.
+    # They are the member's supply points, so asking the registry per offer would
+    # only be a way for two offers to disagree about the same person.
     keys: list[str] | None = None
-    if any(route.is_holder for route in routes):
-        keys = await subject_supply_keys(
-            submission.rec_slug, submission.dataspace_did, declared_pod=submission.pod_code
-        )
 
-    failures: list[str] = []
+    failures: dict[tuple[str, str], str] = {}
+    #: Every decision written, so a read that still disagrees after it can be
+    #: told apart from a decision that changed meanwhile.
+    written: set[tuple[str, str, bool, datetime]] = set()
     async with httpx.AsyncClient(timeout=30) as client:
-        for route in routes:
-            if route.is_holder and not keys:
-                # A release decision with no supply points is a consent that can
-                # never yield a row: the holder's data plane finds this member
-                # only by the keys sent with it. Refused, and retryable once the
-                # registry knows what they hold — silence here would read as a
-                # working consent for as long as nobody looked.
-                failures.append(
-                    f"{route.offer_id}: no supply point is recorded for this member, "
-                    f"so {route.where} would have nothing to release"
+        for attempt in range(_CONVERGE_PASSES):
+            # **Read every connector before writing to any.**
+            held: dict[str, dict[str, _Held]] = {}
+            unreadable: list[str] = []
+            for url in dict.fromkeys(route.connector_url for route in routes):
+                route = next(r for r in routes if r.connector_url == url)
+                try:
+                    held[url] = await _read_connector(client, route, subject_id=subject_id)
+                except Exception as exc:  # noqa: BLE001 — reported, and nothing written
+                    unreadable.append(
+                        f"could not read what {route.where} records for this member, so "
+                        f"their newest decision is unknown and nothing was written: {exc}"
+                    )
+            if attempt > 0 and not unreadable:
+                # Again after writing: a member who pressed while this ran is
+                # seen here, and outranks what was just written.
+                try:
+                    intents = await sharing_intent.for_subject(subject_id)
+                except Exception as exc:  # noqa: BLE001 — reported, and nothing written
+                    unreadable.append(
+                        "could not read the member's recorded decisions, so their newest "
+                        f"decision is unknown and nothing more was written: {exc}"
+                    )
+            if unreadable:
+                for line in unreadable:
+                    failures[("read", line)] = line
+                break
+
+            writes: list[tuple[ConsentRoute, _Decision]] = []
+            for offer_id in offer_ids:
+                offer_routes = [r for r in routes if r.offer_id == offer_id]
+                here = {r.connector_url: held[r.connector_url].get(offer_id) for r in offer_routes}
+                decisions = [h.member for h in here.values() if h is not None and h.member]
+                if offer_id in accepted:
+                    decisions.append(form)
+                intent = intents.get(offer_id)
+                if intent is not None:
+                    decisions.append(
+                        _Decision(
+                            granted=intent.granted,
+                            at=_instant(intent.decided_at) or _NEVER,
+                            where="their sharing page",
+                            evidence=intent.evidence,
+                        )
+                    )
+                if not decisions:
+                    continue
+                newest = _newest(decisions)
+                for route in offer_routes:
+                    standing = here[route.connector_url] is not None and bool(
+                        here[route.connector_url].granted  # type: ignore[union-attr]
+                    )
+                    if newest.granted == standing:
+                        continue
+                    if (route.connector_url, offer_id, newest.granted, newest.at) in written:
+                        # Written once already, answered 2xx, and still not
+                        # recorded. Sending it again would get the same answer.
+                        failures[(route.connector_url, offer_id)] = (
+                            f"{offer_id}: {route.where} accepted the member's decision "
+                            "and still does not record it"
+                        )
+                        continue
+                    writes.append((route, newest))
+
+            if not writes:
+                break
+            if attempt == _CONVERGE_PASSES - 1:
+                failures[("converge", "")] = (
+                    "the member's decisions changed while this ran and the connectors "
+                    "still disagree; retry again"
                 )
-                continue
-            registration = await register_share(
-                client,
-                route,
-                subject_id=submission.dataspace_did,
-                enabled=True,
-                decided_by="subject",
-                legal_basis=legal_basis,
-                keys=keys if route.is_holder else None,
-            )
-            if not registration.ok:
-                failures.append(f"{route.offer_id}: {registration.detail}")
+                break
+
+            if keys is None and any(r.is_holder and d.granted for r, d in writes):
+                keys = await subject_supply_keys(
+                    submission.rec_slug, submission.dataspace_did, declared_pod=submission.pod_code
+                )
+
+            refused = False
+            for route, decision in writes:
+                problem = await _redrive(
+                    client,
+                    route,
+                    decision,
+                    subject_id=subject_id,
+                    rec_slug=submission.rec_slug,
+                    keys=keys,
+                )
+                if problem is not None:
+                    failures[(route.connector_url, route.offer_id)] = f"{route.offer_id}: {problem}"
+                    refused = True
+                    continue
+                failures.pop((route.connector_url, route.offer_id), None)
+                written.add((route.connector_url, route.offer_id, decision.granted, decision.at))
+                if report is not None:
+                    report.append(
+                        f"{route.offer_id} {'granted' if decision.granted else 'withdrawn'} "
+                        f"at {route.where}, as the member decided at {decision.where}"
+                    )
+            if refused:
+                # Not looped on: a connector refusing will refuse again, and a
+                # member's decision is not re-sent until an operator asks.
+                break
 
     ok = not failures
-    submission.share_provisioned = ok
+    if accepted:
+        # This service's memory of the form's consent reaching the connectors. A
+        # member who declined on the form has none to remember.
+        submission.share_provisioned = ok
     if failures and raise_on_error:
-        raise ValueError("Share provisioning failed: " + "; ".join(failures))
+        raise ValueError("Share provisioning failed: " + "; ".join(failures.values()))
     return ok
 
 
+async def _redrive(
+    client: httpx.AsyncClient,
+    route: ConsentRoute,
+    decision: _Decision,
+    *,
+    subject_id: str,
+    rec_slug: str,
+    keys: list[str] | None,
+) -> str | None:
+    """Carry one of the member's decisions to a connector that lacks it.
+
+    Returns why it did not land, or ``None``. Always ``decided_by="subject"``:
+    it is the member's decision, relayed. A withdrawal relayed as the
+    community's (``collector``) would be one the community could lift again on
+    its own say — exactly what a member's withdrawal must never be.
+    """
+    if not decision.granted:
+        registration = await register_share(
+            client,
+            route,
+            subject_id=subject_id,
+            enabled=False,
+            decided_by="subject",
+            # No `reason`: ds takes one only with the community's own
+            # withdrawal, and this one is the member's (found live, 2026-09-19,
+            # when it still sent `message` and got a 422).
+        )
+        return None if registration.ok else registration.detail
+
+    if route.is_holder and not keys:
+        # A release decision with no supply points is a consent that can never
+        # yield a row: the holder's data plane finds this member only by the keys
+        # sent with it. Refused, and retryable once the registry knows what they
+        # hold — silence here would read as a working consent for as long as
+        # nobody looked.
+        return (
+            "no supply point is recorded for this member, so "
+            f"{route.where} would have nothing to release"
+        )
+
+    evidence = _relayable(decision.evidence)
+    if evidence is None:
+        # A grant the member made at their own connector as themselves: ds built
+        # its evidence from the offer and it carries no rendering to relay. The
+        # holder gets what the member's page relays for the same act — this
+        # service's rendering of the offer it served (`relayed_evidence`).
+        from celine.onboarding.services import member_sharing
+
+        try:
+            offer = await template_service.get_sharing_offer(rec_slug, route.offer_id)
+        except Exception as exc:  # noqa: BLE001 — reported for this route
+            return f"no evidence to relay with the member's grant: {exc}"
+        evidence = member_sharing.relayed_evidence(offer, rec_slug)
+    if decision.at is not _NEVER:
+        # The decision's own time, never the moment of this write: a relay dated
+        # by its write would outrank a withdrawal made after the decision.
+        evidence = {**evidence, "accepted_at": decision.at.isoformat()}
+
+    registration = await register_share(
+        client,
+        route,
+        subject_id=subject_id,
+        enabled=True,
+        decided_by="subject",
+        legal_basis=evidence,
+        keys=keys if route.is_holder else None,
+    )
+    return None if registration.ok else registration.detail
+
+
+#: ds's limit on a withdrawal's ``reason`` (``AdminShareRequest``, its ADR-0019).
+REASON_MAX_LENGTH = 200
+
+#: Sent in place of a reason that would carry an address: say why, not who.
+_GENERIC_REASON = "Membership revoked"
+
+#: ds's wildcard consumer: the cell a standing decision about an offer lives in,
+#: and the only one ``POST /consent/admin/shares`` writes.
+_ANY_CONSUMER = "*"
+
+
+def withdrawal_reason(text: str) -> str | None:
+    """``text`` made into what ds accepts as a withdrawal's ``reason``, or ``None``.
+
+    ds's rules (``AdminShareRequest.reason``): one line, no control character,
+    1–200 characters after trimming, and no ``@`` — it reaches provenance, where
+    no personal data may go, and an ``@`` is the obvious way an address gets
+    in. So every run of whitespace or control characters becomes one space, the
+    text is cut to 200, and anything carrying an ``@`` is replaced by a generic
+    cause rather than sent: ds would refuse it, and the withdrawal with it.
+    Nothing left is no reason (the field is optional).
+    """
+    printable = "".join(c if c.isprintable() else " " for c in text)
+    one_line = " ".join(printable.split())
+    if not one_line:
+        return None
+    if "@" in one_line:
+        return _GENERIC_REASON
+    return one_line[:REASON_MAX_LENGTH].rstrip()
+
+
+async def _community_did(binding: template_service.DataspaceBinding) -> str:
+    """The DID ds stamps as ``collector`` on every row this community's client writes.
+
+    The manifest's ``organization_did`` when it states one, otherwise the
+    identity registry's answer for the community's alias — the organisation
+    token's context, which is what ds records. Raises when neither can say:
+    without it a grant this community collected cannot be told from another's.
+    """
+    if binding.organization_did:
+        return binding.organization_did
+    check = await check_organization(binding.organization)
+    if check.did:
+        return check.did
+    raise RuntimeError(
+        f"the dataspace identifier of {binding.organization or 'this community'} is "
+        "unknown (no organization_did in the manifest, and the identity registry "
+        "did not answer one), so the grants it collected cannot be told apart"
+    )
+
+
+def _collected_here(row: dict[str, Any], *, community: str, own_connector: bool) -> bool:
+    """Whether ``row`` is a standing grant this community collected.
+
+    ``collector`` is the organisation whose token wrote the row's current
+    state, and ds stamps it on every write. At a holder only the community's
+    own DID is its. At the community's own connector, a row with **no**
+    collector is its too: the member decided there with their own credential —
+    the sharing page — or the community's operator did at their request, and
+    either way the connector is the community's. A row another organisation
+    collected is never the community's, wherever it sits.
+    """
+    if row.get("status") != "granted" or not row.get("offer_id"):
+        return False
+    if str(row.get("consumer_id") or _ANY_CONSUMER) != _ANY_CONSUMER:
+        # A consumer's ask the member approved: its own instrument, not a
+        # standing decision, and a cell this route never writes.
+        return False
+    collector = row.get("collector")
+    if collector == community:
+        return True
+    return own_connector and not collector
+
+
 async def withdraw_user_shares(
-    submission: Submission, *, reason: str = "", raise_on_error: bool = False
+    submission: Submission,
+    *,
+    reason: str = "",
+    raise_on_error: bool = False,
+    report: list[str] | None = None,
 ) -> bool:
-    """Withdraw the standing consent this service provisioned.
+    """Withdraw every standing grant this community collected for the member.
 
-    The mirror of :func:`provision_user_shares`, and it exists because the two
-    have to be a pair. This service records the decision on the person's behalf
-    at approval — same route, same identity, same connectors — so declining to
-    un-record it on their behalf at revocation was an asymmetry, not a principle. It
-    left a consent standing for somebody who is no longer a member, and (because
-    revocation also deletes their credential) no way for them to withdraw it
-    themselves.
+    Called when a membership is revoked, **before** the identity it is keyed
+    on (:func:`revoke_user_identity`) — ds admits the community's read and
+    write for a subject only while they are a member of its organisation.
 
-    ``enabled: false`` is the same call with one boolean flipped: the connector
-    moves the same row to ``revoked`` with a ``revocation_reason``, which is
-    where *why* is recorded. It follows the grant's route, offer by offer, so a
-    decision recorded at a holder is withdrawn there and not at a connector that
-    never held it.
+    **Every grant, wherever it came from** (the maintainer, 2026-09-19). The
+    form's accepted offers are only what the member ticked once; they may
+    have granted more on their sharing page since, and a member who declined
+    the form may have granted there too. So the offer list is not asked at
+    all: every connector the manifest names — the community's own and every
+    holder — is read (``GET /consent/admin/subject-shares``), and each offer
+    with a standing grant the community collected there (:func:`_collected_here`)
+    is withdrawn there. Nothing else is written: a refusal the member made
+    stays theirs, and a grant another organisation collected is not this
+    community's to withdraw — ds would accept the write, and stamp it as ours.
 
-    **This one is the community's decision** (``decided_by="collector"``), and
-    that is the difference from a member's withdrawal. Nobody withdrew: the REC
-    revoked a membership, and the consent goes with it. Recording it as the
-    member's would be attributing to them an act they did not take — and would
-    lock it, since a subject's withdrawal is theirs alone to lift, leaving a
-    rejoining member unable to be re-provisioned.
+    **This one is the community's decision** (``decided_by="collector"``). Nobody
+    withdrew: the REC revoked a membership, and the consent goes with it.
+    Recording it as the member's would attribute to them an act they did not
+    take — and would lock it, since a subject's withdrawal is theirs alone to
+    lift. Its cause travels as ``reason`` (:func:`withdrawal_reason`), which ds
+    records on the row and in provenance and returns to no reader.
 
-    Runs **before** the credential is deleted. Afterwards the connector would
-    still accept the call, but the ordering keeps the sequence readable: undo the
-    consent, then the identity that carried it.
+    **The member's recorded intents are left as they are**
+    (:mod:`sharing_intent`). They are the member's decisions and this is not
+    one; a re-approval ranks them as it ranks the form, and a collector's
+    withdrawal never outranks either.
+
+    Every connector is attempted whatever the others answer, and a connector
+    that cannot be read fails the revocation — what stands there is unknown —
+    without stopping the withdrawals at the others: a withdrawal lifts nothing,
+    so it is safe to write without the whole picture. Run again, it reads
+    afresh and writes only what still stands.
+
+    ``report`` collects one line per withdrawal written. Returns whether
+    nothing the community collected still stands anywhere it looked.
     """
     if not settings.ds_connector_url:
         return False
     if not submission.dataspace_did:
         return False
 
-    offer_ids = list(submission.data_sharing_consent_offer_ids or [])
-    if not offer_ids:
-        return False
-
-    # Same reason as the grant: a stale route would withdraw at a connector that
-    # never held the decision, and answer 404 — which this reads as "nothing to
-    # withdraw", the one failure that looks exactly like success.
+    # Same reason as the grant: the manifest names the connectors, so a stale
+    # cache would leave a holder unread.
     await template_service.ensure_fresh()
     binding = template_service.dataspace_binding(submission.rec_slug)
-    routes = consent_routes(binding, settings.ds_connector_url, offer_ids)
-    detail = reason or f"Membership revoked in {submission.rec_slug}"
+    subject_id = submission.dataspace_did
+    why = withdrawal_reason(reason or f"Membership revoked in {submission.rec_slug}")
+
+    own = ConsentRoute(
+        offer_id="",
+        connector_url=settings.ds_connector_url.rstrip("/"),
+        collector=binding.organization,
+    )
+    connectors = [own] + [
+        ConsentRoute(
+            offer_id="",
+            connector_url=c.url.rstrip("/"),
+            collector=binding.organization,
+            holder=c.holder,
+        )
+        for c in binding.connectors
+        if c.url.rstrip("/") != own.connector_url
+    ]
 
     failures: list[str] = []
+    try:
+        community = await _community_did(binding)
+    except Exception as exc:  # noqa: BLE001 — reported, and nothing written
+        failures.append(str(exc))
+        connectors = []
+
     async with httpx.AsyncClient(timeout=30) as client:
-        for route in routes:
-            registration = await register_share(
-                client,
-                route,
-                subject_id=submission.dataspace_did,
-                enabled=False,
-                decided_by="collector",
-                message=detail,
+        for connector in connectors:
+            try:
+                rows = await _subject_rows(client, connector, subject_id=subject_id)
+            except Exception as exc:  # noqa: BLE001 — reported for this connector
+                failures.append(
+                    f"could not read what {connector.where} records for this member, so "
+                    f"what stands there is unknown: {exc}"
+                )
+                continue
+            offers = dict.fromkeys(
+                str(row["offer_id"])
+                for row in rows
+                if _collected_here(row, community=community, own_connector=connector is own)
             )
-            if not registration.ok:
-                failures.append(f"{route.offer_id}: {registration.detail}")
+            for offer_id in offers:
+                route = ConsentRoute(
+                    offer_id=offer_id,
+                    connector_url=connector.connector_url,
+                    collector=connector.collector,
+                    holder=connector.holder,
+                )
+                registration = await register_share(
+                    client,
+                    route,
+                    subject_id=subject_id,
+                    enabled=False,
+                    decided_by="collector",
+                    reason=why,
+                )
+                if not registration.ok:
+                    failures.append(f"{offer_id}: {registration.detail}")
+                elif report is not None:
+                    report.append(f"{offer_id} withdrawn at {route.where}")
 
     if failures:
         logger.error("Withdrawing shares for %s failed: %s", submission.ref, "; ".join(failures))

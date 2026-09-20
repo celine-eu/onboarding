@@ -112,7 +112,9 @@ CALLS: tuple[Call, ...] = (
             "Read back what a holder recorded for one of our members. The member "
             "cannot: their credential has no standing at that connector and "
             "`/consent/my/*` refuses an organisation token. Per subject and "
-            "never a roster."
+            "never a roster. Also read before provisioning, at every connector "
+            "an offer is recorded at, so a retry writes only what is missing and "
+            "never lifts a withdrawal the member made there."
         ),
     ),
     Call(

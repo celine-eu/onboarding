@@ -44,3 +44,4 @@ edited to say something else.
 | [0004](ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md) | This service holds no Keycloak grant and asks celine-policies' provisioning service for a login — supersedes 0003 |
 | [0005](ADR-0005-onboarding-is-the-one-caller-of-the-provisioning-service.md) | Every send to the provisioning service goes through this service, by member-keyed routes a service calls on a manager's behalf — builds on 0004 |
 | [0006](ADR-0006-consent-is-registered-where-the-data-is.md) | A member's decision is registered at the connector that holds the data it reaches, under the community's own organisation client |
+| [0007](ADR-0007-an-offer-is-recorded-at-every-connector-that-holds-its-data.md) | An offer whose data sits in several places is recorded, and withdrawn, at every connector holding it; a retry writes only what is missing — builds on 0006 |

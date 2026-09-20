@@ -685,6 +685,104 @@ class TestRetry:
             await enablement.retry(db, submission, step="teleport")
 
 
+class TestASucceededShareIsReExaminedByName:
+    """A split can open under a `succeeded` share step (the maintainer, 2026-09-19).
+
+    A member's withdrawal that lands at one connector of two leaves step 4 as it
+    was, so a retry that skipped a succeeded step could never reach it. Naming the
+    step re-runs it: its run reads every connector and writes only where they
+    disagree with the member's newest decision, so re-running it where nothing is
+    split writes nothing. Unnamed — approval again, "retry all" — it is still
+    skipped: those finish what is unfinished.
+    """
+
+    async def _approved(self, db, submission, happy_path):
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SUCCEEDED
+        happy_path.clear()
+        return rows
+
+    async def test_a_named_retry_re_runs_a_succeeded_share(self, db, submission, happy_path):
+        await self._approved(db, submission, happy_path)
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        assert happy_path == ["dataspace_share"]
+        row = rows[EnablementStep.DATASPACE_SHARE]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.attempts == 2
+
+    async def test_an_unnamed_retry_leaves_it(self, db, submission, happy_path):
+        await self._approved(db, submission, happy_path)
+
+        rows = await enablement.retry(db, submission)
+
+        assert happy_path == []
+        assert rows[EnablementStep.DATASPACE_SHARE].attempts == 1
+
+    async def test_approval_again_leaves_it(self, db, submission, happy_path):
+        await self._approved(db, submission, happy_path)
+
+        await enablement.enable(db, submission)
+
+        assert happy_path == []
+
+    async def test_a_re_examination_that_fails_is_a_failed_step(
+        self, db, submission, happy_path, monkeypatch
+    ):
+        await self._approved(db, submission, happy_path)
+
+        async def _unreadable(sub, **kwargs):
+            raise ValueError("could not read what example-dso's connector records")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_shares", _unreadable)
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        row = rows[EnablementStep.DATASPACE_SHARE]
+        assert row.status == EnablementStatus.FAILED
+        assert "could not read" in row.last_error
+
+    async def test_a_share_skipped_for_a_declined_form_is_re_run_by_name(
+        self, db, monkeypatch, happy_path
+    ):
+        """Reversed on 2026-09-19 (the maintainer): it used to stay skipped.
+
+        A member who declined everything on the form has nothing to write at
+        approval, and may grant on their page afterwards — a split made there is
+        the retry's to converge like any other. Only a retry naming the step
+        reaches it; approval again and "retry all" still leave it.
+        """
+        submission = FakeSubmission(data_sharing_consent=False)
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
+        happy_path.clear()
+
+        await enablement.enable(db, submission)
+        await enablement.retry(db, submission)
+        assert happy_path == []
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        assert happy_path == ["dataspace_share"]
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SUCCEEDED
+
+    async def test_a_share_skipped_for_want_of_a_connector_stays_skipped(
+        self, db, monkeypatch, happy_path
+    ):
+        from celine.onboarding.config.settings import settings
+
+        monkeypatch.setattr(settings, "ds_connector_url", "")
+        submission = FakeSubmission()
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
+        happy_path.clear()
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        assert happy_path == []
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
+
+
 class TestAFailedSendIsRetriedByName:
     """`send_failed` is the one `succeeded` step a retry re-runs, and only by name.
 
@@ -822,6 +920,13 @@ class TestRevoke:
             sub.dataspace_vc_id = None
             return "revoked"
 
+        async def _withdraw(sub, **kwargs):
+            # Nothing stood. A test about the withdrawal replaces this; left
+            # real, it would fail on the fake submission and hold the identity
+            # step back, which is a behaviour of its own (tested below).
+            return True
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
         monkeypatch.setattr(provisioning, "disable_participant", _disable_kc)
         monkeypatch.setattr(rec_registry, "deactivate_member", _deactivate)
         monkeypatch.setattr(dataspace_identity, "revoke_user_identity", _revoke_identity)
@@ -872,7 +977,7 @@ class TestRevoke:
         """
         called: list[str] = []
 
-        async def _withdraw(sub, *, reason="", raise_on_error=False):
+        async def _withdraw(sub, **kwargs):
             called.append(sub.ref)
             return True
 
@@ -885,7 +990,9 @@ class TestRevoke:
         # A revoked step goes back to PENDING — the same state the other steps
         # land in, and what `test_revoked_steps_become_retriable_again` relies on.
         assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
-        assert rows[EnablementStep.DATASPACE_SHARE].detail == "standing consent withdrawn"
+        assert rows[EnablementStep.DATASPACE_SHARE].detail == (
+            "no grant this community collected stood at any connector"
+        )
 
     async def test_the_share_is_withdrawn_before_the_identity_that_carried_it(
         self, db, submission, happy_path, revocations, monkeypatch
@@ -898,7 +1005,7 @@ class TestRevoke:
         """
         order: list[str] = []
 
-        async def _withdraw(sub, *, reason="", raise_on_error=False):
+        async def _withdraw(sub, **kwargs):
             order.append("share")
             return True
 
@@ -959,6 +1066,142 @@ class TestRevoke:
         # cannot be reached leaves a stale member row, not somebody who was
         # removed from their community and can still sign in.
         assert "keycloak_user:20260730-test" in revocations
+
+    async def test_a_share_that_landed_only_in_part_is_still_withdrawn(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """One offer is recorded at every connector holding its data (ADR-0007).
+
+        So a `failed` share step can have granted at one connector before
+        another refused. Revoking only a `succeeded` step left that half standing
+        after the membership it belonged to was gone.
+        """
+
+        async def _half(sub, **kwargs):
+            raise ValueError("Share provisioning failed: research: example-dso's connector: 502")
+
+        withdrawn: list[str] = []
+
+        async def _withdraw(sub, **kwargs):
+            withdrawn.append(sub.ref)
+            return True
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_shares", _half)
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.load_steps(db, submission.id)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.FAILED
+
+        rows = await enablement.revoke(db, submission)
+
+        assert withdrawn == [submission.ref]
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
+
+    async def test_a_refused_withdrawal_is_a_failed_revocation_not_nothing_to_do(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """It used to read "nothing to withdraw" — a consent outliving the
+        membership, filed as success."""
+
+        async def _refused(sub, *, raise_on_error=False, **kwargs):
+            if raise_on_error:
+                raise ValueError("Share withdrawal failed: research: example-dso's connector: 502")
+            return False
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _refused)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.revoke(db, submission)
+
+        row = rows[EnablementStep.DATASPACE_SHARE]
+        assert row.status == EnablementStatus.FAILED
+        assert "example-dso" in row.last_error
+
+    async def test_a_member_who_declined_the_form_is_still_withdrawn(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """Step 4 was skipped at approval, and the member granted on their page since.
+
+        Revocation withdraws every grant the community collected, from the form
+        or the page (the maintainer, 2026-09-19), so the step's status is not
+        what decides: a member holding a dataspace identity may hold grants.
+        """
+        submission.data_sharing_consent = False
+        withdrawn: list[str] = []
+
+        async def _withdraw(sub, *, report=None, **kwargs):
+            withdrawn.append(sub.ref)
+            if report is not None:
+                report.append("research withdrawn at this community's connector")
+            return True
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.load_steps(db, submission.id)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
+
+        rows = await enablement.revoke(db, submission)
+
+        assert withdrawn == [submission.ref]
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
+        assert "research withdrawn" in rows[EnablementStep.DATASPACE_SHARE].detail
+
+    async def test_the_identity_waits_for_a_withdrawal_that_failed(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """The identity is what the withdrawal needs, so it is kept until the withdrawal lands.
+
+        ds admits the community's read and write for a subject only while they
+        are a member of its organisation, and the identity step deletes that
+        membership and clears the DID. Run after a failed withdrawal, it left a
+        second revocation nothing to withdraw with — the grant outlived the
+        membership with no way left to reach it.
+        """
+        attempts: list[str] = []
+
+        async def _withdraw(sub, *, raise_on_error=False, **kwargs):
+            attempts.append(sub.dataspace_did)
+            if len(attempts) == 1:
+                raise ValueError(
+                    "Share withdrawal failed: could not read what example-dso's connector records"
+                )
+            return True
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.revoke(db, submission)
+
+        # Not revoked: still succeeded, the DID still on the submission.
+        assert "dataspace_identity" not in revocations
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SUCCEEDED
+        assert submission.dataspace_did == "did:web:member"
+        share = rows[EnablementStep.DATASPACE_SHARE]
+        assert share.status == EnablementStatus.FAILED
+        assert "identity is kept" in share.last_error
+        # Everything that does not depend on it still ran.
+        assert "keycloak_user:20260730-test" in revocations
+        assert enablement.state_of(rows) == "failed"
+
+        # Revoking again is the retry: the withdrawal, then the identity.
+        rows = await enablement.revoke(db, submission)
+
+        assert attempts == ["did:web:member", "did:web:member"]
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
+        assert "dataspace_identity" in revocations
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.PENDING
+
+    async def test_without_a_dataspace_identity_there_is_nothing_to_withdraw_for(
+        self, db, submission, revocations, monkeypatch
+    ):
+        async def _withdraw(sub, **kwargs):  # pragma: no cover — reaching it is the failure
+            raise AssertionError("no subject to withdraw for")
+
+        monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+        rows = await enablement.revoke(db, submission)
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.PENDING
 
     async def test_nothing_to_revoke_is_not_an_error(self, db, submission, revocations):
         rows = await enablement.revoke(db, submission)

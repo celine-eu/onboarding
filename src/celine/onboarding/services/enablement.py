@@ -93,6 +93,9 @@ class RunContext:
     submission: Submission
     rows: dict[str, SubmissionEnablementStep] = field(default_factory=dict)
     keycloak_username: str | None = None
+    #: The step an operator named in a retry, if any. Step 4 reads it: named, it
+    #: re-examines a member who declined on the form instead of skipping them.
+    named: str | None = None
 
     @property
     def keycloak_user_id(self) -> str | None:
@@ -304,13 +307,28 @@ async def _run_dataspace_share(ctx: RunContext) -> StepOutcome:
     from celine.onboarding.config.settings import settings
     from celine.onboarding.services.dataspace_identity import provision_user_shares
 
-    if not ctx.submission.data_sharing_consent:
-        return StepOutcome(EnablementStatus.SKIPPED, detail="no data-sharing consent was given")
     if not settings.ds_connector_url:
         return StepOutcome(EnablementStatus.SKIPPED, detail="no dataspace connector is configured")
+    if not ctx.submission.data_sharing_consent and ctx.named != EnablementStep.DATASPACE_SHARE:
+        # Nothing to write at approval. Named in a retry it runs all the same: a
+        # member who declined on the form may have granted on their page since,
+        # and a split they made there is the retry's to converge (the
+        # maintainer, 2026-09-19).
+        return StepOutcome(EnablementStatus.SKIPPED, detail="no data-sharing consent was given")
 
-    await provision_user_shares(ctx.submission, raise_on_error=True)
-    return StepOutcome(EnablementStatus.SUCCEEDED)
+    # Every run reads each connector and writes only where it disagrees with the
+    # member's newest decision, so a re-run where nothing is split writes nothing
+    # and says so.
+    written: list[str] = []
+    await provision_user_shares(ctx.submission, raise_on_error=True, report=written)
+    return StepOutcome(
+        EnablementStatus.SUCCEEDED,
+        detail=(
+            "; ".join(written)
+            if written
+            else "every connector holding the member's offers records their decision"
+        )[:4000],
+    )
 
 
 async def _revoke_dataspace_share(ctx: RunContext, row: SubmissionEnablementStep) -> str:
@@ -319,11 +337,21 @@ async def _revoke_dataspace_share(ctx: RunContext, row: SubmissionEnablementStep
 
     if not settings.ds_connector_url:
         return "no dataspace connector is configured"
-    if not ctx.submission.data_sharing_consent:
-        return "no data-sharing consent was recorded"
+    if not ctx.submission.dataspace_did:
+        return "no dataspace identity is recorded, so there is nobody to withdraw for"
 
-    ok = await withdraw_user_shares(ctx.submission)
-    return "standing consent withdrawn" if ok else "nothing to withdraw"
+    # Every grant the community collected for the member — the form's and any
+    # made on their sharing page since — read from every connector (the
+    # maintainer, 2026-09-19). Raises on a refusal or an unreadable connector:
+    # returning a string would record the step as undone, which used to file a
+    # consent outliving the membership as success.
+    written: list[str] = []
+    await withdraw_user_shares(ctx.submission, raise_on_error=True, report=written)
+    return ("; ".join(written) or "no grant this community collected stood at any connector")[:4000]
+
+
+def _holds_a_dataspace_identity(submission: Submission) -> bool:
+    return bool(submission.dataspace_did)
 
 
 @dataclass(frozen=True)
@@ -337,6 +365,14 @@ class StepSpec:
     fail_closed: bool
     run: Callable[[RunContext], Awaitable[StepOutcome]]
     revoke: Callable[[RunContext, SubmissionEnablementStep], Awaitable[str]] | None
+    # When revocation undoes this step, if not only when it `succeeded`. For a
+    # step whose effects are not only its own run's — the member's sharing page
+    # grants too, and a failed run may have granted at one connector of two — so
+    # its row cannot say whether anything stands.
+    revoke_when: Callable[[Submission], bool] | None = None
+    # A step whose revocation must not run while this one's has failed in the
+    # same revocation: it would remove what the other needs to be retried.
+    waits_for: EnablementStep | None = None
 
 
 PIPELINE: tuple[StepSpec, ...] = (
@@ -360,6 +396,12 @@ PIPELINE: tuple[StepSpec, ...] = (
         fail_closed=True,
         run=_run_dataspace_identity,
         revoke=_revoke_dataspace_identity,
+        # The withdrawal is keyed on the DID this clears, and ds admits the
+        # community's read and write only for a member of its organisation —
+        # the membership this deletes. Revoked after a failed withdrawal, it
+        # left the next revocation nothing to withdraw with, and the grant
+        # outlived the membership with no way left to reach it.
+        waits_for=EnablementStep.DATASPACE_SHARE,
     ),
     StepSpec(
         EnablementStep.DATASPACE_SHARE,
@@ -382,6 +424,13 @@ PIPELINE: tuple[StepSpec, ...] = (
         # path says why, and the person's own withdrawal in the webapp is
         # untouched and still theirs.
         revoke=_revoke_dataspace_share,
+        # Whenever the member holds a dataspace identity, whatever this row
+        # says. One offer is recorded at every connector holding its data
+        # (ADR-0007), so a `failed` run can have granted at one connector before
+        # another refused; and the member's sharing page grants too, so a step
+        # `skipped` for a declined form, or `pending`, can stand behind grants
+        # (the maintainer, 2026-09-19: every grant is withdrawn).
+        revoke_when=_holds_a_dataspace_identity,
     ),
 )
 
@@ -531,16 +580,28 @@ async def _run_one(db: AsyncSession, ctx: RunContext, spec: StepSpec) -> Submiss
     return row
 
 
-def _resend_requested(spec: StepSpec, row: SubmissionEnablementStep) -> bool:
+def _rerun_by_name(spec: StepSpec, row: SubmissionEnablementStep) -> bool:
     """Whether a step named in a retry is re-run although it `succeeded`.
 
-    Step 1 whose invitation failed to send, and nothing else.
+    Two, and nothing else:
+
+    - step 1 whose invitation failed to send, so the operator can send it again;
+    - step 4, the sharing consent, **always** (the maintainer, 2026-09-19). A
+      member's withdrawal that reaches one connector of two leaves the step
+      `succeeded` — nothing about approval failed — and the offer split. Its run
+      reads every connector and brings each to the member's newest decision,
+      writing nothing where they already agree, so re-running it is the
+      re-examination the operator asked for and never a second grant. A step 4
+      `skipped` because the member declined on the form is re-run too: they may
+      have decided on their page since.
     """
-    return (
-        spec.step == EnablementStep.KEYCLOAK_USER
-        and row.status == EnablementStatus.SUCCEEDED
-        and row.invitation in RESENDABLE_INVITATIONS
-    )
+    if spec.step == EnablementStep.DATASPACE_SHARE:
+        # `skipped` too: a member who declined everything on the form has step 4
+        # skipped, and can still make a split on their page afterwards.
+        return row.status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED)
+    if row.status != EnablementStatus.SUCCEEDED:
+        return False
+    return spec.step == EnablementStep.KEYCLOAK_USER and row.invitation in RESENDABLE_INVITATIONS
 
 
 async def enable(
@@ -552,15 +613,18 @@ async def enable(
     first committed everything that did. A step already `succeeded` or `skipped`
     is not re-run: retry means "finish what is unfinished", not "do it all again".
 
-    **One exception**, and only when the step is named: step 1 whose invitation
-    came back `send_failed` is re-run, so the operator can resend an email that
-    did not go out. An unnamed run still skips it, so neither approval nor "retry
-    all" re-sends by accident. Re-running it is safe because the upsert is
-    idempotent on `(community, key)` and the provisioning service applies its
-    send rule again.
+    **Two exceptions**, and only when the step is named (:func:`_rerun_by_name`):
+    step 1 whose invitation came back `send_failed` is re-run, so the operator
+    can resend an email that did not go out; and a succeeded step 4 is re-run, so
+    the operator can re-drive an offer split across connectors. An unnamed run
+    still skips both, so neither approval nor "retry all" re-sends by accident.
+    Re-running step 1 is safe because the upsert is idempotent on
+    `(community, key)` and the provisioning service applies its send rule again;
+    step 4 because it writes only where a connector disagrees with the member's
+    newest decision.
     """
     rows = await ensure_rows(db, submission)
-    ctx = RunContext(submission=submission, rows=rows)
+    ctx = RunContext(submission=submission, rows=rows, named=only)
 
     for spec in PIPELINE:
         if only is not None and spec.step != only:
@@ -568,7 +632,7 @@ async def enable(
 
         row = rows[spec.step]
         if row.status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED) and not (
-            only is not None and _resend_requested(spec, row)
+            only is not None and _rerun_by_name(spec, row)
         ):
             continue
 
@@ -588,7 +652,8 @@ async def retry(
     """Re-run the failed steps, or one named step.
 
     Naming `keycloak_user` also re-runs a step 1 that succeeded with a
-    `send_failed` invitation; see :func:`enable`.
+    `send_failed` invitation, and naming `dataspace_share` re-examines a step 4
+    that succeeded; see :func:`enable`.
 
     Unlike `enable` this never raises on a fail-closed failure: the submission is
     already approved, so there is no decision to block — the operator asked to
@@ -612,14 +677,31 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
     """
     rows = await ensure_rows(db, submission)
     ctx = RunContext(submission=submission, rows=rows)
+    refused: set[EnablementStep] = set()
 
     for step in REVOKE_ORDER:
         spec = SPECS[step]
         row = rows[spec.step]
-        if row.status != EnablementStatus.SUCCEEDED:
+        if spec.revoke_when is not None:
+            if not spec.revoke_when(submission):
+                continue
+        elif row.status != EnablementStatus.SUCCEEDED:
             continue
         if spec.revoke is None:
             logger.info("Step %s has no revocation path; leaving it in place", spec.step)
+            continue
+        if spec.waits_for in refused:
+            # Left `succeeded`, so revoking again undoes it once the step it
+            # waits for has been undone. The waited-for row says why.
+            waited = rows[spec.waits_for]
+            waited.last_error = (
+                f"{waited.last_error} — the {spec.label.lower()} is kept until this "
+                "succeeds, because it is what the withdrawal needs; revoke again"
+            )[:4000]
+            logger.warning(
+                "Not revoking %s for %s: %s failed first", spec.step, submission.ref, spec.waits_for
+            )
+            await db.commit()
             continue
 
         try:
@@ -628,6 +710,7 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
             row.status = EnablementStatus.FAILED
             row.last_error = f"revoke failed — {type(exc).__name__}: {exc}"[:4000]
             logger.warning("Revoking %s failed for %s: %s", spec.step, submission.ref, exc)
+            refused.add(spec.step)
             await db.commit()
             continue
 

@@ -188,11 +188,21 @@ consent:
 #   # service — and the member's supply points, which are read from the registry
 #   # and sent with the decision because the holder can find their rows no other
 #   # way.
+#   #
+#   # An offer whose data sits in several places is named by each holder, and
+#   # the decision is recorded (and withdrawn) at every one (ADR-0007). The
+#   # community's own connector is an entry whose holder is this community's own
+#   # alias, with no url — its address is DS_CONNECTOR_URL. Here research covers
+#   # the grid operator's readings and the community's own meter datasets.
 #   connectors:
 #     - holder: example-dso
 #       url: http://connector.example-dso.localhost
 #       offers:
 #         - meter-data-release
+#         - forecasting-and-research
+#     - holder: example-community
+#       offers:
+#         - forecasting-and-research
 
 notifications:
   from: "noreply@example.com"

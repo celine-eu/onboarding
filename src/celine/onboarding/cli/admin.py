@@ -390,14 +390,19 @@ def enablement_retry(
         help="keycloak_user | rec_registry_member | dataspace_identity | "
         "dataspace_share. Omit to re-run everything unfinished. Naming "
         "keycloak_user also re-runs a succeeded login step whose invitation "
-        "is send_failed, to send it again.",
+        "is send_failed, to send it again. Naming dataspace_share re-examines "
+        "a succeeded consent step, or one skipped for a declined form: every "
+        "connector is brought to the member's "
+        "newest decision, withdrawals included, and nothing is written where "
+        "they agree.",
     ),
     local: bool = _LOCAL,
     api_url: str = _API_URL,
     token: str = _TOKEN,
     as_json: bool = _JSON,
 ):
-    """Re-run the steps that have not succeeded, or resend a failed invitation."""
+    """Re-run the steps that have not succeeded, resend a failed invitation, or
+    re-drive a sharing decision that is split across connectors."""
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)
@@ -425,10 +430,11 @@ def enablement_revoke(
     token: str = _TOKEN,
     as_json: bool = _JSON,
 ):
-    """Undo enablement: credential, membership, registry member, login.
+    """Undo enablement: sharing grants, credential and membership, login, registry member.
 
-    Does not withdraw the standing sharing consent — that is the data subject's
-    own act, made with their own credential.
+    Withdraws every standing grant the community collected for the member, at
+    every connector, as the community's own decision. While that fails, the
+    dataspace identity is kept; run this again to retry.
     """
     if not confirm:
         typer.secho(

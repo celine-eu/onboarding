@@ -222,7 +222,9 @@ class ConnectorBinding:
 
     ``offers`` are the offer ids routed here. An offer named by no entry stays at
     the community's own connector — that is the ordinary case, and the absence of
-    this block is a community whose data is all its own.
+    this block is a community whose data is all its own. An offer may be named by
+    several entries: its data is then held in several places, and the decision is
+    recorded at each (ADR-0007).
     """
 
     holder: str
@@ -249,8 +251,14 @@ class DataspaceBinding:
     organization_did: str = ""
     linked_participant_did: str = ""
     #: Other participants' connectors, by the offers they hold. See
-    #: :class:`ConnectorBinding`.
+    #: :class:`ConnectorBinding`. Never the community's own: an entry naming it
+    #: lands in :attr:`own_offers` instead.
     connectors: tuple[ConnectorBinding, ...] = ()
+    #: Offers another participant holds data for **and** the community holds data
+    #: for too — the manifest's entry whose ``holder`` is this community's own
+    #: alias. Only meaningful for an offer some other entry names: one named by
+    #: nobody is recorded here anyway.
+    own_offers: tuple[str, ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -262,10 +270,10 @@ class DataspaceBinding:
         """
         return bool(self.organization)
 
-    def connector_for(self, offer_id: str) -> ConnectorBinding | None:
-        """The participant holding the data this offer reaches, or ``None``.
+    def connectors_for(self, offer_id: str) -> tuple[ConnectorBinding, ...]:
+        """Every other participant holding data this offer reaches, in manifest order.
 
-        ``None`` means the community's own connector (``DS_CONNECTOR_URL``), and
+        Empty means the community's own connector (``DS_CONNECTOR_URL``) alone, and
         it is the answer for every offer nobody routed — so a deployment with no
         ``connectors:`` block behaves exactly as it did before routing existed.
 
@@ -276,10 +284,16 @@ class DataspaceBinding:
         the route from the recipient would send every release decision to the
         connector that does not serve the rows.
         """
-        for connector in self.connectors:
-            if offer_id in connector.offers:
-                return connector
-        return None
+        return tuple(c for c in self.connectors if offer_id in c.offers)
+
+    def recorded_here(self, offer_id: str) -> bool:
+        """Whether this offer's decision is (also) recorded at the community's own connector.
+
+        Yes for an offer nobody routed, and for one the manifest's own entry names
+        beside another participant. No only for an offer whose data is entirely
+        somebody else's.
+        """
+        return offer_id in self.own_offers or not self.connectors_for(offer_id)
 
 
 def validate_dataspace_block(block: Any, *, where: str) -> None:
@@ -314,10 +328,10 @@ def validate_dataspace_block(block: Any, *, where: str) -> None:
         if did and not did.startswith("did:"):
             raise ValueError(f"{where}: 'dataspace.{key}' must be a DID (got {did!r})")
 
-    _validate_connectors(block.get("connectors"), where=where)
+    _validate_connectors(block.get("connectors"), where=where, own_alias=alias)
 
 
-def _validate_connectors(block: Any, *, where: str) -> None:
+def _validate_connectors(block: Any, *, where: str, own_alias: str = "") -> None:
     """Refuse a malformed ``dataspace.connectors:`` block, at import.
 
     Every failure here is a consent recorded at the wrong connector or at none,
@@ -325,16 +339,21 @@ def _validate_connectors(block: Any, *, where: str) -> None:
     block is checked where an operator is already looking rather than at the
     first approval.
 
-    **One offer, one connector.** Listing an offer twice is two answers to "where
-    does this decision go", and picking one would route a person's consent by
-    dictionary order.
+    **An offer may be held in several places** (ADR-0007): each entry naming it
+    is a connector its decision is recorded at. An entry whose ``holder`` is the
+    community's own alias (``own_alias``) says the community holds data for those
+    offers too; it carries **no** ``url``, because that address is
+    ``DS_CONNECTOR_URL`` and two homes for one address disagree some day.
+
+    Still refused, because each is two answers to one question: one holder in two
+    entries (which URL is it?), and one offer twice in an entry.
     """
     if block is None:
         return
     if not isinstance(block, list):
         raise ValueError(f"{where}: 'dataspace.connectors' must be a list")
 
-    seen: dict[str, str] = {}
+    holders: set[str] = set()
     for index, entry in enumerate(block):
         at = f"{where}: 'dataspace.connectors[{index}]'"
         if not isinstance(entry, dict):
@@ -351,9 +370,22 @@ def _validate_connectors(block: Any, *, where: str) -> None:
             raise ValueError(
                 f"{at}: 'holder' must be lowercase alphanumeric with inner hyphens (got {holder!r})"
             )
+        if holder in holders:
+            raise ValueError(
+                f"{at}: holder {holder!r} already has an entry. One participant has "
+                "one connector; list all of its offers in one entry."
+            )
+        holders.add(holder)
 
-        url = str(entry.get("url", "")).strip()
-        if not url.startswith(("http://", "https://")):
+        url = str(entry.get("url", "") or "").strip()
+        if own_alias and holder == own_alias:
+            if url:
+                raise ValueError(
+                    f"{at}: {holder!r} is this community itself, whose connector is "
+                    "DS_CONNECTOR_URL. Omit 'url' — two homes for one address "
+                    "disagree some day."
+                )
+        elif not url.startswith(("http://", "https://")):
             raise ValueError(
                 f"{at}: 'url' must be the holder's connector base URL, http(s) (got {url!r})"
             )
@@ -364,17 +396,14 @@ def _validate_connectors(block: Any, *, where: str) -> None:
                 f"{at}: 'offers' must be a non-empty list of offer ids. A "
                 "connector routing nothing routes nothing — omit the entry."
             )
+        seen: set[str] = set()
         for offer_id in offers:
             if not isinstance(offer_id, str) or not offer_id.strip():
                 raise ValueError(f"{at}: every entry in 'offers' must be an offer id")
             offer_id = offer_id.strip()
             if offer_id in seen:
-                raise ValueError(
-                    f"{at}: offer {offer_id!r} is already routed to {seen[offer_id]!r}. "
-                    "One offer is held by one connector; two entries are two "
-                    "answers to where a member's decision goes."
-                )
-            seen[offer_id] = holder
+                raise ValueError(f"{at}: offer {offer_id!r} is listed twice")
+            seen.add(offer_id)
 
 
 def dataspace_binding(rec_slug: str) -> DataspaceBinding:
@@ -384,8 +413,10 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
         return DataspaceBinding()
 
     validate_dataspace_block(block, where=f"REC {rec_slug!r}")
+    organization = str(block["organization"]).strip()
+    entries = block.get("connectors") or []
     return DataspaceBinding(
-        organization=str(block["organization"]).strip(),
+        organization=organization,
         organization_did=str(block.get("organization_did", "") or "").strip(),
         linked_participant_did=str(block.get("linked_participant_did", "") or "").strip(),
         connectors=tuple(
@@ -394,7 +425,14 @@ def dataspace_binding(rec_slug: str) -> DataspaceBinding:
                 url=str(entry["url"]).strip().rstrip("/"),
                 offers=tuple(str(o).strip() for o in entry["offers"]),
             )
-            for entry in (block.get("connectors") or [])
+            for entry in entries
+            if str(entry["holder"]).strip() != organization
+        ),
+        own_offers=tuple(
+            str(o).strip()
+            for entry in entries
+            if str(entry["holder"]).strip() == organization
+            for o in entry["offers"]
         ),
     )
 
@@ -411,7 +449,7 @@ def offer_recipient(offer: dict[str, Any]) -> str:
     home organisation and the GDPR controller at once, and only the first reading
     held in every offer. So this answers *who receives the data* and nothing
     else — in particular it is **not** where the consent is recorded, which is
-    :meth:`DataspaceBinding.connector_for`.
+    :meth:`DataspaceBinding.connectors_for`.
     """
     recipients = offer.get("recipients") or {}
     value = recipients.get("recipient") or recipients.get("controller") or ""

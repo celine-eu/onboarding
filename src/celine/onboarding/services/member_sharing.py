@@ -54,7 +54,12 @@ import httpx
 from celine.sdk.auth import JwtUser
 
 from celine.onboarding.config.settings import settings
-from celine.onboarding.services import dataspace_identity, rec_registry, template_service
+from celine.onboarding.services import (
+    dataspace_identity,
+    rec_registry,
+    sharing_intent,
+    template_service,
+)
 from celine.onboarding.services.errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -95,6 +100,26 @@ class SharingState(enum.StrEnum):
     #: offers" has no single answer. Refused rather than guessed; see
     #: :func:`resolve_member_rec`.
     AMBIGUOUS_COMMUNITY = "ambiguous_community"
+
+
+class DecisionState(enum.StrEnum):
+    """Where one offer stands for this member, across every connector holding its data.
+
+    Two states were enough while an offer lived in one place. Since ADR-0007 an
+    offer can be recorded at the community's connector *and* another
+    participant's, and the two can disagree for a while — a grant one of them
+    refused at approval and the operator has not yet retried, or a withdrawal
+    one of them did not take. Showing either half as the answer is a lie in one
+    direction or the other, so the maintainer decided (2026-09-19) the member
+    is shown the disagreement itself.
+    """
+
+    #: Every connector holding the offer's data records a standing grant.
+    GRANTED = "granted"
+    #: None of them does: withdrawn everywhere, or never granted.
+    WITHDRAWN = "withdrawn"
+    #: Some do and some do not. Never shown as granted or as withdrawn.
+    PENDING = "pending"
 
 
 class CannotDecideError(RuntimeError):
@@ -428,16 +453,67 @@ async def _presented_offers(did: str) -> dict[str, str | None]:
     return {str(item.get("id")): item.get("version") for item in presented or [] if item.get("id")}
 
 
+def _decision_state(
+    offer_id: str,
+    decisions: list[dict[str, Any]],
+    binding: template_service.DataspaceBinding | None,
+) -> DecisionState:
+    """Whether every connector holding this offer's data agrees, and on what.
+
+    **Which connectors are compared:** every one the offer's decision is routed
+    to — the community's own when :meth:`~template_service.DataspaceBinding.recorded_here`,
+    each holder :meth:`~template_service.DataspaceBinding.connectors_for` names —
+    and any other connector that reports a standing grant for it. A grant is
+    data that may be served wherever it sits, so a route the manifest no longer
+    names cannot hide it; a withdrawal there says nothing, because it is not a
+    place the decision is recorded.
+
+    A connector *grants* when any of its rows for the offer stands (it keeps one
+    row per dataset), the same rule provisioning reads with. The community's own
+    rows carry no ``holder``; a holder's are stamped with its alias by
+    :func:`~celine.onboarding.services.dataspace_identity.subject_shares_at_holders`.
+
+    Without a binding every offer is the community's own, which is the
+    single-connector deployment and gives exactly the answer ``granted`` gave.
+    """
+    granting: set[str | None] = set()
+    for decision in decisions:
+        if decision.get("offer_id") == offer_id and decision.get("status") in _GRANTED:
+            granting.add(decision.get("holder") or None)
+
+    routed: set[str | None] = {None}
+    if binding is not None:
+        routed = {connector.holder for connector in binding.connectors_for(offer_id)}
+        if binding.recorded_here(offer_id):
+            routed.add(None)
+
+    compared = routed | granting
+    if not granting:
+        return DecisionState.WITHDRAWN
+    if granting == compared:
+        return DecisionState.GRANTED
+    return DecisionState.PENDING
+
+
 def _merge(
     offers: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
     presented: dict[str, str | None] | None = None,
+    *,
+    binding: template_service.DataspaceBinding | None = None,
 ) -> list[dict[str, Any]]:
     """One offer per row, with this member's decision on it.
 
     The offer is the published projection — the same facts the person was shown —
     and the decision is the connector's. Neither is copied or cached: two records
     of one fact is how the thing displayed and the thing enforced drift apart.
+
+    ``state`` is the answer the page renders (:class:`DecisionState`); ``binding``
+    is what says where each offer is recorded, so that a connector with *no* row
+    counts as disagreeing. ``granted`` is kept with the meaning it always had —
+    a standing grant exists at some connector holding the data — so it is true
+    for a pending offer, and a reader that has not learned ``state`` sees a
+    half-withdrawn offer as granted, the direction that hides nothing still served.
     """
     standing = {
         d.get("offer_id"): d for d in decisions if d.get("offer_id") and d.get("status") in _GRANTED
@@ -452,6 +528,10 @@ def _merge(
             {
                 **offer,
                 "granted": decision is not None,
+                # Granted, withdrawn, or pending while the connectors holding the
+                # data disagree (the maintainer, 2026-09-19). The web app renders
+                # this; `granted` stays for readers that predate it.
+                "state": str(_decision_state(str(offer.get("id")), decisions, binding)),
                 # Which participant recorded it, when it was not this community's
                 # own connector. A member reading "granted" is entitled to know it
                 # is the grid operator holding the decision, and a support call
@@ -536,6 +616,7 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
             offers,
             await _list_decisions(credential, rec_slug),
             await _presented_offers(credential.subject_id),
+            binding=template_service.dataspace_binding(rec_slug),
         ),
         identity=_identity_of(credential),
     )
@@ -574,7 +655,7 @@ def _rendered_text(offer: dict[str, Any], wording: dict[str, Any] | None) -> str
     return "|".join(parts)
 
 
-def _relayed_evidence(offer: dict[str, Any], rec_slug: str) -> dict[str, Any]:
+def relayed_evidence(offer: dict[str, Any], rec_slug: str) -> dict[str, Any]:
     """What this member was shown, for a decision their community relays.
 
     A decision the member takes at their **own** connector needs none of this —
@@ -627,6 +708,15 @@ async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> Sh
 
     A relayed **withdrawal** is recorded as the member's own, which is what makes
     it final: nothing the community or a service does afterwards lifts it.
+
+    **An offer held in several places is decided at each** (ADR-0007) — the
+    community's own part as the member, every other holder's part relayed — and
+    every connector is attempted before a failure is reported, so a withdrawal
+    one connector refuses still reaches the others.
+
+    **The decision is recorded here before any of that** (:mod:`sharing_intent`),
+    and survives whatever the connectors answer: it is what the operator's retry
+    carries to a connector that refused, when no connector kept a trace of it.
     """
     state, rec_slug, credential = await _resolve(user)
     if state is not SharingState.OK:
@@ -653,51 +743,84 @@ async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> Sh
     if not base:
         raise SharingUnavailableError("DS_CONNECTOR_URL is not configured")
 
-    binding = template_service.dataspace_binding(rec_slug)
-    if binding.connector_for(offer_id) is not None:
-        registration = await dataspace_identity.relay_member_decision(
-            rec_slug,
-            subject_id=credential.subject_id,
-            offer_id=offer_id,
-            enabled=enabled,
-            legal_basis=_relayed_evidence(offer, rec_slug) if enabled else None,
-        )
-        if not registration.ok:
-            # The detail names the holder, its status code, or this deployment's
-            # own settings. All three are for the log and for an operator; the
-            # member is told the change did not happen, because `_unavailable`
-            # turns whatever this carries into a 503 body they can read.
-            logger.error(
-                "Relaying %s for %s was refused: %s",
-                offer_id,
-                credential.subject_id,
-                registration.detail,
-            )
-            raise SharingUnavailableError(
-                f"The connector holding the data for {offer_id!r} did not record the change"
-            )
-        return await get_data_sharing(user)
-
+    # **The member's decision is recorded here first** (the maintainer,
+    # 2026-09-19), committed before any connector is told. A connector may not
+    # keep it — ds stamps nothing when a withdrawal meets one that stands, and a
+    # retry's relayed grant can overwrite the one connector a withdrawal reached
+    # — so this is what the operator's retry ranks as the member's newest
+    # decision. Nothing is relayed without it: a decision that reached a
+    # connector and is recorded nowhere else is the case this exists to end, and
+    # "nothing happened, try again" is then true.
+    evidence = relayed_evidence(offer, rec_slug)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{base}/consent/my/shares",
-                json={"offer_id": offer_id, "enabled": enabled},
-                headers=credential.headers,
-            )
-    except httpx.HTTPError as exc:
-        raise SharingUnavailableError(f"Connector unreachable: {exc}") from exc
-
-    if resp.status_code == 409:
-        # The check above should have caught this; reaching it means the
-        # published vocabulary and the connector disagree about the offer.
-        raise ValueError(
-            f"The connector refused offer {offer_id!r} as not consent-based, "
-            "though the published vocabulary says it is."
+        await sharing_intent.record(
+            subject_id=credential.subject_id,
+            rec_slug=rec_slug,
+            offer_id=offer_id,
+            granted=enabled,
+            evidence=evidence,
         )
-    if resp.status_code >= 400:
-        raise SharingUnavailableError(f"Connector refused the change ({resp.status_code})")
+    except Exception as exc:  # noqa: BLE001 — any failure to record stops the relay
+        logger.exception("Could not record %s's decision on %s", credential.subject_id, offer_id)
+        raise SharingUnavailableError("Your decision could not be recorded; try again") from exc
 
+    # **Every connector holding the offer's data gets the decision**, and every one
+    # is attempted before anything is reported (ADR-0007): a withdrawal that
+    # reaches one holder of two leaves the data served under the half that stood.
+    # The community's own part is decided as the member, their own part at every
+    # other holder is relayed.
+    binding = template_service.dataspace_binding(rec_slug)
+    failure: Exception | None = None
+
+    if binding.recorded_here(offer_id):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{base}/consent/my/shares",
+                    json={"offer_id": offer_id, "enabled": enabled},
+                    headers=credential.headers,
+                )
+        except httpx.HTTPError as exc:
+            failure = SharingUnavailableError(f"Connector unreachable: {exc}")
+        else:
+            if resp.status_code == 409:
+                # The check above should have caught this; reaching it means the
+                # published vocabulary and the connector disagree about the offer.
+                failure = ValueError(
+                    f"The connector refused offer {offer_id!r} as not consent-based, "
+                    "though the published vocabulary says it is."
+                )
+            elif resp.status_code >= 400:
+                failure = SharingUnavailableError(
+                    f"Connector refused the change ({resp.status_code})"
+                )
+
+    registrations = await dataspace_identity.relay_member_decision(
+        rec_slug,
+        subject_id=credential.subject_id,
+        offer_id=offer_id,
+        enabled=enabled,
+        legal_basis=evidence if enabled else None,
+    )
+    refused = [r for r in registrations if not r.ok]
+    for registration in refused:
+        # The detail names the holder, its status code, or this deployment's
+        # own settings. All three are for the log and for an operator; the
+        # member is told the change did not happen, because `_unavailable`
+        # turns whatever this carries into a 503 body they can read.
+        logger.error(
+            "Relaying %s for %s was refused: %s",
+            offer_id,
+            credential.subject_id,
+            registration.detail,
+        )
+
+    if failure is not None:
+        raise failure
+    if refused:
+        raise SharingUnavailableError(
+            f"The connector holding the data for {offer_id!r} did not record the change"
+        )
     return await get_data_sharing(user)
 
 

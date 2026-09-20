@@ -28,6 +28,66 @@ def _isolate_manifest_cache():
     template_service._cache_loaded_at = saved_at
 
 
+class IntentStore:
+    """The member's recorded decisions, in memory, one per (member, offer).
+
+    Stands in for `member_sharing_intents`, which the unit suite has no database
+    for. It keys and replaces exactly as the upsert does; the statement itself is
+    pinned in `test_sharing_intent.py`. ``now`` is swappable so a test can date a
+    press on the same clock as its fake connectors.
+    """
+
+    def __init__(self) -> None:
+        from datetime import UTC, datetime
+
+        self.rows: dict[tuple[str, str], object] = {}
+        self.writes: list[tuple[str, str, bool]] = []
+        self.now = lambda: datetime.now(UTC)
+        #: Set to an exception to make writes fail as a database would.
+        self.fail_writes: Exception | None = None
+        #: Set to an exception to make reads fail as a database would.
+        self.fail_reads: Exception | None = None
+        #: Called on each write, after it is stored — lets a test see the order.
+        self.on_write = None
+
+    def put(self, subject_id: str, offer_id: str, *, granted: bool, at=None, evidence=None):
+        from celine.onboarding.services.sharing_intent import Intent
+
+        intent = Intent(
+            offer_id=offer_id,
+            granted=granted,
+            decided_at=at or self.now(),
+            evidence=evidence,
+        )
+        self.rows[(subject_id, offer_id)] = intent
+        return intent
+
+    async def record(self, *, subject_id, rec_slug, offer_id, granted, evidence):
+        if self.fail_writes is not None:
+            raise self.fail_writes
+        intent = self.put(subject_id, offer_id, granted=granted, evidence=evidence)
+        self.writes.append((subject_id, offer_id, granted))
+        if self.on_write is not None:
+            self.on_write(intent)
+        return intent
+
+    async def for_subject(self, subject_id):
+        if self.fail_reads is not None:
+            raise self.fail_reads
+        return {offer: i for (who, offer), i in self.rows.items() if who == subject_id}
+
+
+@pytest.fixture(autouse=True)
+def intents(monkeypatch) -> IntentStore:
+    """Every test gets an empty store; the database behind it is never opened."""
+    from celine.onboarding.services import sharing_intent
+
+    store = IntentStore()
+    monkeypatch.setattr(sharing_intent, "record", store.record)
+    monkeypatch.setattr(sharing_intent, "for_subject", store.for_subject)
+    return store
+
+
 @pytest.fixture()
 def bind_rec(monkeypatch):
     """Seed a REC manifest so `dataspace_binding` resolves without a database.

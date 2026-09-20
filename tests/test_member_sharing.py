@@ -1436,3 +1436,432 @@ class TestTheDecisionGoesToTheHolder:
 
         assert "DS_ORG_CLIENT_SECRET" not in str(raised.value)
         assert "DS_ORG_CLIENT_SECRET" in caplog.text
+
+
+# ── one offer, several connectors (ADR-0007) ─────────────────────────────────
+#
+# Research reaches the grid operator's readings and the community's own meter
+# datasets, so it is decided at both: the community's part as the member, the grid
+# operator's relayed. A withdrawal that reaches one of the two leaves the data
+# served under the half that stood.
+
+RESEARCH_OFFER = {**RELEASE_OFFER, "id": "forecasting-and-research"}
+
+
+class TestAnOfferHeldInTwoPlaces:
+    @pytest.fixture()
+    def _both(self, monkeypatch, bind_rec, _dataspace):
+        manifest = template_service._cache["default"]
+        manifest["dataspace"]["connectors"] = [
+            {
+                "holder": "example-dso",
+                "url": HOLDER_URL,
+                "offers": [RELEASE_OFFER["id"], RESEARCH_OFFER["id"]],
+            },
+            {"holder": "rec-example", "offers": [RESEARCH_OFFER["id"]]},
+        ]
+        manifest["consent"]["data_sharing"]["offers"] = [
+            OFFER_CONSENT["id"],
+            RELEASE_OFFER["id"],
+            RESEARCH_OFFER["id"],
+        ]
+        monkeypatch.setattr(di.settings, "ds_org_client_id", "")
+        monkeypatch.setattr(di.settings, "ds_org_client_secret", "org-secret")
+
+        from celine.onboarding.services import rec_registry, service_auth
+
+        monkeypatch.setattr(service_auth, "_provider_for", lambda *a: _mock_token_provider())
+
+        async def _ensure(rec_slug, *, user_id, did):
+            return "ok"
+
+        async def _pods(dids, *, rec_slug):
+            return {RESOLVE_WITH_CREDENTIAL["did"]: ["EX000E00000001"]}
+
+        monkeypatch.setattr(rec_registry, "ensure_member_did", _ensure)
+        monkeypatch.setattr(rec_registry, "supply_points_by_did", _pods)
+
+    def _transport(
+        self, *, own_shares=None, own_post=None, holder_shares=None, holder_post=None, requests
+    ):
+        base = _handler(
+            offers=httpx.Response(200, json=[OFFER_CONSENT, RELEASE_OFFER, RESEARCH_OFFER]),
+            shares=own_shares,
+            post=own_post,
+        )
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            requests.append(req)
+            url = str(req.url)
+            if url.startswith(HOLDER_URL):
+                if "subject-shares" in url:
+                    return holder_shares or httpx.Response(200, json=[])
+                return holder_post or httpx.Response(200, json=[{"id": "row"}])
+            if "/consent/admin/subject-shares" in url:
+                raise AssertionError("the community's own connector is read as the member")
+            return base(req)
+
+        return handle
+
+    @staticmethod
+    def _posted(requests):
+        return [
+            (str(r.url), json.loads(r.read().decode()), r.headers.get("X-User-VC"))
+            for r in requests
+            if r.method == "POST"
+        ]
+
+    async def test_a_grant_reaches_both_connectors(self, monkeypatch, _both):
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), RESEARCH_OFFER["id"], enabled=True)
+
+        posted = self._posted(requests)
+        assert [url for url, _, _ in posted] == [
+            "http://connector:8000/consent/my/shares",
+            f"{HOLDER_URL}/consent/admin/shares",
+        ]
+        (_, here, vc), (_, there, _) = posted
+        # The community's part: the member themselves, with their credential, no keys.
+        assert vc == VC
+        assert here == {"offer_id": RESEARCH_OFFER["id"], "enabled": True}
+        # The grid operator's part: relayed as theirs, with their supply point.
+        assert there["decided_by"] == "subject"
+        assert there["keys"] == ["pod:EX000E00000001"]
+
+    async def test_a_withdrawal_reaches_both_connectors(self, monkeypatch, _both):
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), RESEARCH_OFFER["id"], enabled=False)
+
+        posted = self._posted(requests)
+        assert [url for url, _, _ in posted] == [
+            "http://connector:8000/consent/my/shares",
+            f"{HOLDER_URL}/consent/admin/shares",
+        ]
+        assert posted[0][1] == {"offer_id": RESEARCH_OFFER["id"], "enabled": False}
+        there = posted[1][1]
+        assert there["enabled"] is False
+        assert there["decided_by"] == "subject"
+        assert "keys" not in there
+
+    async def test_a_withdrawal_the_holder_refuses_still_reaches_the_community(
+        self, monkeypatch, _both
+    ):
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(holder_post=httpx.Response(502, text="down"), requests=requests),
+        )
+
+        with pytest.raises(ms.SharingUnavailableError):
+            await ms.set_data_sharing(_member(), RESEARCH_OFFER["id"], enabled=False)
+
+        assert "http://connector:8000/consent/my/shares" in [
+            url for url, _, _ in self._posted(requests)
+        ]
+
+    async def test_a_withdrawal_the_community_refuses_still_reaches_the_holder(
+        self, monkeypatch, _both
+    ):
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(own_post=httpx.Response(503, text="down"), requests=requests),
+        )
+
+        with pytest.raises(ms.SharingUnavailableError):
+            await ms.set_data_sharing(_member(), RESEARCH_OFFER["id"], enabled=False)
+
+        assert f"{HOLDER_URL}/consent/admin/shares" in [url for url, _, _ in self._posted(requests)]
+
+    async def test_the_release_is_still_the_holders_alone(self, monkeypatch, _both):
+        requests: list[httpx.Request] = []
+        _patch_httpx(monkeypatch, self._transport(requests=requests))
+
+        await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=True)
+
+        assert [url for url, _, _ in self._posted(requests)] == [
+            f"{HOLDER_URL}/consent/admin/shares"
+        ]
+
+    async def test_the_read_merges_both_halves_into_one_decision(self, monkeypatch, _both):
+        """One offer, one row — however many connectors and datasets record it.
+
+        The community's connector returns a row per dataset the offer resolves to
+        (three here), the holder one more; the member decided once. The
+        community's own connector is read as the member and only as the member —
+        the transport fails the test if it is read as the organisation too.
+        """
+        granted = {"status": "granted", "legal_basis": {"consent_text_version": "2.0"}}
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                own_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "dataset_id": f"meters_{i}", **granted}
+                        for i in range(3)
+                    ],
+                ),
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "dataset_id": "readings", **granted},
+                        {"offer_id": RELEASE_OFFER["id"], "dataset_id": "readings", **granted},
+                    ],
+                ),
+                requests=requests,
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        ids = [o["id"] for o in view.offers]
+        assert ids.count(RESEARCH_OFFER["id"]) == 1
+        research = next(o for o in view.offers if o["id"] == RESEARCH_OFFER["id"])
+        assert research["granted"] is True
+        # Read once per connector: the member's own read, and the holder's.
+        reads = [str(r.url).split("?")[0] for r in requests if "shares" in str(r.url)]
+        assert reads.count(f"{HOLDER_URL}/consent/admin/subject-shares") == 1
+        assert reads.count("http://connector:8000/consent/my/shares") == 1
+
+    # ── while the halves disagree (the maintainer, 2026-09-19) ────────────────
+    #
+    # A partial grant waiting for the operator's retry, or a withdrawal that
+    # landed at one connector of two: the member is shown `pending`, never
+    # `granted` and never `withdrawn`.
+
+    async def test_a_withdrawal_that_landed_at_one_connector_reads_as_pending(
+        self, monkeypatch, _both
+    ):
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                own_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "revoked", "dataset_id": "m"}
+                    ],
+                ),
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "granted", "dataset_id": "r"}
+                    ],
+                ),
+                requests=requests,
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        research = next(o for o in view.offers if o["id"] == RESEARCH_OFFER["id"])
+        assert research["state"] == "pending"
+        # The flag keeps its meaning — a grant stands somewhere — for any reader
+        # that has not learned `state`.
+        assert research["granted"] is True
+
+    async def test_a_grant_that_landed_at_one_connector_reads_as_pending(self, monkeypatch, _both):
+        """The holder refused at approval; the community recorded its half."""
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                own_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "granted", "dataset_id": "m"}
+                    ],
+                ),
+                requests=requests,
+            ),
+        )
+
+        view = await ms.get_data_sharing(_member())
+
+        research = next(o for o in view.offers if o["id"] == RESEARCH_OFFER["id"])
+        assert research["state"] == "pending"
+
+    async def test_a_connector_that_cannot_be_read_is_an_error_not_pending(
+        self, monkeypatch, _both
+    ):
+        """Unknown is not a disagreement.
+
+        `pending` says the halves are known to differ and a re-drive converges
+        them. A connector that cannot be read is not known to differ, nothing is
+        re-driving it, and a member acting on "pending" would write to the
+        connector that just failed. The page fails closed, as it did before.
+        """
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                own_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "granted", "dataset_id": "m"}
+                    ],
+                ),
+                holder_shares=httpx.Response(503, text="unavailable"),
+                requests=requests,
+            ),
+        )
+
+        with pytest.raises(ms.SharingUnavailableError):
+            await ms.get_data_sharing(_member())
+
+    def test_the_member_api_carries_the_state_of_every_offer(self, issue_token, monkeypatch, _both):
+        """The contract the web app renders, through the real app and route."""
+        from fastapi.testclient import TestClient
+
+        from celine.onboarding.main import create_app
+
+        requests: list[httpx.Request] = []
+        _patch_httpx(
+            monkeypatch,
+            self._transport(
+                own_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "granted", "dataset_id": "m"},
+                        {"offer_id": OFFER_CONSENT["id"], "status": "granted", "dataset_id": "c"},
+                    ],
+                ),
+                holder_shares=httpx.Response(
+                    200,
+                    json=[
+                        {"offer_id": RESEARCH_OFFER["id"], "status": "revoked", "dataset_id": "r"},
+                        {"offer_id": RELEASE_OFFER["id"], "status": "revoked", "dataset_id": "r"},
+                    ],
+                ),
+                requests=requests,
+            ),
+        )
+        token = issue_token(
+            sub="member-sub",
+            email="member@example.org",
+            organization={"rec-example": {"id": "org-uuid", "groups": []}},
+        )
+
+        resp = TestClient(create_app(), raise_server_exceptions=False).get(
+            "/api/me/data-sharing", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert resp.status_code == 200, resp.text
+        by_id = {o["id"]: o for o in resp.json()["offers"]}
+        assert {k: (v["state"], v["granted"]) for k, v in by_id.items()} == {
+            OFFER_CONSENT["id"]: ("granted", True),
+            RELEASE_OFFER["id"]: ("withdrawn", False),
+            RESEARCH_OFFER["id"]: ("pending", True),
+        }
+
+
+# ── the merge on its own ──────────────────────────────────────────────────────
+
+
+class TestTheStateOfAnOffer:
+    """`_merge`'s three states, from the decisions each connector returned.
+
+    The community's own rows carry no ``holder``; a holder's rows carry its
+    alias (`subject_shares_at_holders` stamps it). The binding says where each
+    offer is recorded, which is what makes a *missing* row a disagreement.
+    """
+
+    OWN_AND_HOLDER = template_service.DataspaceBinding(
+        organization="rec-example",
+        connectors=(
+            template_service.ConnectorBinding(
+                holder="example-dso",
+                url=HOLDER_URL,
+                offers=(RESEARCH_OFFER["id"], RELEASE_OFFER["id"]),
+            ),
+        ),
+        own_offers=(RESEARCH_OFFER["id"],),
+    )
+
+    @staticmethod
+    def _row(offer, status, holder=None, **extra):
+        row = {"offer_id": offer["id"], "status": status, **extra}
+        if holder:
+            row["holder"] = holder
+        return row
+
+    def _state(self, offer, decisions, binding=OWN_AND_HOLDER):
+        (merged,) = ms._merge([offer], decisions, binding=binding)
+        return merged["state"], merged["granted"]
+
+    def test_granted_at_every_connector_is_granted(self):
+        decisions = [
+            self._row(RESEARCH_OFFER, "granted", dataset_id="m1"),
+            self._row(RESEARCH_OFFER, "granted", dataset_id="m2"),
+            self._row(RESEARCH_OFFER, "granted", "example-dso"),
+        ]
+        assert self._state(RESEARCH_OFFER, decisions) == ("granted", True)
+
+    def test_withdrawn_at_every_connector_is_withdrawn(self):
+        decisions = [
+            self._row(RESEARCH_OFFER, "revoked"),
+            self._row(RESEARCH_OFFER, "revoked", "example-dso"),
+        ]
+        assert self._state(RESEARCH_OFFER, decisions) == ("withdrawn", False)
+
+    def test_never_decided_anywhere_is_withdrawn(self):
+        assert self._state(RESEARCH_OFFER, []) == ("withdrawn", False)
+
+    @pytest.mark.parametrize(
+        "decisions",
+        [
+            pytest.param(
+                [("granted", None), ("revoked", "example-dso")], id="withdrawn-at-the-holder-only"
+            ),
+            pytest.param([("revoked", None), ("granted", "example-dso")], id="withdrawn-here-only"),
+            pytest.param([("granted", None)], id="granted-here-only"),
+            pytest.param([("granted", "example-dso")], id="granted-at-the-holder-only"),
+        ],
+    )
+    def test_a_split_is_pending(self, decisions):
+        rows = [self._row(RESEARCH_OFFER, status, holder) for status, holder in decisions]
+        state, granted = self._state(RESEARCH_OFFER, rows)
+        assert state == "pending"
+        # Unchanged meaning: a standing grant somewhere.
+        assert granted is True
+
+    def test_an_offer_held_in_one_place_is_never_pending(self):
+        """The release is the holder's alone: nothing here to disagree with."""
+        rows = [self._row(RELEASE_OFFER, "granted", "example-dso")]
+        assert self._state(RELEASE_OFFER, rows) == ("granted", True)
+
+    def test_a_grant_standing_where_the_offer_is_not_routed_is_not_hidden(self):
+        """A grant is data that may be served, wherever it sits.
+
+        The community's own offer, withdrawn here, still granted at a connector
+        the manifest no longer routes it to: not `withdrawn`.
+        """
+        rows = [
+            self._row(OFFER_CONSENT, "revoked"),
+            self._row(OFFER_CONSENT, "granted", "example-dso"),
+        ]
+        assert self._state(OFFER_CONSENT, rows) == ("pending", True)
+
+    def test_a_withdrawal_where_the_offer_is_not_routed_is_no_disagreement(self):
+        rows = [
+            self._row(OFFER_CONSENT, "granted"),
+            self._row(OFFER_CONSENT, "revoked", "example-dso"),
+        ]
+        assert self._state(OFFER_CONSENT, rows) == ("granted", True)
+
+    def test_without_a_binding_every_offer_is_the_communitys_own(self):
+        """The single-connector deployment: exactly the old answer, plus a state."""
+        assert self._state(OFFER_CONSENT, [self._row(OFFER_CONSENT, "granted")], None) == (
+            "granted",
+            True,
+        )
+        assert self._state(OFFER_CONSENT, [self._row(OFFER_CONSENT, "revoked")], None) == (
+            "withdrawn",
+            False,
+        )

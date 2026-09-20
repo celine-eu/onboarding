@@ -271,6 +271,96 @@ Which offer goes where is the REC manifest's `dataspace.connectors` — a holder
 connector URL, and the offers it holds. An offer named by no entry stays at
 `DS_CONNECTOR_URL`, which is every offer in a community whose data is its own.
 
+**An offer whose data sits in several places is recorded at every one of them**
+([ADR-0007](decisions/ADR-0007-an-offer-is-recorded-at-every-connector-that-holds-its-data.md)).
+A research offer covering the grid operator's readings and the community's own
+meter datasets is named in the grid operator's entry *and* in an entry for the
+community itself — `holder` set to the community's own alias, and no `url`,
+because that connector is `DS_CONNECTOR_URL`:
+
+```yaml
+dataspace:
+  organization: example-rec
+  connectors:
+    - holder: example-dso
+      url: http://connector.example-dso.localhost
+      offers: [meter-data-release, forecasting-and-research]
+    - holder: example-rec
+      offers: [forecasting-and-research]
+```
+
+Every write reaches every connector holding the offer, and so does every
+withdrawal — the member's own toggle and a revocation alike, each connector
+attempted whatever the others answer.
+
+**Provisioning brings every connector to the member's newest decision.** It
+first reads what each connector holding the member's offers records for them.
+Per offer, the member's newest decision — the form's acceptance, a grant or
+withdrawal any of those connectors records as theirs, or the decision the member
+last took on their sharing page as this service recorded it — is relayed
+(`decided_by: subject`) to every connector that disagrees, and nothing is written
+where they agree. Then it reads again, and applies anything that changed
+meanwhile. A connector that cannot be read fails the run, and **nothing is
+written**: without it the newest decision is not known.
+
+- *Newest* is the time the decision was taken as the connector records it —
+  `revoked_at` for a withdrawal, `decided_at` for a grant — except that a
+  relayed grant is dated by its evidence's `accepted_at`, the moment the member
+  accepted rather than the moment it was relayed. That is why a retry that read
+  a grant just before the member withdrew cannot undo the withdrawal: the grant
+  it writes is dated before it, and the next read withdraws it again. On a tie
+  the withdrawal wins. Connector clocks are compared as they are, which assumes
+  they agree to well within the time between two decisions of one person.
+- **The member's page decision is recorded here first.** The toggle
+  (`POST /api/me/data-sharing/{offer}`) writes the decision — granted or
+  withdrawn, when, and the evidence of what was served — to
+  `member_sharing_intents`, one row per member and offer, **before** it relays
+  anything, and keeps it whatever the connectors answer. If it cannot be
+  written, nothing is relayed and the member gets a 503. It ranks like any other
+  of the member's decisions, dated when they pressed (this service's clock), and
+  it is what a connector may not keep: ds stamps nothing when a withdrawal meets
+  one that already stands, and a relayed grant can replace the one row a
+  withdrawal left. The form's acceptance is not copied there — the submission
+  already records it. Beyond the form's offers and those held in several places,
+  every offer the member decided on their page is examined.
+- An `operator` row — ds's evidenced override, at the member's request — is the
+  member's too, and is dated by the row: it is itself the act, so the
+  `accepted_at` of the consent it carries does not date it. An override newer
+  than the member's recorded withdrawal wins; a press after it wins back.
+- A **collector's** withdrawal — the community's, when a membership ended — is
+  not the member's decision and never outranks one. It is undone by
+  re-approval, which is the community deciding again.
+- A re-driven grant carries the evidence of the decision it relays: the form's,
+  or the relayed evidence stored on the connector that holds the grant. A grant
+  the member made at their own connector as themselves carries ds's evidence,
+  with no rendering in it; the holder then gets the evidence the member's page
+  relays for the same act.
+
+A partial success fails the `dataspace_share` step. **The retry is the
+operator's** (the console, `onboarding-cli admin enablement retry`,
+`POST …/enablement/retry`); nothing runs it on a schedule. A withdrawal the
+member's toggle got to only one connector leaves the step `succeeded` — nothing
+about approval failed — so the retry has to **name the step** to reach it:
+`--step dataspace_share`, `{"step": "dataspace_share"}`, or the console's
+*Re-check every connector* on a succeeded consent step. A named retry of a
+succeeded step writes nothing where every connector already agrees. Until
+someone runs it, the member's page shows the offer `pending`, and the member
+withdrawing again converges it too. A member who declined everything on the
+form has the step `skipped` — nothing to write at approval — and a named retry
+(or *Re-check every connector* on the skipped step) re-examines them as well, so
+a split they made on their page afterwards is reached.
+
+The recorded page decision closes the two cases the connectors alone cannot
+show: a withdrawal the member makes at one connector between the retry's read
+and its write *there*, while it failed everywhere else (the retry reads the
+record again after writing, and withdraws what it just granted), and a
+withdrawal that failed at the only connector still granting while another
+already showed one (ds stamps nothing there; the record is dated). The member's
+page still shows what the connectors record: an offer is `pending` only while
+connectors disagree, not when the recorded decision disagrees with all of them —
+a withdrawal every connector refused reads as granted, which is what is still
+enforced, and the member was told it failed.
+
 **It is configuration and never inferred from the offer.** An offer's
 `recipients.recipient` names who the data goes *to*, which is not who holds it:
 the release offer's recipient is the community itself, and the rows are at the
@@ -289,6 +379,24 @@ member took — the form, or their own toggle later — and a relayed *withdrawa
 then theirs, which nothing else can lift. `decided_by: collector` is the
 community deciding itself, which is what a withdrawal on revoked membership is:
 nobody withdrew, a membership was revoked and the consent went with it.
+
+**Revoking a membership withdraws every grant the community collected for the
+member** — the form's and any they made on their sharing page since, including
+for a member who declined the form. What stands is read, not remembered: every
+connector the manifest names is read for the member, and each offer with a
+standing grant the community collected there is withdrawn there, with
+`decided_by: collector` and a `reason` ("Membership revoked in <community>"), which
+ds records on the row and in provenance and returns to no reader. Nothing else is
+written. A refusal the member made stays theirs; a grant another organisation
+collected — ds's `collector` names a different DID — is not the community's to
+withdraw; and the member's recorded page decisions are left as they are, so a
+re-approval restores what they last decided, as it does the form. The reason is
+one line of at most 200 characters with no `@`, as ds requires; this service
+trims it to that and never sends an address. A connector that cannot be read, or
+that refuses, fails the revocation — the others are still withdrawn at — and the
+member's dataspace identity is **kept** until the withdrawal has succeeded: the
+withdrawal is keyed on it, and ds admits the community only for its own members.
+Revoking again is the retry.
 
 **The member's supply points travel with a holder's registration.** `keys:
 ["pod:…"]`, read from the rec-registry. That data plane keys its rows by supply
@@ -358,6 +466,16 @@ Three things about it are load-bearing:
   granted decision as ungranted, which invites re-granting and hides a withdrawal
   that has not taken effect. The keys the holder returns are dropped before the
   page sees them.
+- **An offer whose connectors disagree is `pending`.** Every offer carries
+  `state`: `granted` when every connector holding its data records a standing
+  grant, `withdrawn` when none does, and `pending` while some do and some do not
+  — a grant one connector refused at approval and nobody has retried yet, or a
+  withdrawal that reached only one of them. The member is shown the
+  disagreement, never either half as the answer. The connectors compared are the
+  offer's routes plus any other connector reporting a standing grant for it.
+  `granted` keeps its meaning (a standing grant somewhere), so it is `true` while
+  pending. A connector that cannot be read is **not** `pending`: the read fails
+  closed, as above, because nobody knows that it disagrees.
 - **A prerequisite is presented, not enforced.** ds decides admission: an offer
   with `requires_offers` admits a subject only while each required offer is also
   granted at that connector. The page carries `requires_offers` from the

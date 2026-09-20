@@ -166,7 +166,8 @@ def test_no_connectors_block_keeps_every_offer_here(bind_rec):
     bind_rec("rec-a", organization="example-rec")
     binding = ts.dataspace_binding("rec-a")
     assert binding.connectors == ()
-    assert binding.connector_for("meter-data-release") is None
+    assert binding.connectors_for("meter-data-release") == ()
+    assert binding.recorded_here("meter-data-release")
 
 
 def test_a_routed_offer_resolves_to_the_holder(bind_rec):
@@ -182,14 +183,16 @@ def test_a_routed_offer_resolves_to_the_holder(bind_rec):
         ],
     )
     binding = ts.dataspace_binding("rec-a")
-    connector = binding.connector_for("meter-data-release")
-    assert connector is not None
+    (connector,) = binding.connectors_for("meter-data-release")
     assert connector.holder == "example-dso"
     # The trailing slash is dropped once, here, so no caller has to think about it.
     assert connector.url == "http://dso:30001"
-    assert binding.connector_for("forecasting-and-research") is connector
+    assert binding.connectors_for("forecasting-and-research") == (connector,)
+    # Routed elsewhere and not named by the community's own entry: not here.
+    assert not binding.recorded_here("meter-data-release")
     # An offer nobody routed stays at the community's own connector.
-    assert binding.connector_for("household-energy-flexibility") is None
+    assert binding.connectors_for("household-energy-flexibility") == ()
+    assert binding.recorded_here("household-energy-flexibility")
 
 
 def test_two_recs_route_independently(bind_rec):
@@ -200,8 +203,10 @@ def test_two_recs_route_independently(bind_rec):
         connectors=[{"holder": "example-dso", "url": "http://dso:30001", "offers": ["release"]}],
     )
     bind_rec("rec-b", organization="other-rec")
-    assert ts.dataspace_binding("rec-a").connector_for("release").holder == "example-dso"
-    assert ts.dataspace_binding("rec-b").connector_for("release") is None
+    assert [c.holder for c in ts.dataspace_binding("rec-a").connectors_for("release")] == [
+        "example-dso"
+    ]
+    assert ts.dataspace_binding("rec-b").connectors_for("release") == ()
 
 
 def test_connectors_must_be_a_list():
@@ -259,19 +264,93 @@ def test_a_connector_must_route_at_least_one_offer(offers):
         )
 
 
-def test_one_offer_is_held_by_one_connector():
-    """Two entries for one offer are two answers to where a decision goes.
+# ── one offer, several connectors (ADR-0007) ─────────────────────────────────
+#
+# An offer whose data sits in several places — a grid operator's readings and the
+# community's own meter datasets — is recorded at every connector holding it. The
+# manifest says so by naming the offer in each holder's entry, and names the
+# community's own connector as an entry whose holder is the community itself.
 
-    Picking one would route somebody's consent by dictionary order, and the
-    member would see a granted toggle either way.
-    """
-    with pytest.raises(ValueError, match="already routed to 'example-dso'"):
+
+def _both(**own):
+    return {
+        "organization": "example-rec",
+        "connectors": [
+            {"holder": "example-dso", "url": "http://dso:30001", "offers": ["release", "research"]},
+            {"holder": "example-rec", "offers": ["research"], **own},
+        ],
+    }
+
+
+def test_one_offer_may_be_held_by_the_community_and_another_participant(bind_rec):
+    bind_rec("rec-a", **_both())
+    binding = ts.dataspace_binding("rec-a")
+
+    assert [c.holder for c in binding.connectors_for("research")] == ["example-dso"]
+    assert binding.recorded_here("research")
+    # The release is named only for the grid operator: its data is theirs alone.
+    assert not binding.recorded_here("release")
+    # The community's own entry is not "another participant's connector" — it is
+    # never read as a holder and never sent keys.
+    assert [c.holder for c in binding.connectors] == ["example-dso"]
+    assert binding.own_offers == ("research",)
+
+
+def test_one_offer_may_be_held_by_two_other_participants(bind_rec):
+    bind_rec(
+        "rec-a",
+        organization="example-rec",
+        connectors=[
+            {"holder": "example-dso", "url": "http://dso:30001", "offers": ["research"]},
+            {"holder": "other-dso", "url": "http://other:30001", "offers": ["research"]},
+        ],
+    )
+    binding = ts.dataspace_binding("rec-a")
+    assert [c.holder for c in binding.connectors_for("research")] == ["example-dso", "other-dso"]
+    assert not binding.recorded_here("research")
+
+
+def test_the_communitys_own_entry_carries_no_url():
+    """Its address is DS_CONNECTOR_URL; a second home for it disagrees some day."""
+    with pytest.raises(ValueError, match="is this community itself"):
+        ts.validate_dataspace_block(_both(url="http://rec:30001"), where="test")
+
+
+def test_an_existing_manifest_means_what_it_meant():
+    """No own entry: every offer another participant holds is recorded there only."""
+    block = {
+        "organization": "example-rec",
+        "connectors": [{"holder": "example-dso", "url": "http://dso:30001", "offers": ["release"]}],
+    }
+    ts.validate_dataspace_block(block, where="test")
+
+
+def test_one_holder_has_one_entry():
+    """Two entries for one participant are two answers to where its connector is."""
+    with pytest.raises(ValueError, match="already has an entry"):
         ts.validate_dataspace_block(
             {
                 "organization": "example-rec",
                 "connectors": [
                     {"holder": "example-dso", "url": "http://dso:30001", "offers": ["release"]},
-                    {"holder": "other-dso", "url": "http://other:30001", "offers": ["release"]},
+                    {"holder": "example-dso", "url": "http://dso:30002", "offers": ["research"]},
+                ],
+            },
+            where="test",
+        )
+
+
+def test_an_offer_is_listed_once_per_holder():
+    with pytest.raises(ValueError, match="listed twice"):
+        ts.validate_dataspace_block(
+            {
+                "organization": "example-rec",
+                "connectors": [
+                    {
+                        "holder": "example-dso",
+                        "url": "http://dso:30001",
+                        "offers": ["release", "release"],
+                    },
                 ],
             },
             where="test",

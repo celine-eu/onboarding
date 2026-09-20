@@ -120,6 +120,7 @@
 		"non_blocking": "non bloccante",
 		"attempts": "{{count}} {{count; 1:tentativo; default:tentativi;}}",
 		"retry_step": "Ritenta questo passo",
+		"recheck_share": "Ricontrolla ogni connettore",
 		"retry_all": "Ritenta tutto",
 		"in_progress": "In corso…",
 		"revoke": "Revoca abilitazione",

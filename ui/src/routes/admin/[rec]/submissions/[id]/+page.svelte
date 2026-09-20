@@ -468,6 +468,21 @@
 										{$t('admin.detail.retry_step')}
 									</button>
 								{/if}
+								<!-- A succeeded consent step can still hide an offer split across
+								     connectors (a member's withdrawal that reached one of two). Its
+								     named retry reads every connector and applies the member's newest
+								     decision; where they agree it writes nothing. A step skipped because
+								     the member declined on the form is offered too: they may have
+								     decided on their page since. -->
+								{#if step.step === 'dataspace_share' && (step.status === 'succeeded' || step.status === 'skipped') && can('enablement.retry')}
+									<button
+										class="secondary small"
+										disabled={busy !== null}
+										onclick={() => retry(step.step)}
+									>
+										{$t('admin.detail.recheck_share')}
+									</button>
+								{/if}
 							</li>
 						{/each}
 					</ul>

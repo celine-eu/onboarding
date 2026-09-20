@@ -153,24 +153,33 @@ same step, and it counts as registered. The others leave no member for this pers
 the step fails with the registry's reason. Retrying will not clear it. Resolve the clash in
 the registry first, then retry the step.
 
-`retry` only re-runs steps that are not already `succeeded` or `skipped`, with one
-exception: naming `keycloak_user` re-runs a login step whose invitation is
-`send_failed` (see [The invitation, for the operator](#the-invitation-for-the-operator)).
+`retry` only re-runs steps that are not already `succeeded` or `skipped`, with two
+exceptions, both only when the step is named: `keycloak_user` re-runs a login step
+whose invitation is `send_failed` (see [The invitation, for the operator](#the-invitation-for-the-operator)),
+and `dataspace_share` re-examines a succeeded consent step — *Re-check every
+connector* in the console. A member's withdrawal that reached only one of the
+connectors holding an offer leaves that step `succeeded`; re-examining it brings
+every connector to the member's newest decision, and writes nothing where they
+already agree ([data-sharing](data-sharing.md)). The same button is on a consent
+step `skipped` because the member declined everything on the form: they may have
+decided on their page since.
 It never fails the request: the operator asked to repair, and the step table is the
 answer.
 
 ### Reversal
 
-`Revoca abilitazione` (admins only) undoes enablement in reverse: revoke the
-credential, delete the membership, deactivate the registry member, disable the
-Keycloak login. Best-effort and recorded per step — a revocation that fails half
-way must leave a record of what is still out there, because that record is the
-only way anybody finds the rest.
+`Revoca abilitazione` (admins only) undoes enablement: withdraw the member's
+sharing grants, revoke the credential and delete the membership, disable the
+Keycloak login, deactivate the registry member. Best-effort and recorded per
+step — a revocation that fails half way must leave a record of what is still out
+there, because that record is the only way anybody finds the rest.
 
-The standing sharing consent is deliberately **not** withdrawn. Withdrawal is the
-data subject's own act, authenticated with their own credential, and it lives in
-the participant webapp. Onboarding holds no credential and must not make that
-decision on somebody's behalf.
+**Every standing grant the community collected for the member is withdrawn**, at
+every connector, whether it came from the form or their sharing page — as the
+community's decision, not the member's ([data-sharing](data-sharing.md)). While
+that step fails, the dataspace identity is left in place, because the withdrawal
+needs it: press `Revoca abilitazione` again once the connector is back, and it
+withdraws and then revokes the identity.
 
 ## Screens
 
@@ -240,6 +249,7 @@ onboarding-cli admin review reject 20260730-a1b2 --rec my-rec --reason "POD di u
 onboarding-cli admin enablement status 20260730-a1b2 --rec my-rec
 onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step rec_registry_member
 onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step keycloak_user  # resend a send_failed invitation
+onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step dataspace_share  # re-drive a split sharing decision
 onboarding-cli admin audit --rec my-rec --action transition_failed
 ```
 
