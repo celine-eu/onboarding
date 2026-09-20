@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -20,8 +21,8 @@ import { test, expect, type Page } from '@playwright/test';
  * ## Nothing below has a default, and that is deliberate
  *
  * This service is open source and ships no community of its own. A default here
- * would have to name one deployment's slug, its covered addresses, and the
- * container its SMS provider logs to — telling every reader that some stack they
+ * would have to name one deployment's slug, its covered addresses, and how to
+ * read its SMS log — telling every reader that some stack they
  * cannot see is the one this suite means, and reporting green about a wizard
  * nobody deploys. Absent is the only answer that is true on every checkout. The
  * deployment supplies the values; this file supplies the behaviour.
@@ -47,21 +48,27 @@ const ADDRESS = env('E2E_DEPLOYMENT_ADDRESS');
 /** What that address must geocode to. Without it the eligibility step passes on
  *  any deployment whose rules happen to say yes to everything. */
 const MUNICIPALITY = env('E2E_DEPLOYMENT_MUNICIPALITY');
-/** The container whose log the OTP is printed to.
+/** A **command** that prints the SMS codes this deployment logged instead of sending.
+ *
+ * Not a container name. How a deployment runs its backend is its own business —
+ * a container, a host process under a supervisor, a pod, a log aggregator — and
+ * a variable that can only hold a container name makes this suite care. The
+ * command is whatever that deployment already uses to read those codes; it is
+ * run through `sh -c`, and its output is searched for this run's number.
  *
  * Its presence is the run's licence to invent a phone number: only a deployment
- * running a *logging* SMS provider has such a container, and only there does an
- * OTP for a made-up number go to a log file instead of to a stranger's handset.
- * A deployment with a real gateway has nothing to put here and skips.
+ * whose SMS provider *logs* has such a command, and only there does an OTP for a
+ * made-up number go to a log instead of to a stranger's handset. A deployment
+ * with a real gateway has nothing to put here and skips.
  */
-const SMS_LOG_CONTAINER = env('E2E_DEPLOYMENT_SMS_LOG_CONTAINER');
+const OTP_COMMAND = env('E2E_DEPLOYMENT_OTP_COMMAND');
 
 const REQUIRED: Record<string, string | null> = {
 	PLAYWRIGHT_BASE_URL: BASE_URL,
 	E2E_DEPLOYMENT_REC: REC,
 	E2E_DEPLOYMENT_ADDRESS: ADDRESS,
 	E2E_DEPLOYMENT_MUNICIPALITY: MUNICIPALITY,
-	E2E_DEPLOYMENT_SMS_LOG_CONTAINER: SMS_LOG_CONTAINER
+	E2E_DEPLOYMENT_OTP_COMMAND: OTP_COMMAND
 };
 
 const ABSENT = Object.entries(REQUIRED)
@@ -102,7 +109,12 @@ if (ABSENT.length > 0) {
 // deployment's operators have to be able to tell one test row from the next
 // without reading timestamps.
 
-const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+// **Eight hex characters, and the shape is load-bearing.** A deployment has to
+// be able to remove the person this run enrolled, and the only thing it can
+// recognise them by afterwards is what they are called. `<slug>-<8 hex>` on a
+// reserved domain is a shape a cleanup can match without keeping a list of every
+// suite's prefix, and one no real address has.
+const RUN_ID = randomBytes(4).toString('hex');
 
 const FIRST_NAMES = ['Marco', 'Luca', 'Anna', 'Giulia', 'Paolo', 'Elena', 'Davide', 'Chiara'];
 const LAST_NAMES = ['Rossi', 'Bianchi', 'Ferrari', 'Esposito', 'Romano', 'Colombo', 'Greco'];
@@ -180,8 +192,13 @@ function makeIdentity() {
 		firstName,
 		lastName,
 		fiscalCode: fifteen + checkCharacter(fifteen),
-		// `IT` + 3 digits + `E` + 8-9 digits, which is all either side checks.
-		podCode: `IT001E${String(Date.now()).slice(-8)}`,
+		// `IT` + 3 digits + `E` + 8-9 digits, which is all either side checks — and
+		// distributor code `999` is assigned to nobody, so a POD in this band cannot
+		// collide with a supply point somebody actually holds. That is what lets a
+		// deployment tell this run's person from one of its members.
+		podCode: `IT999E99${String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')}`,
+		// The reserved domain (RFC 2606) and the run's eight hex. Together with the
+		// POD band this is what makes the row recognisably generated.
 		email: `wizard-e2e-${RUN_ID}@example.org`,
 		// Italian mobile, because `normalize_mobile` parses with region IT and
 		// refuses anything libphonenumber does not call a mobile line — a landline
@@ -195,59 +212,80 @@ function makeIdentity() {
 
 // ── the OTP ─────────────────────────────────────────────────────────────────
 
+/** What the OTP source printed, and how it exited. */
+interface OtpSourceOutput {
+	code: string | null;
+	status: number | null;
+	output: string;
+}
+
 /**
- * The code this run's number was sent, taken from the container's log.
+ * The code this run's number was sent, taken from whatever the deployment's OTP
+ * command prints.
  *
- * A logging SMS provider writes one line per send and never sends anything, so
- * the log is the only place the code exists. Three things make reading it safe:
- * the line is matched on **this run's** E.164 number, so a concurrent run's code
- * cannot be picked up; the **last** match wins, so a resend supersedes the code
- * it replaced; and the window is short, so a number that somehow repeats across
+ * A logging SMS provider writes one line per send and never sends anything, so a
+ * log is the only place the code exists — but *which* log, and how it is read,
+ * is a property of the deployment and not of this suite. So the command is the
+ * whole contract: run it, read both its streams, and find this run's number in
+ * the output. The phone is given to it twice, as `$1` and as `OTP_PHONE`, so a
+ * source that can filter at its end may; one that cannot need not, because the
+ * matching below is on this run's own number either way.
+ *
+ * Three things make reading it safe: the line is matched on **this run's**
+ * E.164 number, so a concurrent run's code cannot be picked up; the **last**
+ * match wins, so a resend supersedes the code it replaced; and a source is
+ * expected to show recent sends only, so a number that somehow repeats across
  * days cannot serve a stale code.
  *
- * `docker logs` writes application output to stderr, so both streams are read.
+ * The code is the first 4–10 digit run that follows the number **on the same
+ * line**, which fits `[LogSmsProvider] OTP for +39… is 123456` and equally a
+ * source that prints two columns. A non-zero exit is not an error here: a
+ * source asked for a code before one exists reports that by failing, and this
+ * function is polled. It is reported if the poll never succeeds.
  */
-function otpFromLog(container: string, phone: string): string | null {
-	const proc = spawnSync('docker', ['logs', '--since', '3m', container], {
+function otpFromSource(command: string, phone: string): OtpSourceOutput {
+	const proc = spawnSync('sh', ['-c', command, 'otp-source', phone], {
 		encoding: 'utf8',
-		maxBuffer: 64 * 1024 * 1024
+		maxBuffer: 64 * 1024 * 1024,
+		env: { ...process.env, OTP_PHONE: phone }
 	});
 	if (proc.error) {
 		throw new Error(
-			`Could not read the SMS log: running \`docker logs ${container}\` failed ` +
-				`(${proc.error.message}). E2E_DEPLOYMENT_SMS_LOG_CONTAINER must name a ` +
-				`container this user can read logs from.`
+			`Could not run the OTP source: \`${command}\` failed to start ` +
+				`(${proc.error.message}). E2E_DEPLOYMENT_OTP_COMMAND must be a command this ` +
+				`user can run, and it must print the codes the deployment logged.`
 		);
 	}
-	if (proc.status !== 0) {
-		throw new Error(
-			`\`docker logs ${container}\` exited ${proc.status}: ${(proc.stderr || '').trim()}`
-		);
-	}
-	const log = `${proc.stdout ?? ''}${proc.stderr ?? ''}`;
-	// The provider's own wording, from `services/sms.py`. Matching the number as
-	// well as the shape is what keeps two runs from reading each other's code.
+	const output = `${proc.stdout ?? ''}${proc.stderr ?? ''}`;
 	const escaped = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	const pattern = new RegExp(`OTP for ${escaped} is (\\d{4,10})\\b`, 'g');
-	const codes = [...log.matchAll(pattern)].map((m) => m[1]);
-	return codes.length > 0 ? codes[codes.length - 1] : null;
+	// Anchored on the number, then the first code after it on that line. Anything
+	// between the two — ` is `, whitespace, a column separator — belongs to the
+	// source's own wording and is none of this suite's business.
+	const pattern = new RegExp(`${escaped}[^\\n\\d]{0,40}(\\d{4,10})\\b`, 'g');
+	const codes = [...output.matchAll(pattern)].map((m) => m[1]);
+	return {
+		code: codes.length > 0 ? codes[codes.length - 1] : null,
+		status: proc.status,
+		output
+	};
 }
 
-/** Poll for it: the line is written before the response is sent, but `docker logs`
- *  reads a file the daemon flushes on its own schedule. */
-async function waitForOtp(container: string, phone: string): Promise<string> {
+/** Poll for it: the line is written before the response is sent, and a source
+ *  reading a log file reads one somebody else flushes on their own schedule. */
+async function waitForOtp(command: string, phone: string): Promise<string> {
 	const deadline = Date.now() + 20_000;
-	let code: string | null = null;
+	let last: OtpSourceOutput = { code: null, status: null, output: '' };
 	while (Date.now() < deadline) {
-		code = otpFromLog(container, phone);
-		if (code) return code;
+		last = otpFromSource(command, phone);
+		if (last.code) return last.code;
 		await new Promise((r) => setTimeout(r, 500));
 	}
 	throw new Error(
-		`No OTP for ${phone} in the last 3 minutes of \`docker logs ${container}\`.\n` +
+		`No OTP for ${phone} from \`${command}\` (exit ${last.status}).\n` +
 			`  Either the deployment is not running a logging SMS provider (in which case a\n` +
 			`  real message went to a made-up number and this suite must not be pointed here),\n` +
-			`  or E2E_DEPLOYMENT_SMS_LOG_CONTAINER names the wrong container.`
+			`  or E2E_DEPLOYMENT_OTP_COMMAND does not read the log this deployment writes.\n` +
+			`  What it printed:\n${last.output.split('\n').slice(-20).join('\n')}`
 	);
 }
 
@@ -268,6 +306,14 @@ test.describe('A deployed community wizard, walked end to end', () => {
 	test('a person adheres, and the submission is there afterwards', async ({ page, request }) => {
 		const rec = REC!;
 		const identity = makeIdentity();
+
+		// **Printed before the first write, on one machine-readable line.** This run
+		// leaves a person in whatever stores the deployment provisions from a
+		// submission, and only the deployment can take them out again — this suite
+		// holds no credentials for any of them and must not. Naming the address here
+		// rather than at the end means a run that dies half way through the wizard
+		// still says who it created.
+		console.log(`E2E_DEPLOYMENT_ENROLLED ${identity.email}`);
 
 		const config = await (await request.get(`/api/${rec}/config`)).json();
 		// This wizard is the one with SMS on. Asserted rather than assumed: with
@@ -343,7 +389,7 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		// it means the log line is already written by the time it is read.
 		await expect(page.getByText('Ti abbiamo inviato un codice via SMS')).toBeVisible();
 
-		const code = await waitForOtp(SMS_LOG_CONTAINER!, identity.phone);
+		const code = await waitForOtp(OTP_COMMAND!, identity.phone);
 		await page.locator('#otp_code').fill(code);
 		await page.getByRole('button', { name: 'Conferma' }).click();
 		await expect(page.getByText('Numero di telefono verificato!')).toBeVisible();
