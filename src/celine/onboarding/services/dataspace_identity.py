@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import re
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -20,8 +20,6 @@ from celine.onboarding.services.service_auth import (
 
 logger = logging.getLogger(__name__)
 
-_SAFE_SUBJECT = re.compile(r"^[A-Za-z0-9._+-]{1,128}$")
-
 _token_provider: OidcClientCredentialsProvider | None = None
 
 _KC_SYNC_MAX_RETRIES = 3
@@ -38,16 +36,22 @@ def _get_token_provider() -> OidcClientCredentialsProvider:
     return _token_provider
 
 
-def _submission_ref_subject_id(submission: Submission) -> str:
-    value = (submission.ref or "").strip().lower()
-    if not value:
-        raise ValueError("Cannot build dataspace subject id from submission_ref: value is empty")
-    if not _SAFE_SUBJECT.fullmatch(value):
-        raise ValueError(
-            "Dataspace subject id may contain only letters, digits, dot, underscore, "
-            "plus and hyphen"
-        )
-    return value
+def new_subject_id() -> str:
+    """A subject id for somebody the registry has never mapped: a random UUIDv4.
+
+    **Derived from nothing, so it reveals nothing** (ds `D-22c`, which binds
+    whoever generates the id). It becomes the ``<id>`` of the person's DID
+    verbatim and travels in every consent record, provenance event and
+    credential that names them.
+
+    **One-shot, and that is the caller's burden.** Unlike the HMAC the registry
+    used to derive, calling this again does not give the same answer, so an id
+    that is minted and not recorded is an id lost — the next attempt would give
+    the same person a second DID. Every caller reuses an existing mapping first
+    (:func:`resolve_subject`), and the funnel records the id on the submission
+    before issuing (:func:`provision_user_identity`).
+    """
+    return str(uuid.uuid4())
 
 
 def _parse_generated_at(value: Any) -> datetime:
@@ -488,9 +492,9 @@ class SubjectIdentifierConflictError(ValueError):
 class ResolvedSubject:
     """What the registry knows about a person before anything is issued.
 
-    ``did`` is ``None`` when no mapping exists yet — which with ``derive=true`` is
-    not an error but the ordinary first-time answer, carrying a freshly derived
-    ``subject_id`` and nothing else.
+    ``did`` is ``None`` when no mapping exists yet — not an error but the ordinary
+    first-time answer, carrying a freshly minted ``subject_id`` (see
+    :func:`new_subject_id`) and nothing else.
     """
 
     subject_id: str
@@ -536,17 +540,26 @@ async def resolve_subject(
     keycloak_realm: str | None = None,
     keycloak_user_id: str | None = None,
     username: str | None = None,
+    recorded: str | None = None,
 ) -> ResolvedSubject:
-    """Ask the registry who this person is, deriving an id if they are new.
+    """Ask the registry who this person is, minting an id only if nobody knows.
 
-    The IR is the sole authority on the email→``subject_id`` mapping: it either
-    returns an existing one or derives a new one keyed by its own secret. A
-    failure here is fatal — the credential issuance that follows requires the
-    same service, so swallowing the error would only delay it.
+    **In order, and the first answer wins:**
 
-    ``derive=true`` **requires an email** (422 otherwise), because the derivation
-    is seeded by the email and nothing else; deriving from a username would mint
-    a second identity for somebody who may already have one.
+    1. the registry's mapping — ``derive=false``, so a 404 means *no mapping*
+       and is not an error. A person who already has a DID keeps it; minting
+       beside it would split their consent records and provenance in two;
+    2. ``recorded``, an id this service already minted for them and wrote down
+       (the funnel's ``Submission.dataspace_subject_id``). It covers the case
+       the registry cannot: a DID issued, and no mapping written, because the
+       step failed after issuance or ran with no Keycloak user to map;
+    3. a new random id, :func:`new_subject_id`.
+
+    The registry is **never asked to derive**. It would answer an HMAC of the
+    email, and the maintainer decided on 2026-09-21 that the ids this setup
+    mints are random UUIDs. A failure other than the 404 is fatal — the
+    credential issuance that follows requires the same service, so swallowing
+    the error would only delay it.
 
     Returns the DID too when a mapping exists. The response also carries the
     person's ``vc_jws``; it is deliberately **not** read here. This function's job
@@ -554,7 +567,7 @@ async def resolve_subject(
     cannot leak from a caller that did not need it — see
     :func:`resolve_subject_credential` for the path that does need it.
     """
-    params: dict[str, str] = {"derive": "true"}
+    params: dict[str, str] = {"derive": "false"}
     if email:
         params["email"] = email
     if username:
@@ -564,23 +577,37 @@ async def resolve_subject(
         params["user_id"] = keycloak_user_id
 
     body = await _resolve_raw_with_params(access, params)
-    return ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
+    return _resolved_from(body, recorded=recorded)
 
 
-async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any]:
+def _resolved_from(body: dict[str, Any] | None, *, recorded: str | None = None) -> ResolvedSubject:
+    if body is not None:
+        return ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
+    return ResolvedSubject(subject_id=(recorded or "").strip() or new_subject_id())
+
+
+async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any] | None:
     """:func:`resolve_subject`'s call, returning the body rather than a summary.
 
     Separate because :func:`resolve_subject_credential` needs the ``credentials``
     list, and :func:`resolve_subject` deliberately does not read it — an
     identification function that lifted a live credential out of the response
     would be exactly what moving this away from the BFF was meant to stop.
+
+    ``None`` when the registry holds no mapping for this person.
     """
-    return await _resolve_raw_with_params(access, {"email": email, "derive": "true"})
+    return await _resolve_raw_with_params(access, {"email": email, "derive": "false"})
 
 
 async def _resolve_raw_with_params(
     access: RegistryAccess, params: dict[str, str]
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    """The ``/users/resolve`` body, or ``None`` for the registry's 404.
+
+    A 404 is *no mapping for this user*: the answer ``derive=false`` gives for
+    somebody the registry has never been told about, and the ordinary first-time
+    case rather than a failure.
+    """
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             f"{access.base_url}/users/resolve", params=params, headers=access.headers
@@ -601,12 +628,15 @@ async def _resolve_raw_with_params(
             "will not."
         )
 
+    if resp.status_code == 404:
+        return None
+
     if resp.status_code == 200:
         body = resp.json()
         if body.get("subject_id"):
             return body
 
-    raise ValueError(f"Subject id derivation failed: identity registry returned {resp.status_code}")
+    raise ValueError(f"Subject resolution failed: identity registry returned {resp.status_code}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,7 +705,9 @@ async def resolve_subject_and_credential(
     member-facing caller must not present as a retryable failure.
     """
     body = await _resolve_raw(access, email=email)
-    resolved = ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
+    resolved = _resolved_from(body)
+    if body is None:
+        return resolved, None
 
     subject_id = body.get("did") or body.get("subject_did")
     if not subject_id:
@@ -861,18 +893,17 @@ async def provision_user_identity(
 
     access = await registry_access()
 
-    source = settings.dataspace_subject_source.strip().lower()
-    if source in {"email_hash", "email"}:
-        if not submission.email:
-            raise ValueError("Cannot derive subject id: submission has no email")
-        resolved = await resolve_subject(access, email=submission.email)
-    elif source in {"submission_ref", "ref"}:
-        # No resolve call, so no DID and no issuance guard. That is the honest
-        # answer for this source: the subject id comes from the submission and the
-        # registry has never been asked about this person.
-        resolved = ResolvedSubject(subject_id=_submission_ref_subject_id(submission))
-    else:
-        raise ValueError("Unsupported DATASPACE_SUBJECT_SOURCE. Use email_hash or submission_ref.")
+    if not submission.email:
+        raise ValueError("Cannot resolve a subject id: submission has no email")
+    resolved = await resolve_subject(
+        access, email=submission.email, recorded=submission.dataspace_subject_id
+    )
+    # Written **before** issuing, because issuance creates the DID and a random
+    # id is not re-derivable. If a later part of this step fails — the Keycloak
+    # sync that writes the registry's mapping, say — enablement commits the
+    # failed step together with this row, and the retry finds the id here
+    # instead of minting a second DID for the same person.
+    submission.dataspace_subject_id = resolved.subject_id
 
     identity = await provision_subject(
         access,
@@ -896,7 +927,6 @@ async def provision_user_identity(
         binding,
     )
 
-    submission.dataspace_subject_id = resolved.subject_id
     submission.dataspace_did = identity.did
     submission.dataspace_vc_id = identity.credential_id
     submission.dataspace_vc_issued_at = identity.issued_at

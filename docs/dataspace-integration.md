@@ -46,8 +46,9 @@ sequenceDiagram
     Note over Onboarding: provision_user_identity()
 
     Note over Onboarding: Acquire M2M token<br/>(svc-ds-onboarding)
-    Onboarding->>IdRegistry: GET /users/resolve?email=…&derive=true
-    IdRegistry-->>Onboarding: {subject_id, did?}
+    Onboarding->>IdRegistry: GET /users/resolve?email=…&derive=false
+    IdRegistry-->>Onboarding: {subject_id, did} or 404 (no mapping)
+    Note over Onboarding: no mapping: reuse the id the submission recorded,<br/>else mint uuid4, and record it before issuing
 
     Onboarding->>IdRegistry: POST /admin/credentials/data-subject<br/>{subject_id, role, allowedActions, ttlDays,<br/>linkedParticipantDid, verifiedBy, verificationMethod}
     IdRegistry-->>Onboarding: {subjectDid, credentialId, generatedAt}
@@ -85,7 +86,9 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. The body always carries `invite: true` and, when there is one, the participant's `locale` (see [The invitation](#the-invitation)); the answer's `invitation` code is recorded on the step row. Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
 
-2. **Subject resolution** -- `GET /users/resolve?email=…&derive=true` asks the identity-registry who this person is. It is the sole authority on the email-to-`subject_id` mapping: an existing one comes back, and a new one is derived deterministically, keyed by the registry's own `ENCRYPTION_KEY`, so first-time issuance has an identifier without onboarding inventing one. A missing mapping is therefore **not** a `404`. Skipped when `DATASPACE_SUBJECT_SOURCE` is `submission_ref`, where the identifier comes from the submission instead.
+2. **Subject resolution** -- `GET /users/resolve?email=…&derive=false` asks the identity-registry whether it already maps this person. If it does, that `subject_id` is reused: one human keeps one DID, and minting beside it would split their consent records and provenance in two. A `404` is the registry's answer for *no mapping* and is not an error. Then onboarding reuses the id the submission already recorded, if it has one, and otherwise mints a random **UUIDv4**. The id is written onto the submission **before** issuance. The registry is never asked to derive one.
+
+    **Why a random id, and why it is recorded first.** The subject id becomes the `<id>` of the person's DID verbatim, and ds's rule `D-22c` puts the obligation on whoever generates it: it must not reveal the person. A UUID is derived from nothing, so it reveals nothing. It also cannot be derived again, so an id that is minted and not recorded is lost, and the next attempt gives the same person a second DID. Issuance creates the DID but no mapping; only the Keycloak sync in step 6 writes the mapping. So if the step fails between the two, enablement commits the failed step together with the submission, and the retry finds the id there. A revocation clears the credential columns and keeps this one.
 
     A **`409`** means the identifier matches a mapping carrying a different Keycloak user id. The registry quarantines rather than reconciles, because "account re-created" and "address recycled to a different human" are indistinguishable from there. It surfaces as `SubjectIdentifierConflictError` and is logged at error level with the identifiers: only an operator can resolve it, and retrying never will.
 
@@ -107,7 +110,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
     It also sends the **username** Keycloak returned at step 1 -- the same value step 2 of enablement wrote into `Member.user_id`. That is what lets a dataspace decision be applied to rows: the connector translates consenting subject DIDs into usernames through this registry (`POST /users/identities`, which reads `KeycloakMapping.username` and falls back to `email`) and hands them to the celine `dataset-api`, which resolves them against `Member.user_id`. Sending it keeps both ends naming one person the same way. Omitting it leaves the email fallback standing, which is correct only while username == email -- the convention the provisioning service uses for an account it *creates*, and **not** the platform's: it also adopts an account whose username is something else, and for them the row filter would resolve nobody and the data plane would deny rows a person had consented to. The value is optional because a retry of step 3 alone has no provisioning result to read it from; the key is then omitted rather than sent as null, so a good value already in the registry is never overwritten with nothing.
 
-7. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping.
+7. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping. The DID itself stays at the registry with no mapping. A retry reissues under it, because the subject id was recorded on the submission in step 2.
 
 8. **Data-sharing share provisioning** -- `provision_user_shares()` runs as the last step, after the Keycloak DID sync. When `DS_CONNECTOR_URL` is set and the submission's `data_sharing_consent` is true, it POSTs once per recorded offer id to `{connector}/consent/admin/shares` with body `{subject_id: <dataspace DID>, offer_id, enabled: true, decided_by: "subject", legal_basis: {source: "onboarding", rec_slug, consent_text_version, locale, rendered_text_sha256, accepted_at, submission_ref}}`. It names an offer, never a dataset. The call is idempotent and sets `share_provisioned=true` on success. Unlike step 7, it is **deliberately non-fatal**: a failed share never rolls back the identity or rejects the approval -- it leaves `share_provisioned=false` for retry. It reads every connector holding the member's offers first and writes only where one disagrees with the member's newest decision, withdrawals included -- see [data-sharing](data-sharing.md).
 
@@ -298,7 +301,6 @@ These settings control what goes into the issued credential:
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential (e.g. `member`). |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated actions the user is authorized for. |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. |
-| `DATASPACE_SUBJECT_SOURCE` | `email_hash` | How the subject identifier is derived. `email_hash` hashes the login email to produce a stable ID without placing raw email in DID paths. |
 
 ### The per-community binding lives in the manifest
 

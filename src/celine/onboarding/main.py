@@ -216,6 +216,25 @@ def _warn_document_processing() -> None:
     )
 
 
+def _warn_removed_subject_source() -> None:
+    """Say once, at boot, that `DATASPACE_SUBJECT_SOURCE` is no longer read.
+
+    Reported rather than refused. Whatever it selected, what happens now is at
+    least as private — an existing registry mapping is reused and anybody else
+    gets a random UUID — so nothing unsafe follows from ignoring it, and
+    `email_hash` is the value `.env.example` used to show. Refusal is kept for
+    leftovers that are credentials or that read as protection.
+    """
+    if not settings.removed_dataspace_subject_source:
+        return
+    logger.warning(
+        "DATASPACE_SUBJECT_SOURCE=%s is set, and no longer read. A person the identity "
+        "registry already maps keeps their subject id; anybody else gets a random "
+        "UUID. Remove it from your .env and environment.",
+        settings.removed_dataspace_subject_source,
+    )
+
+
 def _warn_phone_verification() -> None:
     """Say once, at boot, that phone verification is off, and why.
 
@@ -536,6 +555,7 @@ async def lifespan(app: FastAPI):
 
     _warn_document_processing()
     _warn_phone_verification()
+    _warn_removed_subject_source()
 
     await _validate_dataspace_config()
     _validate_admin_config()

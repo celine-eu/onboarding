@@ -168,7 +168,17 @@ class Settings(BaseSettings):
     dataspace_user_role: str = "DataSubject"
     dataspace_allowed_actions: str = "consent.manage,data.share"
     dataspace_vc_ttl_days: int = 365
-    dataspace_subject_source: str = "email_hash"
+    # `DATASPACE_SUBJECT_SOURCE` chose where a subject id came from — the
+    # registry's HMAC of the email, or the submission's date-bearing ref — and is
+    # gone (the maintainer, 2026-09-21). A person the registry already maps keeps
+    # the id they hold; anybody else gets a random UUID, which is derived from
+    # nothing and so cannot reveal them (ds `D-22c`). Declared only so a value
+    # left behind is reported at boot: pydantic-settings refuses an unknown key in
+    # a `.env`, so deleting the name outright would stop such a deployment with an
+    # error that says nothing about why. Nothing reads it.
+    removed_dataspace_subject_source: str = Field(
+        default="", validation_alias="DATASPACE_SUBJECT_SOURCE"
+    )
 
     # Connector base URL for provisioning standing data-sharing consent after
     # approval (POST /consent/admin/shares). Empty disables share provisioning.

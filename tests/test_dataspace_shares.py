@@ -65,7 +65,6 @@ def _enable_shares(monkeypatch, bind_rec):
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
     monkeypatch.setattr(di.settings, "ds_connector_url", "http://connector:30001")
-    monkeypatch.setattr(di.settings, "dataspace_subject_source", "email_hash")
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
     monkeypatch.setattr(di.settings, "dataspace_allowed_actions", "consent.manage")

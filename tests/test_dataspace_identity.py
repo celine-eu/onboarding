@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,7 +34,6 @@ def _enable_vc(monkeypatch, bind_rec):
     monkeypatch.setattr(di.settings, "oidc_base_url", "http://kc:8080/realms/test")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_id", "svc-ds-onboarding")
     monkeypatch.setattr(di.settings, "ds_onboarding_client_secret", "secret")
-    monkeypatch.setattr(di.settings, "dataspace_subject_source", "email_hash")
     monkeypatch.setattr(di.settings, "dataspace_user_role", "DataSubject")
     monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", 365)
     monkeypatch.setattr(di.settings, "dataspace_allowed_actions", "consent.manage,data.share")
@@ -650,15 +650,15 @@ RESOLVE_EXISTING_RESPONSE = {
 }
 
 
-async def test_uses_ir_derived_subject_id(monkeypatch, submission, _enable_vc):
-    """The IR is the sole authority on email→subject_id derivation."""
+async def test_a_person_with_no_mapping_is_issued_a_minted_id(monkeypatch, submission, _enable_vc):
+    """The IR is asked for a mapping and never to derive one; a 404 is "none"."""
     di._token_provider = _mock_token_provider()
     captured_body = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         if "users/resolve" in str(req.url):
-            assert "derive=true" in str(req.url)
-            return httpx.Response(200, json=DERIVE_RESPONSE)
+            assert req.url.params["derive"] == "false"
+            return httpx.Response(404, json={"detail": "No mapping found for this user"})
         if "credentials/data-subject" in str(req.url):
             captured_body.update(json.loads(req.content))
         return httpx.Response(201, json=CREDENTIAL_RESPONSE)
@@ -666,7 +666,8 @@ async def test_uses_ir_derived_subject_id(monkeypatch, submission, _enable_vc):
     _patch_httpx(monkeypatch, handler)
     await di.provision_user_identity(submission)
 
-    assert captured_body["subject_id"] == DERIVE_RESPONSE["subject_id"]
+    assert uuid.UUID(captured_body["subject_id"]).version == 4
+    assert submission.dataspace_subject_id == captured_body["subject_id"]
 
 
 async def test_reuses_existing_subject_id(monkeypatch, submission, _enable_vc):
@@ -698,7 +699,7 @@ async def test_resolve_failure_is_fatal(monkeypatch, submission, _enable_vc):
 
     _patch_httpx(monkeypatch, handler)
 
-    with pytest.raises(ValueError, match="Subject id derivation failed"):
+    with pytest.raises(ValueError, match="Subject resolution failed"):
         await di.provision_user_identity(submission)
 
 
@@ -916,14 +917,36 @@ def _access() -> di.RegistryAccess:
 
 
 class TestResolveSubject:
-    async def test_a_new_person_gets_a_derived_id_and_no_did(self, monkeypatch):
-        """The ordinary first-time answer. Not an error, and not a 404."""
-        _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=DERIVE_RESPONSE))
+    async def test_a_new_person_gets_a_minted_id_and_no_did(self, monkeypatch):
+        """The ordinary first-time answer. The registry's 404 is not an error."""
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(404))
 
         resolved = await di.resolve_subject(_access(), email="a@example.org")
 
-        assert resolved.subject_id == DERIVE_RESPONSE["subject_id"]
+        assert uuid.UUID(resolved.subject_id).version == 4
         assert resolved.did is None
+
+    async def test_an_id_already_recorded_is_reused_when_nothing_is_mapped(self, monkeypatch):
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(404))
+
+        resolved = await di.resolve_subject(
+            _access(), email="a@example.org", recorded="0b9c3a2e-6f1d-4e8a-9c7b-2d5e1f0a3b4c"
+        )
+
+        assert resolved.subject_id == "0b9c3a2e-6f1d-4e8a-9c7b-2d5e1f0a3b4c"
+
+    async def test_a_mapping_wins_over_an_id_already_recorded(self, monkeypatch):
+        """The registry holds the person's one DID; a local copy never overrides it."""
+        _patch_httpx(
+            monkeypatch,
+            lambda req: httpx.Response(
+                200, json={"subject_id": "sub-1", "did": "did:web:users.example:users:sub-1"}
+            ),
+        )
+
+        resolved = await di.resolve_subject(_access(), email="a@example.org", recorded="other")
+
+        assert resolved.subject_id == "sub-1"
 
     async def test_a_known_person_comes_back_with_their_did(self, monkeypatch):
         """The DID is what lets the caller ask whether to issue at all."""
@@ -938,8 +961,8 @@ class TestResolveSubject:
 
         assert resolved.did == "did:web:users.example:sub-1"
 
-    async def test_derive_is_always_requested_and_the_email_is_sent(self, monkeypatch):
-        """`derive=true` without an email is a 422 at the registry, so both go together."""
+    async def test_derive_is_never_requested_and_the_email_is_sent(self, monkeypatch):
+        """A derived id is the registry's HMAC of the email; this setup mints UUIDs."""
         seen: list[httpx.URL] = []
 
         def handler(req):
@@ -949,7 +972,7 @@ class TestResolveSubject:
         _patch_httpx(monkeypatch, handler)
         await di.resolve_subject(_access(), email="a@example.org")
 
-        assert seen[0].params["derive"] == "true"
+        assert seen[0].params["derive"] == "false"
         assert seen[0].params["email"] == "a@example.org"
 
     async def test_the_keycloak_pair_is_sent_together_or_not_at_all(self, monkeypatch):
