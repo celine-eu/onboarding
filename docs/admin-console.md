@@ -207,8 +207,9 @@ submission's own history.
 rows written before the trail recorded a community, and not recoverable by the
 0009 backfill, are excluded rather than shown under an arbitrary one.
 
-**`/admin/{rec}/exports`** — CSV of every submission, and the supply-point list for
-a distributor. Both stream and leave nothing on disk.
+**`/admin/{rec}/exports`** — CSV of every submission, and the supply-point evidence
+for one offer (who stood authorised, who withdrew). Both stream and leave nothing on
+disk.
 
 ## Language
 

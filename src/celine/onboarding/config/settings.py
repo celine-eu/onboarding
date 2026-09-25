@@ -212,8 +212,9 @@ class Settings(BaseSettings):
     # disclosure record requires and which posting the event directly cannot.
     # None of that is reverted: this is a member's Art. 15 read of events already
     # recorded, under their own credential, and no disclosure is ever written
-    # through it. Empty returns an empty history rather than failing — the
-    # decisions stand without it.
+    # through it — nor anywhere else: this service records none (ADR-0010).
+    # Empty returns an empty history rather than failing — the decisions stand
+    # without it.
     ds_provenance_url: str = ""
 
     sms_provider: str = "log"

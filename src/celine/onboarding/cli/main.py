@@ -188,43 +188,27 @@ def export_pod_list(
         ...,
         "--offer",
         help="Offer id the consent must cover. Consent is purpose-scoped: "
-        "agreeing to a different offer is not agreeing to this handover.",
-    ),
-    recipient: str = typer.Option(
-        ...,
-        "--recipient",
-        help="Who receives the list: the offer's controller, by organisation id or "
-        "DID — never an alias. Any other party is refused. Recorded as a "
-        "DataDisclosed provenance event against the controller's DID.",
+        "agreeing to a different offer is not agreeing to this one.",
     ),
     output: str = typer.Option("", "--output", help="Where to write the file"),
-    purpose: str | None = typer.Option(
-        None, "--purpose", help="Comma-separated purpose slugs for the disclosure"
-    ),
-    agreement_ref: str | None = typer.Option(
-        None, "--agreement-ref", help="DPA / agreement reference (never its contents)"
-    ),
     local: bool = _LOCAL,
     api_url: str = _API_URL,
     token: str = _TOKEN,
 ):
-    """Export the supply points whose owners agreed — and nothing else.
+    """Export the community's evidence of which supply points stood authorised, and withdrawn.
 
-    For handing the offer's controller the PODs it may receive. Names, hashes,
-    DIDs and evidence stay out: that material lives in the dataspace, where it is
-    verifiable and revocable, and a second copy is how two records of the same
+    The collector's own dated record under one offer (ADR-0010): kept here,
+    handed to nobody, and recorded as a disclosure nowhere. Names, hashes, DIDs
+    and evidence bundles stay out: that material lives in the dataspace, where it
+    is verifiable and revocable, and a second copy is how two records of the same
     consent start to disagree.
 
-    Through the API, as the console does. The disclosure is recorded in
-    ds-provenance before the file exists; a refusal writes nothing.
-
-    The file is a snapshot, so the re-export cadence is the revocation latency.
-    Re-run it on a schedule; the header states when it was generated.
+    Through the API, as the console does; a refusal writes nothing. The file is a
+    snapshot, and its header states when it was generated.
     """
     if not output:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output = str(Path(settings.data_dir) / "exports" / rec / f"pod-list-{stamp}.csv")
-    purposes = [p.strip() for p in (purpose or "").split(",") if p.strip()]
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)
@@ -232,18 +216,14 @@ def export_pod_list(
             content = await transport.export_pod_list(
                 rec,
                 offer_id=offer,
-                recipient_ref=recipient,
-                purpose=purposes,
-                agreement_ref=agreement_ref,
             )
         finally:
             await transport.aclose()
         path = _write_export(content, output)
         typer.echo(f"Exported {_data_rows(content)} supply points to {path}")
-        typer.echo(f"Recorded DataDisclosed to '{recipient}', by its DID")
         typer.echo(
-            "This list is a snapshot — consent can be withdrawn, so re-export on your "
-            "agreed cadence."
+            "Evidence, kept by this community — not a disclosure, and not for handing "
+            "over. A snapshot: a later decision is not in it."
         )
 
     _run(_go())

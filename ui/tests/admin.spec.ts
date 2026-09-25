@@ -221,6 +221,25 @@ test.describe('Operator console', () => {
 		await expect(page.locator('table tbody tr').first()).toBeVisible();
 	});
 
+	test('the supply-point evidence asks for an offer and nothing else', async ({ page }) => {
+		// ADR-0010: the file is the community's own evidence and goes to nobody, so
+		// the console asks for no recipient and sends none.
+		await signedIn(page);
+		let sent: unknown = null;
+		await page.route('**/exports/pod-list', async (route) => {
+			sent = route.request().postDataJSON();
+			await route.fulfill({ status: 200, contentType: 'text/csv', body: '# Evidence\n' });
+		});
+		await page.goto(`/admin/${REC}/exports`);
+		await expect(page.getByText('Destinatario')).toHaveCount(0);
+		const download = page.getByRole('button', { name: 'Scarica elenco POD' });
+		await expect(download).toBeDisabled();
+		await page.getByPlaceholder('household-energy-flexibility').fill('household-energy-flexibility');
+		await expect(download).toBeEnabled();
+		await download.click();
+		await expect.poll(() => sent).toEqual({ offer_id: 'household-energy-flexibility' });
+	});
+
 	test('an operator without permissions is told, not bounced to login', async ({ page }) => {
 		const denied = process.env.DENIED_TOKEN;
 		test.skip(!denied, 'set DENIED_TOKEN');

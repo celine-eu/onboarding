@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -50,13 +51,50 @@ class TestIdp:
             }
         ).encode()
 
+        idp = self
+
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802 - http.server's interface
+            def _json(self, body: bytes) -> None:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(jwks)))
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(jwks)
+                self.wfile.write(body)
+
+            def do_GET(self):  # noqa: N802 - http.server's interface
+                # Discovery, so the app can fetch a *service* token from here as
+                # it does from Keycloak when it calls a dataspace service as
+                # itself. Every other path is the JWKS, as it always was.
+                if self.path == "/.well-known/openid-configuration":
+                    self._json(
+                        json.dumps(
+                            {
+                                "issuer": idp.issuer,
+                                "jwks_uri": idp.jwks_uri,
+                                "token_endpoint": f"{idp.issuer}/token",
+                            }
+                        ).encode()
+                    )
+                    return
+                self._json(jwks)
+
+            def do_POST(self):  # noqa: N802 - http.server's interface
+                # A client-credentials grant, answered for any client and minted
+                # *as* that client: what the token is for is decided by the stub
+                # it is presented to, which can then tell which client asked.
+                form = parse_qs(
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+                )
+                client_id = (form.get("client_id") or ["svc-e2e"])[0]
+                self._json(
+                    json.dumps(
+                        {
+                            "access_token": idp.service("e2e", client_id=client_id),
+                            "token_type": "Bearer",
+                            "expires_in": 3600,
+                        }
+                    ).encode()
+                )
 
             def log_message(self, *args):
                 pass

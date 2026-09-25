@@ -99,9 +99,9 @@ def organisation_token_provider(organization_alias: str) -> OidcClientCredential
     as a consent collector.
 
     Used for ``POST /consent/admin/shares`` and ``GET
-    /consent/admin/subject-shares``, and nothing else. The registry calls, the
-    audience read and ``/admin/disclosure`` stay with the service client, whose
-    grants for those never moved.
+    /consent/admin/subject-shares`` and ``GET /consent/admin/decisions``, and
+    nothing else. The registry calls and the audience read stay with the service
+    client, whose grants for those never moved.
     """
     client_id = organisation_client_id(organization_alias)
     if not settings.ds_org_client_secret:

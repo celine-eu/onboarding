@@ -479,8 +479,8 @@ export function createRecAdminApi(recSlug: string) {
 				rows.filter((r) => r.entity_id === id)
 			),
 
-		// The community's own register: it names no recipient. Giving data to another
-		// organisation goes through exportPodList, which is the governed path.
+		// The community's own register: it names no recipient. exportPodList is the
+		// community's evidence for one offer (ADR-0010) — it gives data to nobody either.
 		async exportCsv(): Promise<Blob> {
 			const res = await adminFetch(`${base}/exports/csv`, {
 				method: 'POST',
@@ -489,10 +489,10 @@ export function createRecAdminApi(recSlug: string) {
 			return res.blob();
 		},
 
-		async exportPodList(offerId: string, recipientRef: string): Promise<Blob> {
+		async exportPodList(offerId: string): Promise<Blob> {
 			const res = await adminFetch(`${base}/exports/pod-list`, {
 				method: 'POST',
-				body: JSON.stringify({ offer_id: offerId, recipient_ref: recipientRef })
+				body: JSON.stringify({ offer_id: offerId })
 			});
 			return res.blob();
 		}

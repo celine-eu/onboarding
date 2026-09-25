@@ -5,7 +5,6 @@
 	const { data }: { data: PageData } = $props();
 
 	let offerId = $state('');
-	let podRecipient = $state('');
 	let busy = $state<string | null>(null);
 	let errorMsg = $state('');
 
@@ -65,15 +64,11 @@
 				<span>{$t('admin.exports.offer')}</span>
 				<input bind:value={offerId} placeholder="household-energy-flexibility" />
 			</label>
-			<label>
-				<span>{$t('admin.exports.recipient')}</span>
-				<input bind:value={podRecipient} placeholder={$t('admin.exports.recipient_placeholder')} />
-			</label>
 			<button
 				class="primary"
-				disabled={busy !== null || !offerId.trim() || !podRecipient.trim()}
+				disabled={busy !== null || !offerId.trim()}
 				onclick={() =>
-					run('pods', () => data.api.exportPodList(offerId, podRecipient), `${data.rec}-${$t('admin.exports.pods_filename')}-${stamp()}.csv`)}
+					run('pods', () => data.api.exportPodList(offerId), `${data.rec}-${$t('admin.exports.pods_filename')}-${stamp()}.csv`)}
 			>
 				{busy === 'pods' ? $t('admin.exports.exporting') : $t('admin.exports.pods_download')}
 			</button>

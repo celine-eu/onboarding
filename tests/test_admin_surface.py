@@ -327,14 +327,18 @@ class TestExports:
             Path(path).write_text("ref\n20260730-aaa1\n")
             return 1
 
+        pod_calls: list[dict] = []
+
         async def _pods(db, path, **kwargs):
             from pathlib import Path
 
+            pod_calls.append(kwargs)
             Path(path).write_text("pod\nIT001E12345678\n")
             return 1
 
         monkeypatch.setattr(exports_api, "export_submissions_csv", _csv)
         monkeypatch.setattr(exports_api, "export_pod_list", _pods)
+        return pod_calls
 
     def test_viewer_cannot_export(self, client, operator_token, stub_exports):
         response = client.post(
@@ -368,36 +372,58 @@ class TestExports:
         assert audited[-1]["action"] == "export_csv"
         assert audited[-1]["detail"] == "rows=1"
 
-    def test_pod_list_requires_an_offer(self, client, operator_token, stub_exports):
-        """Consent is purpose-scoped, so a handover has to name the offer."""
+    def test_the_pod_list_needs_only_an_offer(self, client, operator_token, stub_exports):
+        """No recipient: the file is the community's evidence and goes to nobody
+        (ADR-0010), and the party the offer names is read from the offer."""
         response = client.post(
             f"{BASE}/exports/pod-list",
-            json={"recipient_ref": "distributor-x"},
+            json={"offer_id": "household-energy-flexibility"},
+            headers=auth(operator_token(ORG, "managers")),
+        )
+        assert response.status_code == 200, response.text
+        assert "recipient_ref" not in stub_exports[-1]
+
+    def test_an_old_caller_sending_a_recipient_is_ignored(
+        self, client, operator_token, stub_exports
+    ):
+        """An unknown field, ignored like any other — so a caller written for the
+        old body keeps working, whatever party it names."""
+        response = client.post(
+            f"{BASE}/exports/pod-list",
+            json={"offer_id": "household-energy-flexibility", "recipient_ref": "someone-else"},
+            headers=auth(operator_token(ORG, "managers")),
+        )
+        assert response.status_code == 200, response.text
+        assert "recipient_ref" not in stub_exports[-1]
+        assert stub_exports[-1]["offer_id"] == "household-energy-flexibility"
+
+    def test_pod_list_requires_an_offer(self, client, operator_token, stub_exports):
+        """Consent is purpose-scoped, so the evidence is for one named offer."""
+        response = client.post(
+            f"{BASE}/exports/pod-list",
+            json={},
             headers=auth(operator_token(ORG, "managers")),
         )
         assert response.status_code == 422
 
-    def test_pod_list_to_a_party_the_offer_does_not_name_is_a_422(
+    def test_a_refused_pod_list_is_a_422(
         self, client, operator_token, stub_exports, monkeypatch, tmp_path
     ):
         """The console and the CLI run one export; its refusal reaches the console as a 422."""
         from celine.onboarding.api.admin import exports as exports_api
 
         async def _refuse(db, path, **kwargs):
-            raise ValueError(
-                f"Recipient {kwargs['recipient_ref']!r} is not 'grid-operator', "
-                "the controller this offer names."
-            )
+            raise ValueError("Offer 'household-energy-flexibility's datasets do not agree")
 
         monkeypatch.setattr(exports_api, "export_pod_list", _refuse)
         response = client.post(
             f"{BASE}/exports/pod-list",
-            json={"offer_id": "household-energy-flexibility", "recipient_ref": "distributor-x"},
+            json={"offer_id": "household-energy-flexibility"},
             headers=auth(operator_token(ORG, "managers")),
         )
         assert response.status_code == 422
-        assert "the controller this offer names" in response.json()["detail"]
-        assert list(tmp_path.iterdir()) == [], "a refused handover leaves no file"
+        assert "do not agree" in response.json()["detail"]
+        assert list(tmp_path.iterdir()) == [], "a refused export leaves no file"
 
 
 class TestStats:

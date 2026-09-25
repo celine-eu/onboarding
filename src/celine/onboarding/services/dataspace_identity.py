@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -66,102 +67,6 @@ def _parse_generated_at(value: Any) -> datetime:
 async def _auth_headers() -> dict[str, str]:
     token = await _get_token_provider().get_token()
     return {"Authorization": f"Bearer {token.access_token}"}
-
-
-async def record_disclosure(
-    *,
-    offer_id: str,
-    recipient_ref: str,
-    purpose: list[str] | None = None,
-    columns: list[str] | None = None,
-    subject_count: int | None = None,
-    source_ref: str | None = None,
-    agreement_ref: str | None = None,
-    event_id: str | None = None,
-    rec_slug: str | None = None,
-) -> list[dict[str, Any]]:
-    """Record an outbound disclosure with the connector, before it happens.
-
-    Replaces a direct ``POST {DS_PROVENANCE_URL}/prov/events``. That call had no
-    ``dataset_id`` and the provenance service now requires one, so every emit was
-    answered 422 and discarded — silently, because the emit was non-fatal. The
-    export went out and nothing recorded it.
-
-    **The connector computes the consent snapshot hash**, which is the whole
-    reason the route exists: the hash is a fingerprint of *its* consent rows, and
-    a caller asserting one would be asserting a consent state it cannot read.
-
-    **Named by offer, expanded by the connector.** A POD list is scoped to one
-    sharing offer, never to a dataset. The connector resolves the offer to the
-    datasets it reaches and records one ``DataDisclosed`` per dataset, deriving a
-    per-dataset event id from ``event_id`` so a retry stays idempotent.
-
-    Returns one entry per dataset — ``dataset_id``, ``consent_snapshot_hash``,
-    ``granted_party_count``. **Every entry matters**: the response deliberately
-    does not flatten to top-level keys even when the offer resolves to a single
-    dataset, so that a caller cannot read one and be right today and wrong the
-    day a second dataset declares the offer.
-
-    **Fatal, unlike the emit it replaces.** The old call documented something that
-    had already happened, so losing it was worse than failing. This one runs
-    *before* the handover, so a refusal means the disclosure does not happen —
-    the answer that leaves no unrecorded handover. Callers must not write the
-    file if this raises.
-    """
-    if not settings.ds_connector_url:
-        raise RuntimeError(
-            "DS_CONNECTOR_URL is not configured, so this disclosure cannot be "
-            "recorded — and an unrecorded handover is what this call prevents."
-        )
-
-    # The disclosing agent is the REC that holds the data, so it is per-REC like
-    # every other dataspace binding.
-    disclosed_by: str | None = None
-    if rec_slug:
-        try:
-            binding = template_service.dataspace_binding(rec_slug)
-            disclosed_by = binding.organization_did or binding.organization or None
-        except (KeyError, ValueError):
-            logger.warning(
-                "No dataspace binding for REC %r; the disclosure will not name a disclosing agent",
-                rec_slug,
-            )
-
-    base_url = settings.ds_connector_url.rstrip("/")
-    payload: dict[str, Any] = {
-        "offer_id": offer_id,
-        "recipient_ref": recipient_ref,
-        "purpose": purpose or [],
-        "columns": columns or [],
-        "subject_count": subject_count,
-        "source_ref": source_ref,
-        "disclosed_by": disclosed_by,
-        "agreement_ref": agreement_ref,
-        "event_id": event_id,
-    }
-
-    headers = await _auth_headers()
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{base_url}/admin/disclosure", json=payload, headers=headers)
-
-    if resp.status_code >= 400:
-        # 502 is the partial case and the connector names what it already
-        # recorded. Retry with the **same** event_id: the per-dataset derivation
-        # makes that idempotent, where a fresh one would record a second copy of
-        # what this failure already wrote.
-        raise RuntimeError(
-            f"Disclosure was not recorded ({resp.status_code}), so the data must "
-            f"not be handed over: {resp.text}"
-        )
-
-    body = resp.json()
-    disclosures = body.get("disclosures") or []
-    if not disclosures:
-        raise RuntimeError(
-            f"The connector recorded no disclosure for offer {offer_id!r}; "
-            "refusing to hand over data that nothing describes."
-        )
-    return disclosures
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,25 +201,184 @@ async def resolve_consumer_did(controller_alias: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class OfferAudience:
-    """Who currently consents to one offer, for one recipient.
+class DatasetAudience:
+    """Who currently consents to one offer, for one recipient, on one dataset at one connector.
 
-    ``subject_ids`` are dataspace DIDs, which is what makes this joinable
-    against ``Submission.dataspace_did``.
+    The unit consent is stored and enforced at: ds keys a consent row on
+    ``(dataset_id, offer_id)`` and each connector answers for its own datasets.
+    ``subject_ids`` are dataspace DIDs, which is what makes this joinable against
+    ``Submission.dataspace_did``.
+
+    Per dataset *and* per route because that is the granularity everything else
+    about the offer is answered at too — who withdrew included
+    (:class:`DecisionCell`, read by :func:`get_offer_decisions` from the same
+    connectors).
     """
 
     dataset_id: str
+    route: ConsentRoute
     subject_ids: frozenset[str]
+    #: The connector's own count, kept beside the set it was taken from rather
+    #: than recomputed: they agreeing is worth being able to assert, and they are
+    #: two different claims.
     subject_count: int
 
+    @property
+    def held_by(self) -> str:
+        """The participant holding this dataset: another's alias, or this community's own."""
+        return self.route.holder or self.route.collector or "this community"
 
-async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
-    """Ask the connector who currently consents to *offer_id* for *consumer_id*.
+
+@dataclass(frozen=True, slots=True)
+class OfferAudience:
+    """Who currently consents to one offer, for one recipient — one set, read everywhere it is held.
+
+    Only ever built by :func:`get_offer_audience` once every dataset at every
+    connector holding the offer has answered with **the same** subject set, so
+    :attr:`subject_ids` is the offer's audience and not a choice among several.
+    ``datasets`` stays per dataset so a reader — the file's header, a log line —
+    can say what that set was computed from.
+    """
+
+    offer_id: str
+    datasets: tuple[DatasetAudience, ...]
+
+    @property
+    def subject_ids(self) -> frozenset[str]:
+        return self.datasets[0].subject_ids
+
+    @property
+    def routes(self) -> tuple[ConsentRoute, ...]:
+        """The connectors that hold a dataset for the offer, once each, in the order asked."""
+        return tuple(dict.fromkeys(d.route for d in self.datasets))
+
+
+class AudienceSplitError(ValueError):
+    """An offer's datasets do not agree on who consents, so no one list is its audience."""
+
+
+async def _audience_at(
+    client: httpx.AsyncClient,
+    route: ConsentRoute,
+    headers: dict[str, str],
+    *,
+    offer_id: str,
+    consumer_id: str,
+) -> list[DatasetAudience] | str:
+    """One connector's answer: its datasets for the offer, or why it holds none.
+
+    A ``str`` is that connector saying it holds no dataset for the offer (its
+    ``422``) — an answer, not a failure, and the caller decides what it means
+    across every route.
+    """
+    try:
+        resp = await client.get(
+            f"{route.connector_url.rstrip('/')}/consent/admin/shares",
+            params={"offer_id": offer_id, "consumer_id": consumer_id},
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"{route.where} could not be reached to read the audience for offer "
+            f"{offer_id!r}, so who consents is unknown and the export must not "
+            f"proceed: {exc}"
+        ) from exc
+
+    if resp.status_code == 409:
+        # Not consent-based: an offer that is disclosed, not consented, has no
+        # audience anywhere, and this is a property of the offer.
+        raise ValueError(
+            f"Offer {offer_id!r} is not consent-based, so it has no audience to "
+            f"export ({route.where} answered 409): {resp.text}"
+        )
+    if resp.status_code == 422:
+        # The connector knows no dataset for the offer here. For a route the
+        # manifest names that is the one expected refusal: this connector does
+        # not hold the offer's data. (The wildcard-consumer 422 is unreachable
+        # from here — the consumer is always a resolved DID.)
+        return f"{route.where} answered 422: {resp.text}"
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"{route.where} answered {resp.status_code} reading the audience for "
+            f"offer {offer_id!r}, so who consents is unknown and the export must "
+            f"not proceed: {resp.text}"
+        )
+
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"The audience {route.where} reported for offer {offer_id!r} was not "
+            "readable, so who consents is unknown and the export must not proceed."
+        ) from exc
+
+    datasets = body.get("datasets") or []
+    if not datasets:
+        # Distinct from "nobody consents" and from "holds nothing here": the
+        # connector refuses a dataset-less offer with a 422, so an empty list
+        # with a 200 is not the shape this caller was written against.
+        raise RuntimeError(
+            f"{route.where} reported no dataset for offer {offer_id!r} with a 200; "
+            "refusing to export against an audience that describes nothing."
+        )
+    return [
+        DatasetAudience(
+            dataset_id=str(entry.get("dataset_id") or ""),
+            route=route,
+            subject_ids=frozenset(str(s) for s in (entry.get("subject_ids") or [])),
+            subject_count=int(entry.get("subject_count") or 0),
+        )
+        for entry in datasets
+    ]
+
+
+def _split(offer_id: str, datasets: list[DatasetAudience]) -> str:
+    """Say which datasets split and by how much, without naming who."""
+    groups: dict[frozenset[str], list[DatasetAudience]] = {}
+    for dataset in datasets:
+        groups.setdefault(dataset.subject_ids, []).append(dataset)
+
+    def _subjects(n: int) -> str:
+        return f"{n} subject" + ("" if n == 1 else "s")
+
+    several_holders = len({d.held_by for d in datasets}) > 1
+    described = "; ".join(
+        f"{_subjects(len(ids))}: "
+        + ", ".join(
+            f"{d.dataset_id} (held by {d.held_by})" if several_holders else d.dataset_id
+            for d in members
+        )
+        for ids, members in sorted(groups.items(), key=lambda g: -len(g[0]))
+    )
+    union = frozenset().union(*groups)
+    common = frozenset.intersection(*groups)
+    differing = len(union - common)
+    return (
+        f"Offer {offer_id!r}'s datasets do not agree on who consents: "
+        f"{len(groups)} distinct audiences across {len(datasets)} datasets — {described}. "
+        f"{_subjects(differing)} {'is' if differing == 1 else 'are'} in some of these "
+        "audiences and not in others. The offer's statement is no longer true of all "
+        "its datasets, so no single list is its audience, and nothing was exported."
+    )
+
+
+async def get_offer_audience(
+    offer_id: str, consumer_id: str, routes: Sequence[ConsentRoute]
+) -> OfferAudience:
+    """Ask every connector holding *offer_id* who currently consents to it for *consumer_id*.
 
     The read counterpart to :func:`provision_user_shares`, and the reason the
     POD export can stop reading a form. A ``Submission`` records what somebody
     agreed to on one afternoon; the connector holds the decision as it stands
     now, including one made or withdrawn in the participant webapp afterwards.
+
+    **``routes`` are every connector holding the offer's data** — from
+    :func:`consent_routes`, the call every consent write makes, never
+    ``DS_CONNECTOR_URL`` alone. An offer's data may sit at another participant's
+    connector, or at several (ADR-0007), and each answers only for the datasets
+    it holds. A route that answers ``422`` holds no dataset for the offer and
+    contributes nothing; if none holds one, there is no audience to report and
+    that is refused, naming what each connector said.
 
     **The purpose and controller role are not sent, and must not be.** The
     connector stamps them from the offer, the same way
@@ -331,82 +395,318 @@ async def get_offer_audience(offer_id: str, consumer_id: str) -> OfferAudience:
     change exists to prevent. The connector refuses it; naming the recipient is
     this caller's part of that.
 
-    **One dataset, or nothing.** The response carries one subject set per
-    dataset the offer resolves to and deliberately does not flatten them. A
-    single CSV cannot honestly carry two audiences: reading the first element
-    would be right today and silently wrong the day a second dataset declares
-    the offer. So more than one is refused here rather than merged.
+    **The check is per dataset, the audience is per offer** (ADR-0008). Each
+    connector answers one subject set per dataset and deliberately does not
+    flatten them, because consent is stored and enforced per dataset — a member
+    can be in one dataset's audience and not another's, when a dataset was bound
+    to the offer after they decided, or when they decided on one dataset alone.
+    Reading coarser than that would invent authorisation. But what a member was
+    asked is the offer — its purpose, recipient, period and consent text — and no
+    clause of that sentence is a dataset. So across every route and every
+    dataset: **one distinct set is the offer's audience**, and more than one
+    means the offer's statement is no longer true of all its datasets, which is
+    refused with :class:`AudienceSplitError` naming the datasets that split and
+    by how much. Never a union — someone who withdrew from one dataset would
+    appear in a list read as authorisation — and never an intersection, which
+    empties silently the moment a dataset nobody was asked about is bound.
     """
-    if not settings.ds_connector_url:
+    if not routes:
         raise RuntimeError(
-            "DS_CONNECTOR_URL is not configured, so the connector cannot be asked who consents."
+            f"No connector was named to read offer {offer_id!r} from, so who "
+            "consents cannot be asked."
         )
 
-    base_url = settings.ds_connector_url.rstrip("/")
     headers = await _auth_headers()
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
+    datasets: list[DatasetAudience] = []
+    holds_nothing: list[str] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for route in routes:
+            answer = await _audience_at(
+                client, route, headers, offer_id=offer_id, consumer_id=consumer_id
+            )
+            if isinstance(answer, str):
+                holds_nothing.append(answer)
+            else:
+                datasets.extend(answer)
+
+    if not datasets:
+        raise ValueError(
+            f"No connector this community routes offer {offer_id!r} to holds a "
+            f"dataset for it ({'; '.join(holds_nothing)}). Check which connectors "
+            "hold its data in the REC's dataspace.connectors."
+        )
+    if holds_nothing:
+        logger.warning(
+            "Offer %r is routed to a connector that holds no dataset for it; the "
+            "audience is read from the others: %s",
+            offer_id,
+            "; ".join(holds_nothing),
+        )
+
+    if len({d.subject_ids for d in datasets}) > 1:
+        raise AudienceSplitError(_split(offer_id, datasets))
+
+    return OfferAudience(offer_id=offer_id, datasets=tuple(datasets))
+
+
+#: `limit` for `GET /consent/admin/decisions` — ds's maximum, so the fewest pages.
+_DECISIONS_PAGE = 100
+#: A list this long is not a list of one community's members. It stops a
+#: connector that keeps handing back a cursor from holding an export forever.
+_DECISIONS_MAX_PAGES = 10_000
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionCell:
+    """One member's presented decision on an offer, over one dataset, at one connector.
+
+    ds's ``GET /consent/admin/decisions`` row (ADR-0021 there), minus the keys,
+    which this service registered itself and never reads back into anything.
+    """
+
+    dataset_id: str
+    route: ConsentRoute
+    state: str  # "granted" | "withdrawn"
+    decided_by: str
+    decided_at: str | None = None
+    revoked_at: str | None = None
+
+    @property
+    def held_by(self) -> str:
+        return self.route.holder or self.route.collector or "this community"
+
+
+@dataclass(frozen=True, slots=True)
+class OfferDecisions:
+    """Every decision this community's members hold on one offer, at every connector asked.
+
+    ``unreported`` are the connectors that serve no decisions list at all — an
+    older connector — so whoever withdrew *there* is not in ``cells``. Named, so
+    that a reader is told, never left to infer it from an absence.
+    """
+
+    offer_id: str
+    cells: dict[str, tuple[DecisionCell, ...]]
+    unreported: tuple[ConsentRoute, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Withdrawal:
+    """A member who withdrew from the offer everywhere they decided on it."""
+
+    subject_id: str
+    #: When the withdrawal stood everywhere: the latest ``revoked_at`` across cells.
+    withdrawn_at: str
+    #: Whose act it was, ds's code — ``subject``, ``collector``, ``operator``,
+    #: ``service`` — joined with ``;`` when the cells disagree.
+    withdrawn_by: str
+
+
+async def _decisions_at(
+    client: httpx.AsyncClient, route: ConsentRoute, *, offer_id: str
+) -> list[tuple[str, DecisionCell]] | None:
+    """One connector's decisions for the offer, every page, as ``(subject, cell)``.
+
+    ``None`` when the connector serves no decisions list at all.
+    """
+    headers = await organisation_auth_headers(route.collector)
+    cells: list[tuple[str, DecisionCell]] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    for _ in range(_DECISIONS_MAX_PAGES):
+        params = {"offer_id": offer_id, "limit": str(_DECISIONS_PAGE)}
+        if cursor is not None:
+            params["cursor"] = cursor
+        try:
             resp = await client.get(
-                f"{base_url}/consent/admin/shares",
-                params={"offer_id": offer_id, "consumer_id": consumer_id},
+                f"{route.connector_url.rstrip('/')}/consent/admin/decisions",
+                params=params,
                 headers=headers,
             )
-    except httpx.HTTPError as exc:
-        raise RuntimeError(
-            f"The connector could not be reached to read the audience for offer "
-            f"{offer_id!r}, so who consents is unknown and the export must not "
-            f"proceed: {exc}"
-        ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"{route.where} could not be reached to read who withdrew from offer "
+                f"{offer_id!r}, so the export must not proceed: {exc}"
+            ) from exc
 
-    if resp.status_code in (409, 422):
-        # The connector's own two answers about the offer: unknown, or not
-        # consent-based. Both are the caller naming the wrong offer, and both
-        # are fixable without touching the deployment.
+        if resp.status_code in (404, 405) and cursor is None:
+            # No such route: a connector older than the decisions list. Not an
+            # error about this offer — an absence of the capability — and the
+            # caller says so rather than reading it as "nobody withdrew".
+            return None
+        if resp.status_code >= 400:
+            # Everything else, the 422 included: this is only asked of a
+            # connector that has just reported datasets for the offer, so "holds
+            # nothing here" would contradict it. A 403 is ds saying this
+            # community is not an accepted collector there — never an empty list.
+            raise RuntimeError(
+                f"{route.where} answered {resp.status_code} listing decisions on offer "
+                f"{offer_id!r}, so who withdrew is unknown and the export must not "
+                f"proceed: {resp.text}"
+            )
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"The decisions {route.where} listed for offer {offer_id!r} were not readable."
+            ) from exc
+
+        for subject in body.get("subjects") or []:
+            subject_id = str(subject.get("subject_id") or "")
+            for row in subject.get("decisions") or []:
+                cells.append(
+                    (
+                        subject_id,
+                        DecisionCell(
+                            dataset_id=str(row.get("dataset_id") or ""),
+                            route=route,
+                            state=str(row.get("state") or ""),
+                            decided_by=str(row.get("decided_by") or ""),
+                            decided_at=row.get("decided_at"),
+                            revoked_at=row.get("revoked_at"),
+                        ),
+                    )
+                )
+        # A page may be short, even empty, and not the last: only a null
+        # cursor ends the list.
+        cursor = body.get("next_cursor")
+        if cursor is None:
+            return cells
+        if cursor in seen:
+            raise RuntimeError(
+                f"{route.where} handed back a cursor it had already issued while listing "
+                f"decisions on offer {offer_id!r}; refusing to read it as complete."
+            )
+        seen.add(cursor)
+    raise RuntimeError(
+        f"{route.where} did not finish listing decisions on offer {offer_id!r} within "
+        f"{_DECISIONS_MAX_PAGES} pages; refusing to read it as complete."
+    )
+
+
+async def get_offer_decisions(offer_id: str, routes: Sequence[ConsentRoute]) -> OfferDecisions:
+    """What this community's members decided on *offer_id*, granted and withdrawn, everywhere.
+
+    The other half of the evidence the POD export is (plan D6, ADR-0009). The
+    audience read lists standing grants only — ds keeps it that way so that a
+    reader of it can never mistake a withdrawn member for a present one — so a
+    member who withdrew is absent from it, and absent is also what a member
+    nobody asked looks like. ``GET /consent/admin/decisions`` (ds ADR-0021) lists
+    the decision itself.
+
+    **As the community, not as this service.** The route is bounded like the
+    per-subject read-back: the organisation that collected the decisions, with
+    its own client (``svc-ds-connector-<alias>``), for its own current members
+    only. The service client the audience read uses is refused there.
+
+    ``routes`` are the connectors holding the offer's datasets —
+    :attr:`OfferAudience.routes` — each asked for the rows it holds, every page
+    to the end. A connector with no such route (``404``/``405``, an older ds) is
+    named in :attr:`OfferDecisions.unreported`; any other failure raises, because
+    who withdrew is then unknown, which is not the same as nobody withdrawing.
+    """
+    cells: dict[str, list[DecisionCell]] = {}
+    unreported: list[ConsentRoute] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for route in routes:
+            answer = await _decisions_at(client, route, offer_id=offer_id)
+            if answer is None:
+                logger.warning(
+                    "%s serves no decisions list; withdrawals on offer %r are not reported there",
+                    route.where,
+                    offer_id,
+                )
+                unreported.append(route)
+                continue
+            for subject_id, cell in answer:
+                cells.setdefault(subject_id, []).append(cell)
+    return OfferDecisions(
+        offer_id=offer_id,
+        cells={subject: tuple(found) for subject, found in cells.items()},
+        unreported=tuple(unreported),
+    )
+
+
+def withdrawals(audience: OfferAudience, decisions: OfferDecisions) -> tuple[Withdrawal, ...]:
+    """The members who withdrew, checked against the audience they are absent from.
+
+    **The same rule as the audience, applied to the decisions** (ADR-0009). A
+    member whose decisions are all ``withdrawn`` withdrew from the offer. A member
+    granted in some datasets and withdrawn in others is the D4 split — the offer's
+    statement is not true of all its datasets for them — and is refused with
+    :class:`AudienceSplitError`, naming the datasets, never the member. A member
+    who never decided is in neither list: absent, as ds reports them.
+
+    **The two reads must not contradict each other.** A member the audience
+    authorises and whose every decision is ``withdrawn`` cannot be written in
+    either column without stating one read as fact over the other, so that is
+    refused too. The reverse — granted everywhere and still not in the audience,
+    as a per-recipient opt-out does — is no withdrawal and is not listed.
+    """
+    authorised = audience.subject_ids
+    split: dict[str, tuple[DecisionCell, ...]] = {}
+    contradicted = 0
+    found: list[Withdrawal] = []
+    for subject_id in sorted(decisions.cells):
+        cells = decisions.cells[subject_id]
+        states = {c.state for c in cells}
+        if states == {"granted"}:
+            continue
+        if states != {"withdrawn"}:
+            split[subject_id] = cells
+            continue
+        if subject_id in authorised:
+            contradicted += 1
+            continue
+        found.append(
+            Withdrawal(
+                subject_id=subject_id,
+                withdrawn_at=str(
+                    max(
+                        cells, key=lambda c: _instant(c.revoked_at or c.decided_at) or _NEVER
+                    ).revoked_at
+                    or ""
+                ),
+                withdrawn_by=";".join(sorted({c.decided_by for c in cells if c.decided_by})),
+            )
+        )
+
+    if split:
+        raise AudienceSplitError(_decisions_split(audience.offer_id, split))
+    if contradicted:
         raise ValueError(
-            f"The connector refused to report an audience for offer {offer_id!r} "
-            f"({resp.status_code}): {resp.text}"
+            f"Offer {audience.offer_id!r}: {contradicted} "
+            + ("subject is" if contradicted == 1 else "subjects are")
+            + " authorised by the audience the connectors report and withdrawn in "
+            "every decision they list. The two reads disagree, so neither column would "
+            "be true, and nothing was exported."
         )
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"The connector answered {resp.status_code} reading the audience for "
-            f"offer {offer_id!r}, so who consents is unknown and the export must "
-            f"not proceed: {resp.text}"
-        )
+    return tuple(found)
 
-    try:
-        body = resp.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"The connector's audience for offer {offer_id!r} was not readable, "
-            "so who consents is unknown and the export must not proceed."
-        ) from exc
 
-    datasets = body.get("datasets") or []
-    if not datasets:
-        # Distinct from "nobody consents": the connector refuses an offer that
-        # resolves to no dataset with a 422, so an empty list here means the
-        # response was not the shape this caller was written against.
-        raise RuntimeError(
-            f"The connector reported no dataset for offer {offer_id!r}; refusing "
-            "to export against an audience that describes nothing."
-        )
-    if len(datasets) > 1:
-        raise ValueError(
-            f"Offer {offer_id!r} resolves to {len(datasets)} datasets "
-            f"({', '.join(str(d.get('dataset_id')) for d in datasets)}), and one "
-            "file cannot carry two audiences without saying which row came from "
-            "which. Export per dataset, or narrow the offer."
-        )
+def _decisions_split(offer_id: str, split: dict[str, tuple[DecisionCell, ...]]) -> str:
+    """Name the datasets a member is granted and withdrawn in, and how many members."""
+    every = [c for cells in split.values() for c in cells]
+    several_holders = len({c.held_by for c in every}) > 1
 
-    entry = datasets[0]
-    subject_ids = frozenset(str(s) for s in (entry.get("subject_ids") or []))
-    return OfferAudience(
-        dataset_id=str(entry.get("dataset_id") or ""),
-        subject_ids=subject_ids,
-        # The connector's own count, kept beside the set it was taken from
-        # rather than recomputed: they agreeing is worth being able to assert,
-        # and they are two different claims.
-        subject_count=int(entry.get("subject_count") or 0),
+    def label(c: DecisionCell) -> str:
+        return f"{c.dataset_id} (held by {c.held_by})" if several_holders else c.dataset_id
+
+    def tally(state: str) -> str:
+        counts: dict[str, int] = {}
+        for c in every:
+            if c.state == state:
+                counts[label(c)] = counts.get(label(c), 0) + 1
+        return ", ".join(f"{name}: {n}" for name, n in sorted(counts.items()))
+
+    n = len(split)
+    return (
+        f"Offer {offer_id!r}'s datasets do not agree on who consents: {n} "
+        + ("subject is" if n == 1 else "subjects are")
+        + f" granted in some datasets and withdrawn in others — withdrawn in "
+        f"{tally('withdrawn')}; granted in {tally('granted')}. The offer's statement is "
+        "no longer true of all its datasets, so no single list is its audience, and "
+        "nothing was exported."
     )
 
 

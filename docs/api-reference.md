@@ -109,7 +109,7 @@ endpoint needs is in brackets.
 | `GET` | `/api/admin/{rec}/submissions/{id}/pdf` | Summary PDF [`submissions.read`] |
 | `POST` | `/api/admin/{rec}/submissions/{id}/retry-share` | **Deprecated** alias of `enablement/retry?step=dataspace_share` |
 | `POST` | `/api/admin/{rec}/exports/csv` | Streamed CSV of the community's register, for its own use; names no recipient [`export`] |
-| `POST` | `/api/admin/{rec}/exports/pod-list` | Consented supply points for one offer, to its controller only (owner id or DID; 422 otherwise); records `DataDisclosed` first [`export`] |
+| `POST` | `/api/admin/{rec}/exports/pod-list` | The community's dated evidence for one offer: supply points that stood authorised, and those whose members withdrew, in separate columns. Body: `{"offer_id"}` only — a `recipient_ref` sent by an older caller is ignored. Read at every connector holding the offer; 422 when its datasets disagree on who consents. Streams the CSV body; records no disclosure (ADR-0010) [`export`] |
 | `GET` | `/api/admin/{rec}/audit-logs` | This community's trail only [`audit.read`] |
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/invitation` | Email a registry member an invitation to set a password. **Delegated**, see below [`members.invite`] |
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/password-reset` | Email a registry member a password reset. **Delegated**, see below [`members.invite`] |

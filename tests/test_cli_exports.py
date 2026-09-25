@@ -47,7 +47,6 @@ def pod_list(tmp_path, *extra):
             "export-pod-list",
             "--rec", "rec-a",
             "--offer", "household-energy-flexibility",
-            "--recipient", "grid-operator",
             "--output", str(tmp_path / "pods.csv"),
             "--token", "test-token",
             *extra,
@@ -63,33 +62,31 @@ def test_the_pod_list_is_the_consoles_request(api, tmp_path):
         return_value=httpx.Response(200, content=POD_LIST)
     )
 
-    result = pod_list(tmp_path, "--purpose", "FlexibilityResearch", "--agreement-ref", "dsa-1")
+    result = pod_list(tmp_path)
 
     assert result.exit_code == 0, result.output
     request = route.calls.last.request
     assert request.headers["Authorization"] == "Bearer test-token"
-    assert json.loads(request.content) == {
-        "offer_id": "household-energy-flexibility",
-        "recipient_ref": "grid-operator",
-        "purpose": ["FlexibilityResearch"],
-        "agreement_ref": "dsa-1",
-    }
+    # No purpose and no agreement reference: they described a disclosure, and
+    # the export records none (ADR-0010).
+    assert json.loads(request.content) == {"offer_id": "household-energy-flexibility"}
     assert (tmp_path / "pods.csv").read_bytes() == POD_LIST
     assert "Exported 2 supply points" in result.output
+    assert "DataDisclosed" not in result.output
 
 
-def test_a_refused_recipient_is_reported_and_writes_nothing(api, tmp_path):
+def test_a_refused_export_is_reported_and_writes_nothing(api, tmp_path):
     api.post("/api/admin/rec-a/exports/pod-list").mock(
         return_value=httpx.Response(
             422,
-            json={"detail": "Recipient 'dso' is an alias of 'example-dso'."},
+            json={"detail": "Offer 'x's datasets do not agree on who consents."},
         )
     )
 
     result = pod_list(tmp_path)
 
     assert result.exit_code == 1
-    assert "Refused: Recipient 'dso' is an alias" in result.output
+    assert "Refused: Offer 'x's datasets do not agree" in result.output
     assert "Traceback" not in result.output
     assert not (tmp_path / "pods.csv").exists()
 
@@ -124,7 +121,7 @@ def test_a_quoted_newline_is_one_row(api, tmp_path):
 
 
 def test_the_register_export_names_no_recipient(api):
-    """It is the community's own copy; handing data to another party is the POD list."""
+    """It is the community's own copy, and names nobody."""
     result = runner.invoke(
         app, ["export-csv", "--rec", "rec-a", "--recipient", "distributor-x", "--token", "t"]
     )
@@ -180,7 +177,7 @@ def test_local_runs_the_same_export_and_audits_it(local, monkeypatch, tmp_path):
     from celine.onboarding.outputs import csv_export
 
     async def _export(db, path, **kw):
-        assert kw["recipient_ref"] == "grid-operator"
+        assert "recipient_ref" not in kw
         path.write_bytes(POD_LIST)
         return 2
 
@@ -191,21 +188,21 @@ def test_local_runs_the_same_export_and_audits_it(local, monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert (tmp_path / "pods.csv").read_bytes() == POD_LIST
     assert local[-1]["action"] == "export_pod_list"
-    assert "recipient=grid-operator" in local[-1]["detail"]
+    assert local[-1]["detail"] == "pods=2 offer=household-energy-flexibility"
 
 
 def test_local_refusal_is_reported_and_not_audited(local, monkeypatch, tmp_path):
     from celine.onboarding.outputs import csv_export
 
     async def _refuse(db, path, **kw):
-        raise ValueError("Recipient 'dso' is an alias of 'example-dso'.")
+        raise ValueError("Offer 'x's datasets do not agree on who consents.")
 
     monkeypatch.setattr(csv_export, "export_pod_list", _refuse)
 
     result = pod_list(tmp_path, "--local")
 
     assert result.exit_code == 1
-    assert "Refused: Recipient 'dso' is an alias" in result.output
+    assert "Refused: Offer 'x's datasets do not agree" in result.output
     assert not (tmp_path / "pods.csv").exists()
     assert local == []
 

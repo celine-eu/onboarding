@@ -8,9 +8,9 @@ These write to a temporary file, stream it, and delete it.
 `onboarding-cli` calls these same routes, so the console and the terminal run one
 implementation and write the same audit rows.
 
-Only the supply-point list is a disclosure: it names its recipient — the offer's
-controller — and records `DataDisclosed` in ds-provenance before the file exists.
-The register export is the community's own copy and names no recipient.
+Neither is a disclosure. The register export is the community's own copy; the
+supply-point list is its own dated evidence under one offer (ADR-0010). Neither
+names a recipient, and neither records anything with the dataspace.
 """
 
 from __future__ import annotations
@@ -43,20 +43,19 @@ class CsvExportRequest(BaseModel):
 
 
 class PodListRequest(BaseModel):
+    """The offer, and nothing else.
+
+    ``recipient_ref`` was dropped (ADR-0010, amended 2026-09-25): the party the
+    offer's consent is read for comes from the offer. A caller still sending it
+    is not refused — unknown fields are ignored, like any other — so a body
+    written for the old contract keeps working, and names nobody.
+    """
+
     offer_id: str = Field(
         ...,
         description="Consent is purpose-scoped: somebody who agreed to a different "
-        "offer has not agreed to this handover.",
+        "offer has not agreed to this one.",
     )
-    recipient_ref: str = Field(
-        ...,
-        description="Who receives the list: the offer's controller, by organisation "
-        "id or DID — never an alias. Any other party is refused with a 422: the "
-        "people in the list consented to disclosure to that controller only. The "
-        "disclosure is recorded against the controller's DID.",
-    )
-    purpose: list[str] = []
-    agreement_ref: str | None = None
 
 
 def _staging_dir() -> Path:
@@ -121,10 +120,11 @@ async def export_pods(
     db: DbDep,
     rec_slug: RecDep,
 ):
-    """The supply points whose owners agreed, and nothing else.
+    """The community's dated evidence for one offer, streamed as CSV.
 
-    A snapshot: somebody who withdraws stays on the recipient's copy until the
-    next run, so the re-export cadence *is* the revocation latency. The file's
+    Kept by the community and recorded as a disclosure nowhere (ADR-0010): which
+    supply points stood authorised, and which members had withdrawn, at
+    generation time. A snapshot — a later decision is not in it. The file's
     header says so.
     """
     generated_at = datetime.now(UTC)
@@ -141,10 +141,7 @@ async def export_pods(
             path,
             rec_slug=rec_slug,
             offer_id=body.offer_id,
-            recipient_ref=body.recipient_ref,
             generated_at=generated_at,
-            purpose=body.purpose,
-            agreement_ref=body.agreement_ref,
         )
     except ValueError as exc:
         path.unlink(missing_ok=True)
@@ -161,6 +158,6 @@ async def export_pods(
         actor=actor,
         rec_slug=rec_slug,
         ip=ip,
-        detail=f"pods={count} offer={body.offer_id} recipient={body.recipient_ref}",
+        detail=f"pods={count} offer={body.offer_id}",
     )
     return _streamed(path, f"{rec_slug}-pods-{stamp}.csv")

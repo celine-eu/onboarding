@@ -123,7 +123,8 @@ CALLS: tuple[Call, ...] = (
         "/consent/admin/shares",
         why=(
             "Read that decision back before exporting against it: who currently "
-            "consents to this offer. This one is still the service client's — "
+            "consents to this offer, at every connector holding it (ADR-0008). "
+            "This one is still the service client's — "
             "`connector.consent.audience` did not move — and what lets the POD "
             "export stop reading the intake form."
         ),
@@ -164,21 +165,14 @@ CALLS: tuple[Call, ...] = (
     ),
     Call(
         "connector",
-        "post",
-        "/admin/disclosure",
-        sends=frozenset(
-            {
-                "offer_id",
-                "recipient_ref",
-                "purpose",
-                "columns",
-                "subject_count",
-                "source_ref",
-                "disclosed_by",
-                "agreement_ref",
-                "event_id",
-            }
+        "get",
+        "/consent/admin/decisions",
+        why=(
+            "Who withdrew, for the POD export's withdrawn column (ADR-0009): the "
+            "community's own members' decisions on one offer, granted and withdrawn, "
+            "at every connector holding it, paged to a null cursor. The "
+            "organisation's client, like the per-subject read-back — the service "
+            "client is refused. ds ADR-0021."
         ),
-        why="Record a POD-list handover before it happens.",
     ),
 )

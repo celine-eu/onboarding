@@ -814,6 +814,21 @@ async def test_an_unreachable_registry_is_not_a_missing_owner(monkeypatch, _cons
         await di.resolve_consumer_did("grid-operator")
 
 
+#: The community's own connector, as `consent_routes` names it for an offer no
+#: other participant holds. Routing itself is `test_pod_list_routing.py`.
+OWN_ROUTE = di.ConsentRoute(
+    offer_id="household-energy-flexibility",
+    connector_url="http://connector:30006",
+    collector="example-rec",
+)
+HOLDER_ROUTE = di.ConsentRoute(
+    offer_id="household-energy-flexibility",
+    connector_url="http://dso-connector:30007",
+    collector="example-rec",
+    holder="example-dso",
+)
+
+
 async def test_reads_the_audience_for_an_offer(monkeypatch, _consent_plane):
     captured: dict = {}
 
@@ -824,14 +839,33 @@ async def test_reads_the_audience_for_an_offer(monkeypatch, _consent_plane):
     _patch_httpx(monkeypatch, handler)
 
     audience = await di.get_offer_audience(
-        "household-energy-flexibility", "did:web:grid-operator.dataspaces.localhost"
+        "household-energy-flexibility", "did:web:grid-operator.dataspaces.localhost", [OWN_ROUTE]
     )
 
-    assert audience.dataset_id == "datasets.silver.meters_15m"
+    assert [d.dataset_id for d in audience.datasets] == ["datasets.silver.meters_15m"]
     assert audience.subject_ids == frozenset({"did:web:users.example:a", "did:web:users.example:b"})
-    assert audience.subject_count == 2
-    assert "consent/admin/shares" in captured["url"]
+    assert audience.datasets[0].subject_count == 2
+    assert audience.routes == (OWN_ROUTE,)
+    assert captured["url"].startswith("http://connector:30006/consent/admin/shares")
     assert "consumer_id=did%3Aweb%3Agrid-operator.dataspaces.localhost" in captured["url"]
+
+
+async def test_the_audience_is_read_at_the_route_given_not_the_setting(monkeypatch, _consent_plane):
+    """`DS_CONNECTOR_URL` is the community's own connector, which is not where
+    every offer's data is. The caller names the route; this function asks it."""
+    asked: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        asked.append(req.url.host)
+        return httpx.Response(200, json=AUDIENCE_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    audience = await di.get_offer_audience(
+        "household-energy-flexibility", "did:web:x", [HOLDER_ROUTE]
+    )
+
+    assert asked == ["dso-connector"]
+    assert audience.datasets[0].held_by == "example-dso"
 
 
 async def test_the_audience_call_sends_no_purpose(monkeypatch, _consent_plane):
@@ -848,18 +882,41 @@ async def test_the_audience_call_sends_no_purpose(monkeypatch, _consent_plane):
         return httpx.Response(200, json=AUDIENCE_RESPONSE)
 
     _patch_httpx(monkeypatch, handler)
-    await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+    await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
 
     assert set(captured["query"].keys()) == {"offer_id", "consumer_id"}
 
 
-async def test_two_datasets_are_refused_rather_than_merged(monkeypatch, _consent_plane):
-    """One file cannot honestly carry two audiences.
+async def test_datasets_that_agree_are_one_audience(monkeypatch, _consent_plane):
+    """The check is per dataset; one distinct set across them is the offer's audience.
 
-    The connector deliberately does not flatten them: reading the first element
-    would be right today and silently wrong the day a second dataset declares
-    the offer — an export made against one dataset's audience and drawn from
-    two. So it is refused here rather than merged.
+    The connector deliberately does not flatten them, and this does not either:
+    it compares them. Identical sets are the ordinary case, and one list is then
+    exactly true of the whole offer.
+    """
+    body = {
+        **AUDIENCE_RESPONSE,
+        "datasets": [
+            AUDIENCE_RESPONSE["datasets"][0],
+            {**AUDIENCE_RESPONSE["datasets"][0], "dataset_id": "datasets.silver.meters_1h"},
+        ],
+    }
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=body))
+
+    audience = await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
+
+    assert [d.dataset_id for d in audience.datasets] == [
+        "datasets.silver.meters_15m",
+        "datasets.silver.meters_1h",
+    ]
+    assert audience.subject_ids == frozenset({"did:web:users.example:a", "did:web:users.example:b"})
+
+
+async def test_datasets_that_disagree_are_refused_rather_than_merged(monkeypatch, _consent_plane):
+    """Neither union nor intersection: the offer's statement is not true of both.
+
+    Union would list someone who withdrew from one dataset; intersection would
+    empty silently when a dataset nobody was asked about is bound.
     """
     body = {
         **AUDIENCE_RESPONSE,
@@ -870,19 +927,41 @@ async def test_two_datasets_are_refused_rather_than_merged(monkeypatch, _consent
     }
     _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=body))
 
-    with pytest.raises(ValueError, match="two audiences"):
-        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+    with pytest.raises(di.AudienceSplitError, match="do not agree") as refused:
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
+
+    assert "2 subjects: datasets.silver.meters_15m" in str(refused.value)
+    assert "0 subjects: datasets.silver.meters_1h" in str(refused.value)
+    assert "2 subjects are in some of these audiences and not in others" in str(refused.value)
+    # A caller catching ValueError — the export's API maps it to a 422 — still does.
+    assert isinstance(refused.value, ValueError)
 
 
-@pytest.mark.parametrize("status", [409, 422])
-async def test_the_connectors_answers_about_the_offer_are_caller_errors(
-    monkeypatch, _consent_plane, status
-):
-    """Unknown offer, or one that is disclosed rather than consented."""
-    _patch_httpx(monkeypatch, lambda req: httpx.Response(status, text="nope"))
+async def test_a_contract_offer_is_a_caller_error(monkeypatch, _consent_plane):
+    """Disclosed, not consented: a property of the offer, wherever it is asked."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(409, text="not consent-based"))
 
-    with pytest.raises(ValueError, match="refused to report an audience"):
-        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+    with pytest.raises(ValueError, match="not consent-based"):
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
+
+
+async def test_a_route_holding_nothing_is_not_the_offer_being_wrong(monkeypatch, _consent_plane):
+    """A 422 is that connector holding no dataset for the offer. With no other
+    route holding one there is nothing to export — refused, pointing at the
+    routing rather than at the caller for naming the offer."""
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(422, text="resolves to no dataset"))
+
+    with pytest.raises(ValueError, match="holds a dataset") as refused:
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
+
+    assert "dataspace.connectors" in str(refused.value)
+    assert "caller" not in str(refused.value)
+
+
+async def test_no_route_is_refused_without_naming_a_setting(monkeypatch, _consent_plane):
+    with pytest.raises(RuntimeError) as refused:
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [])
+    assert "DS_CONNECTOR_URL" not in str(refused.value)
 
 
 async def test_an_unreachable_connector_stops_the_export(monkeypatch, _consent_plane):
@@ -890,7 +969,26 @@ async def test_an_unreachable_connector_stops_the_export(monkeypatch, _consent_p
     _patch_httpx(monkeypatch, lambda req: httpx.Response(500, text="boom"))
 
     with pytest.raises(RuntimeError, match="must not proceed"):
-        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
+
+
+async def test_one_unreachable_holder_stops_the_export_even_when_another_answered(
+    monkeypatch, _consent_plane
+):
+    """A holder that cannot be read is not a holder that holds nothing: its
+    audience is unknown, so the agreement cannot be checked."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "dso-connector":
+            return httpx.Response(503, text="down")
+        return httpx.Response(200, json=AUDIENCE_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+
+    with pytest.raises(RuntimeError, match="example-dso's connector answered 503"):
+        await di.get_offer_audience(
+            "household-energy-flexibility", "did:web:x", [OWN_ROUTE, HOLDER_ROUTE]
+        )
 
 
 async def test_an_empty_dataset_list_is_not_read_as_nobody(monkeypatch, _consent_plane):
@@ -901,7 +999,7 @@ async def test_an_empty_dataset_list_is_not_read_as_nobody(monkeypatch, _consent
     )
 
     with pytest.raises(RuntimeError, match="no dataset"):
-        await di.get_offer_audience("household-energy-flexibility", "did:web:x")
+        await di.get_offer_audience("household-energy-flexibility", "did:web:x", [OWN_ROUTE])
 
 
 # ── Phase 1: provisioning is a function ───────────────────────────
@@ -1159,3 +1257,18 @@ class TestTheFunnelDoesNotGuardIssuance:
         await di.provision_user_identity(submission)
 
         di._token_provider.get_token.assert_awaited_once()
+
+
+async def test_a_decisions_list_that_repeats_its_cursor_is_not_read_as_complete(monkeypatch):
+    """Only a null cursor ends the list; one handed back twice would loop forever
+    or, cut short, read as a shorter list of withdrawals."""
+
+    async def _org(alias):
+        return {"Authorization": "Bearer org"}
+
+    monkeypatch.setattr(di, "organisation_auth_headers", _org)
+    page = {"offer_id": "o", "datasets": ["d"], "limit": 100, "subjects": [], "next_cursor": "c1"}
+    _patch_httpx(monkeypatch, lambda req: httpx.Response(200, json=page))
+
+    with pytest.raises(RuntimeError, match="already issued"):
+        await di.get_offer_decisions("o", [OWN_ROUTE])

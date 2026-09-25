@@ -81,44 +81,50 @@ many rows).
 > the file as sensitive: store it encrypted, restrict access, and delete it when
 > the purpose is fulfilled.
 
-### The supply-point list for a distributor
+### The supply-point list
 
-A distributor asking which supply points it may release does not need the
-register. It needs the PODs. `export-pod-list` produces exactly that and nothing
-else — minimisation is the shape of the command rather than step 3 of a procedure
+`export-pod-list` is the community's own dated evidence of which supply points
+stood authorised under one sharing offer — for the collector that took the
+decisions and has to be able to demonstrate them. It is not how a holder learns
+the list: the supply points travel with each decision to the holder's connector
+([ADR-0007](decisions/ADR-0007-an-offer-is-recorded-at-every-connector-that-holds-its-data.md)),
+whose data plane filters on them. The file carries the PODs and nothing else —
+minimisation is the shape of the command rather than step 3 of a procedure
 someone skips:
 
 ```bash
-task export-pod-list -- --rec my-rec \
-  --offer household-energy-flexibility \
-  --recipient grid-operator \
-  --purpose FlexibilityResearch \
-  --agreement-ref dpa-participation-1.0
+task export-pod-list -- --rec my-rec --offer household-energy-flexibility
 ```
 
-- **The connector decides who is in the list.** When `DS_CONNECTOR_URL` is set,
-  the export asks `GET /consent/admin/shares` who currently consents to that
-  offer and joins the answer to members by their dataspace DID. Consent is
-  purpose-scoped: agreeing to a different offer is not agreeing to this
-  handover, and the connector enforces that server-side by keying its answer on
-  the offer.
-- **The recipient comes from the offer.** Its `recipients.recipient` is an owner
-  alias; the identity registry resolves that to the DID the consent plane is
-  keyed by. Nothing else names the recipient — the person consented to
-  disclosure to the party *that offer* names, so a manifest binding or the
-  community's grid operator must not stand in for it. (The field was called
+- **The connectors holding the offer decide who is in the list.** When
+  `DS_CONNECTOR_URL` is set, the export asks `GET /consent/admin/shares` who
+  currently consents to that offer at **every connector the REC's
+  `dataspace.connectors` routes it to** — the same routing a member's decision
+  is written with, so an offer whose data sits at another participant's
+  connector is read there — and joins the answer to members by their dataspace
+  DID. A routed connector answering `422` holds no dataset for the offer and
+  contributes nothing. Consent is purpose-scoped: agreeing to a different offer
+  is not agreeing to this one, and the connector enforces that server-side by
+  keying its answer on the offer.
+- **Checked per dataset, exported per offer**
+  ([ADR-0008](decisions/ADR-0008-an-offers-audience-is-read-from-every-connector-that-holds-it.md)).
+  Each connector answers one subject set per dataset bound to the offer. When
+  every dataset, at every holder, has the same set, that set is the offer's
+  audience and the file's header names the datasets and holders it was computed
+  from. When they differ the export is refused, naming which datasets split and
+  by how much — a union would list someone who withdrew from one dataset, and an
+  intersection would empty silently the moment a dataset nobody was asked about
+  is bound.
+- **The party the consent is read for comes from the offer, and only from it.**
+  Its `recipients.recipient` is an owner alias; the identity registry resolves
+  that to the DID the consent plane is keyed by, and the file's header names it.
+  The caller names nobody — the export takes an offer and nothing else, because
+  the file goes to nobody (ADR-0010) — so a manifest binding, the community's grid
+  operator or a caller's guess cannot stand in for it. (The field was called
   `controller` and meant three things at once; the old spelling is still read, so
-  a connector that has not been upgraded keeps working.)
-- **And the recipient has to be that controller — the organisation, not an
-  alias.** `--recipient` (the console's `recipient_ref`) is accepted only when it
-  is the offer's controller, named by its identity-registry `id` or its DID. An
-  alias is refused even when it resolves to the controller: aliases exist so
-  governance files written for other deployments resolve to this one's
-  organisations, and a disclosure is addressed to an organisation. Anyone else is
-  refused before anything is recorded: a 422 in the console, `Refused: …` and
-  exit 1 here. The `DataDisclosed` event names the controller's DID — the same
-  recipient the file's header names. To send a list to a different organisation,
-  publish an offer that names it as its controller and let people consent to it.
+  a connector that has not been upgraded keeps working.) A request body that
+  still carries `recipient_ref` is answered as if it did not: unknown fields are
+  ignored.
 - **The registry says which supply points they hold.** The DIDs the connector
   returned go to `POST /admin/lookup/members-by-dids` on the rec-registry, and
   the PODs come from `Member.delivery_points` plus any commissioned meter's
@@ -127,15 +133,35 @@ task export-pod-list -- --rec my-rec \
   `did` is globally unique and the lookup is cross-community, and `pending`,
   `suspended` and `inactive` are all states in which the REC has said this person
   is not participating. Requires the `rec-registry.lookup` scope.
-- The file carries one column. No names, no hashes, no DIDs, no evidence bundle —
-  that material lives in the dataspace, where it is verifiable and revocable, and
-  a second copy is how two records of the same consent start to disagree.
+- **Who withdrew is reported as withdrawn**
+  ([ADR-0009](decisions/ADR-0009-a-withdrawal-is-reported-in-its-own-column.md)).
+  The audience lists standing grants only, so a member who withdrew would
+  otherwise look like one nobody asked. The export also reads
+  `GET /consent/admin/decisions` at every connector holding the offer — as the
+  community, with its own organisation client (`DS_ORG_CLIENT_SECRET`), every page
+  — and lists a member whose every decision is withdrawn. Their supply points come
+  from the registry like everybody else's.
+- The file has four columns and nothing else: `authorised_pod_code`, and
+  `withdrawn_pod_code` with `withdrawn_at` and `withdrawn_by` (`subject`,
+  `collector`, `operator` or `service`). Each row fills one side. A withdrawn
+  supply point is never in the authorised column, and a reader of the old single
+  `pod_code` column fails on the missing name rather than reading a withdrawal as
+  an authorisation. No names, no hashes, no DIDs, no evidence bundle — that
+  material lives in the dataspace, where it is verifiable and revocable, and a
+  second copy is how two records of the same consent start to disagree.
+- A connector that serves no decisions list (an older ds) does not stop the
+  export: the authorised column is still true, and the header names that holder
+  under `Withdrawals NOT reported`. Without a connector at all the header says
+  withdrawals are not reported.
 - The header carries the offer's own terms — controller, purpose, coverage,
   resolution, measures, retention — read from the published vocabulary. They
   describe what was consented to and are uniform across everyone who accepted
   the offer, which is why they are not collected from each person.
-- A `DataDisclosed` event records the handover, before the file is written. A
-  refusal means no file.
+- **Evidence, not a disclosure**
+  ([ADR-0010](decisions/ADR-0010-the-supply-point-list-is-evidence-not-a-disclosure.md)).
+  The file is kept by the community and handed to nobody, so nothing is recorded
+  as a `DataDisclosed` and nothing is posted to any connector — a disclosure record
+  would assert a release that never happens. A refusal means no file.
 
 **Why not the intake form.** A submission records what somebody agreed to on one
 afternoon, and the export asks two questions of which it answers neither well.
@@ -153,11 +179,10 @@ a POD an operator corrected or retired in the registry never reached
 service never registered: a member the REC manager imported consents through the
 same offer and was silently absent from every export.
 
-**The file is a snapshot, so the re-export cadence is the revocation latency.**
-Somebody who withdraws stays on the recipient's copy until the next run. The
-header states when it was generated and that it goes stale; agree a cadence, tell
-members what it is, and hold to it. This is inherent to an offline handover — it
-disappears if the distributor ever reads consent directly.
+**The file is a snapshot.** It records who stood authorised, and who had
+withdrawn, at the moment it was generated, and the header says when that was. A
+decision taken afterwards is in the next export, not this one. The holder does not
+depend on it: its data plane reads the decisions themselves.
 
 **Where there is nothing to ask, the local record still decides.** A deployment
 with no dataspace has no connector holding a consent decision; one with no
@@ -178,7 +203,10 @@ file:
 | the offer names no controller | there is nothing to resolve a recipient from, and guessing one is undetectable in the answer |
 | the controller is unknown to the registry | register the owner first |
 | the controller holds no DID | registered but not onboarded into the dataspace — the consent plane has no key for it |
-| the offer resolves to more than one dataset | one file cannot honestly carry two audiences |
+| no connector the REC routes the offer to holds a dataset for it | there is no audience to read; check `dataspace.connectors` |
+| the offer's datasets do not agree on who consents — in the audience, or a member granted in one dataset (or at one holder) and withdrawn in another | the offer's statement is no longer true of all its datasets, so no one list is its audience |
+| a member the audience authorises is withdrawn in every decision | the two reads disagree, and either column would state one as fact |
+| a connector's decisions list refuses or fails (anything but "no such route") | who withdrew is unknown, which is not the same as nobody withdrawing |
 | the connector or identity registry is unreachable | who consents is unknown, which is not the same as nobody consenting |
 | the rec-registry refuses the supply-point lookup | a denial is not "these people hold nothing"; treating it as one exports fewer supply points than were authorised, and says nothing about it |
 
@@ -486,9 +514,9 @@ Three things about it are load-bearing:
 
 `GET /api/me/data-sharing/history` reads the member's own provenance record
 (`GET {DS_PROVENANCE_URL}/prov/my/events`) under the same credential. That
-setting is **read-only and for this route alone**: disclosures are written
-through the connector's `POST /admin/disclosure`, which computes the
-consent-snapshot hash a disclosure record requires. Unset returns an empty list —
+setting is **read-only and for this route alone**: this service writes nothing
+to provenance, and records no disclosure anywhere (ADR-0010). Unset returns an
+empty list —
 the decisions stand without their history.
 
 ### The second door — becoming a subject from the wizard

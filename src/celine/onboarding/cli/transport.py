@@ -74,9 +74,6 @@ class Transport(Protocol):
         rec: str,
         *,
         offer_id: str,
-        recipient_ref: str,
-        purpose: list[str],
-        agreement_ref: str | None,
     ) -> bytes: ...
 
     async def aclose(self) -> None: ...
@@ -229,14 +226,8 @@ class ApiTransport:
     async def export_csv(self, rec):
         return (await self._request("POST", f"/api/admin/{rec}/exports/csv", json={})).content
 
-    async def export_pod_list(self, rec, *, offer_id, recipient_ref, purpose, agreement_ref):
-        body: dict[str, Any] = {
-            "offer_id": offer_id,
-            "recipient_ref": recipient_ref,
-            "purpose": purpose,
-        }
-        if agreement_ref:
-            body["agreement_ref"] = agreement_ref
+    async def export_pod_list(self, rec, *, offer_id):
+        body: dict[str, Any] = {"offer_id": offer_id}
         return (
             await self._request("POST", f"/api/admin/{rec}/exports/pod-list", json=body)
         ).content
@@ -494,7 +485,7 @@ class LocalTransport:
             lambda count: f"rows={count}",
         )
 
-    async def export_pod_list(self, rec, *, offer_id, recipient_ref, purpose, agreement_ref):
+    async def export_pod_list(self, rec, *, offer_id):
         from datetime import UTC, datetime
 
         from celine.onboarding.outputs.csv_export import export_pod_list
@@ -506,13 +497,10 @@ class LocalTransport:
                 path,
                 rec_slug=rec,
                 offer_id=offer_id,
-                recipient_ref=recipient_ref,
                 generated_at=datetime.now(UTC),
-                purpose=purpose,
-                agreement_ref=agreement_ref,
             ),
             "export_pod_list",
-            lambda count: f"pods={count} offer={offer_id} recipient={recipient_ref}",
+            lambda count: f"pods={count} offer={offer_id}",
         )
 
     async def aclose(self) -> None:

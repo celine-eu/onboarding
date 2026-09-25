@@ -835,9 +835,9 @@ async def get_history(user: JwtUser) -> tuple[SharingState, list[dict[str, Any]]
     `POST /admin/disclosure`, which computes the consent-snapshot hash a
     disclosure record requires. Nothing about that changed: this is the member's
     Art. 15 read of events already recorded, and no disclosure is ever written
-    through it. Unset returns an empty list rather than failing — the decisions
-    stand without their history, and failing here would make the whole page
-    unusable for a detail.
+    through it (this service records none, ADR-0010). Unset returns an empty
+    list rather than failing — the decisions stand without their history, and
+    failing here would make the whole page unusable for a detail.
     """
     state, _, credential = await _resolve(user, provision=False)
     if state is not SharingState.OK:

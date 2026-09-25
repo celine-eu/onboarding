@@ -119,7 +119,7 @@ tasks:
       - uv run onboarding-cli export-csv {{.CLI_ARGS}}
 
   export-pod-list:
-    desc: "Export consented supply points for the offer's controller, via the admin API (snapshot — re-export on cadence)"
+    desc: "The community's supply-point evidence for one offer — authorised and withdrawn — via the admin API (snapshot; not a disclosure)"
     dir: "{{.SRC_DIR}}"
     cmds:
       - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}

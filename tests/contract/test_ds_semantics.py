@@ -309,30 +309,6 @@ def test_a_contract_offer_is_refused_before_anything_else(auth):
     )
 
 
-def test_the_disclosure_route_is_ours_to_call(auth):
-    """Scope, not schema.
-
-    `connector.disclosure.record` is on this service's client. A 403 here would
-    mean the grant went, and every POD export would stop — so the assertion is
-    that we get the *dataset* complaint, not the permission one.
-
-    The offer id is deliberately nonsense, so nothing is recorded.
-    """
-    r = httpx.post(
-        f"{CONNECTOR_URL}/admin/disclosure",
-        headers=auth,
-        timeout=10,
-        json={"offer_id": "no-such-offer-contract-check", "recipient_ref": "probe"},
-    )
-    assert r.status_code != 403, (
-        f"403 from /admin/disclosure — {CLIENT_ID} has lost "
-        "connector.disclosure.record, and every POD export now fails"
-    )
-    assert r.status_code == 422, (
-        f"expected 422 naming the unknown offer, got {r.status_code}: {r.text[:200]}"
-    )
-
-
 def test_a_consent_offer_is_still_published_and_consent_based(auth):
     """Phase 0 validates recorded ids against this vocabulary."""
     r = httpx.get(f"{CONNECTOR_URL}/ns/sharing-offers", timeout=10)

@@ -73,6 +73,20 @@ PROBE_SUBJECT = _env("DS_CONTRACT_PROBE_SUBJECT")
 ORG_CLIENT_ID = _env("DS_CONTRACT_ORG_CLIENT_ID")
 ORG_CLIENT_SECRET = _env("DS_CONTRACT_ORG_CLIENT_SECRET")
 
+#: **Another participant's connector**, and an offer whose data it holds and the
+#: community's own connector (`DS_CONTRACT_CONNECTOR_URL`) does not — the case
+#: the POD export has to route (ADR-0008). Read-only checks. Unlike every other
+#: group these are **deselected**, not skipped, while both are unset, and the
+#: summary says so: a deployment that runs this suite and treats any skip as a
+#: failure keeps passing until it names a holder, and is told that it has not.
+HOLDER_CONNECTOR_URL = _env("DS_CONTRACT_HOLDER_CONNECTOR_URL")
+HOLDER_OFFER = _env("DS_CONTRACT_HOLDER_OFFER")
+HOLDER = {
+    "DS_CONTRACT_HOLDER_CONNECTOR_URL": HOLDER_CONNECTOR_URL,
+    "DS_CONTRACT_HOLDER_OFFER": HOLDER_OFFER,
+}
+HOLDER_UNSET = not any(HOLDER.values())
+
 ADDRESSES = {
     "DS_CONTRACT_IR_URL": IR_URL,
     "DS_CONTRACT_CONNECTOR_URL": CONNECTOR_URL,
@@ -108,6 +122,10 @@ def pytest_configure(config):
         "markers",
         "declares_no_contract_offer: runs only where DS_CONTRACT_CONTRACT_OFFER=none",
     )
+    config.addinivalue_line(
+        "markers",
+        "needs_holder: needs DS_CONTRACT_HOLDER_* — deselected, loudly, while both are unset",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -118,13 +136,31 @@ def pytest_collection_modifyitems(config, items):
     The count still shows in pytest's summary line.
     """
     # Exactly one of the two sets applies to a deployment, so neither ever skips.
-    unwanted = "needs_contract_offer" if NO_CONTRACT_OFFER else "declares_no_contract_offer"
+    unwanted = {"needs_contract_offer" if NO_CONTRACT_OFFER else "declares_no_contract_offer"}
+    if HOLDER_UNSET:
+        unwanted.add("needs_holder")
     kept, dropped = [], []
     for item in items:
-        (dropped if item.get_closest_marker(unwanted) else kept).append(item)
+        marked = any(item.get_closest_marker(name) for name in unwanted)
+        (dropped if marked else kept).append(item)
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = kept
+    config._holder_deselected = HOLDER_UNSET and any(
+        item.get_closest_marker("needs_holder") for item in dropped
+    )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say that the holder checks did not run, in words, not only in a count."""
+    if getattr(config, "_holder_deselected", False):
+        terminalreporter.write_line(
+            "DS CONTRACT: the holder checks were DESELECTED — "
+            "DS_CONTRACT_HOLDER_CONNECTOR_URL and DS_CONTRACT_HOLDER_OFFER are unset, "
+            "so reading an offer at another participant's connector was not checked.",
+            yellow=True,
+            bold=True,
+        )
 
 
 def skip_unconfigured(
