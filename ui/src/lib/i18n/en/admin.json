@@ -3,7 +3,8 @@
 	"nav": {
 		"submissions": "Applications",
 		"audit": "Audit log",
-		"exports": "Exports"
+		"exports": "Exports",
+		"areas": "Areas"
 	},
 	"choose_rec": "Choose community...",
 	"profile": "Profile",
@@ -98,6 +99,10 @@
 		"fiscal_code": "Fiscal code",
 		"pod": "POD",
 		"supply_municipality": "Supply municipality",
+		"supply_address": "Supply address (as checked)",
+		"supply_boundary": "Primary substation",
+		"supply_boundary_in_area": "{{id}}, area {{area}}",
+		"supply_boundary_no_area": "{{id}}, in no area of this community",
 		"hide_identifiers": "Hide identifiers",
 		"reveal_identifiers": "Show fiscal code and POD",
 		"reveal_audited": "Every unmasked view is recorded in the audit log.",
@@ -171,5 +176,24 @@
 	"subject_type": {
 		"user": "user",
 		"service": "service"
+	},
+	"areas": {
+		"title": "Areas in the registry",
+		"lead": "Whether the REC registry's areas match this community's template. The template is the source of truth; a realm admin pushes it with the registry sync.",
+		"community": "Registry community: {{community}}",
+		"matches": "The registry matches the template.",
+		"drift": "The registry differs from the template. A realm admin can run the registry sync (onboarding-cli registry-sync) to bring it in line.",
+		"not_synced": "This community's areas are not primary-substation boundaries, so nothing of its template is synced to the registry.",
+		"col_area": "Area",
+		"col_boundary": "Primary substation",
+		"col_state": "State",
+		"held_by": "held by {{areas}}",
+		"state": {
+			"matches": "matches",
+			"missing": "missing from the registry",
+			"differs": "differs",
+			"undeclared": "not in the template"
+		},
+		"failed": "The registry could not be read: {{message}}"
 	}
 }

@@ -31,6 +31,7 @@ async def _validate_dataspace_config() -> None:
         load_manifest,
         organization_for,
         rec_registry_binding,
+        validate_boundary_template,
         validate_data_sharing_texts,
         validate_organization,
     )
@@ -43,6 +44,7 @@ async def _validate_dataspace_config() -> None:
         validate_organization(manifest, where=f"REC {slug!r}")
         binding = dataspace_binding(slug)  # raises on a malformed block
         registry = rec_registry_binding(slug)  # raises on a malformed block
+        validate_boundary_template(manifest, where=f"REC {slug!r}")
         validate_data_sharing_texts(
             ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
             where=f"REC {slug!r}",
@@ -73,6 +75,24 @@ async def _validate_dataspace_config() -> None:
                 f"somebody who is invisible to every pipeline downstream.\n\n"
                 f"  1. Set REC_REGISTRY_URL in your .env file\n"
                 f"  2. Or remove the rec_registry block from the manifest\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+            )
+
+        # A community whose areas are boundaries decides eligibility and the
+        # member's area through the Digital Twin, and fails closed without it:
+        # with no address configured nobody could pass its eligibility step.
+        if registry.uses_boundaries and not settings.digital_twin_url:
+            raise RuntimeError(
+                f"\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"  DIGITAL_TWIN_URL is required (REC: {slug})\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"REC '{slug}' declares its areas as primary-substation boundaries,\n"
+                f"so every eligibility check, submit and approval asks the Digital\n"
+                f"Twin which boundary the supply address falls in. With no URL\n"
+                f"configured each of them would fail closed.\n\n"
+                f"  1. Set DIGITAL_TWIN_URL in your .env file\n"
+                f"  2. Or declare the areas as municipality lists in the manifest\n\n"
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 
@@ -601,8 +621,13 @@ def create_app() -> FastAPI:
         # report. Moved to 0.2.0 for the member's self-service surface
         # (`/api/me/data-sharing`) and the `identity` block on its response; to
         # 0.3.0 for the enablement step's `invitation`, the submission's `locale`,
-        # the submission's phone-verification waiver and its identity verification.
-        version="0.3.0",
+        # the submission's phone-verification waiver and its identity verification;
+        # to 0.4.0 for the registry sync and drift routes (`renamed` and
+        # `renamed_from` in the sync's answer, `recs.drift`), the supply address
+        # checked by boundary and find-by-address's `{matches, unchecked}` answer,
+        # the eligibility answer without `lat`/`lng` and the admin read's
+        # `supply_boundary_area_name`.
+        version="0.4.0",
         lifespan=lifespan,
     )
 

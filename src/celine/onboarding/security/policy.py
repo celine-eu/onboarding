@@ -39,6 +39,13 @@ class Capability(enum.StrEnum):
     """
 
     RECS_READ = "recs.read"
+    #: Realm-level `admins` only, and no scope: the registry sync of a REC's
+    #: template areas. See `realm_only_actions` in the rego.
+    RECS_WRITE = "recs.write"
+    #: The console's drift check of a REC's registry areas (D55): realm-level
+    #: `admins`, and that REC's own `managers` and `admins`; no scope. See
+    #: `realm_required_groups` and `people_only_actions` in the rego.
+    RECS_DRIFT = "recs.drift"
     SUBMISSIONS_READ = "submissions.read"
     SUBMISSIONS_REVEAL = "submissions.reveal"
     SUBMISSIONS_WRITE = "submissions.write"

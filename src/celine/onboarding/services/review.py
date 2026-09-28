@@ -107,6 +107,15 @@ async def transition(
     """
     previous = submission.status
     check(submission, target)
+
+    if target == SubmissionStatus.SUBMITTED:
+        # For a template with boundaries: resolved from the submission's own
+        # supply address, and refused outside the community (REQ-0007). Raises
+        # `BoundaryUnavailableError` when it cannot be checked, and nothing is
+        # committed.
+        from celine.onboarding.services import supply_boundary
+
+        await supply_boundary.resolve_for_submit(submission)
     waived = target == SubmissionStatus.APPROVED and phone_verification_waived(submission)
 
     if target == SubmissionStatus.APPROVED:

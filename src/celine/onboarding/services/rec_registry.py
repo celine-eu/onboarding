@@ -50,10 +50,13 @@ _client: Any | None = None
 def _get_client():
     """The registry client, built once.
 
-    Authenticated with the same service token the rest of the integration uses.
-    That works because every outbound call this app makes is issued by one realm
-    (``celine``) — the registry validates against it just as the dataspace
-    services do.
+    Authenticated as :func:`~celine.onboarding.services.service_auth.registry_token_provider`
+    (REQ-0022): ``svc-onboarding`` when the dataspace is disabled, and the
+    dataspace client ``svc-ds-onboarding`` only when ``DATASPACE_ENABLED``. The
+    dataspace client is declared only on a realm that hosts the dataspace, so
+    without it approval could not register anybody (D60). Every outbound call
+    this app makes is issued by one realm (``celine``), and the registry
+    validates against it.
 
     The client needs ``rec-registry.members.write`` to register a member and
     ``rec-registry.lookup`` to read supply points back — one grant for both
@@ -66,11 +69,11 @@ def _get_client():
     if _client is None:
         from celine.sdk.rec_registry.client import RecRegistryAdminClient
 
-        from celine.onboarding.services.dataspace_identity import _get_token_provider
+        from celine.onboarding.services.service_auth import registry_token_provider
 
         _client = RecRegistryAdminClient(
             base_url=settings.rec_registry_url.rstrip("/"),
-            token_provider=_get_token_provider(),
+            token_provider=registry_token_provider(),
         )
     return _client
 
@@ -85,7 +88,7 @@ def supply_municipality(submission: Submission) -> str | None:
 
     Neither source substring-matches the address, deliberately. Italian street
     names routinely contain other municipalities' names, so "Via Roma 1,
-    Lavarone" would match Roma. A discrete field is either right or absent, and
+    Springfield" would match Roma. A discrete field is either right or absent, and
     absent resolves to the community's default area.
     """
     geocoded = getattr(submission, "supply_municipality", None)
@@ -146,13 +149,28 @@ def build_member_payload(
     binding: template_service.RecRegistryBinding,
     *,
     keycloak_username: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
     """The member body, as the registry's own bundle schema expects it.
 
     ``key`` and ``user_id`` are different identifiers and deliberately so: the
     key is the registry's own handle on the member, the ``user_id`` is who they
     log in as. See :func:`member_user_id`.
+
+    ``area`` is the area already resolved by boundary, and is required for a
+    community whose areas are boundaries: its member's area is the boundary the
+    supply address falls in and nothing else (ADR-0013), so there is no
+    municipality or default to fall back to. For any other community it is
+    decided here from the municipality lists.
     """
+    if area is None:
+        if binding.uses_boundaries:
+            raise ValueError(
+                f"Submission {submission.ref}: this community's areas are boundaries, "
+                "and no area was resolved for the member"
+            )
+        area = binding.area_for(supply_municipality(submission))
+
     extra = submission.extra_data or {}
     name = " ".join(part for part in (submission.first_name, submission.last_name) if part).strip()
 
@@ -162,7 +180,7 @@ def build_member_payload(
         "name": name or submission.ref,
         "type": "schema:Person",
         "role": member_role(submission),
-        "area": binding.area_for(supply_municipality(submission)),
+        "area": area,
         "status": "active",
         "delivery_points": [],
         # No assets. What the wizard collects is **self-stated**: somebody
@@ -335,7 +353,20 @@ async def register_member(
         )
         return None
 
-    payload = build_member_payload(submission, binding, keycloak_username=keycloak_username)
+    area: str | None = None
+    if binding.uses_boundaries:
+        # Resolved again, from the supply address, against the template in force
+        # now (REQ-0008). Raises `BoundaryNotInCommunityError` for a boundary no
+        # area declares any more, and `BoundaryUnavailableError` when it cannot
+        # be resolved: either fails this step before anything is written, and a
+        # retry resolves again.
+        from celine.onboarding.services.supply_boundary import resolve_for_approval
+
+        area = await resolve_for_approval(submission, binding)
+
+    payload = build_member_payload(
+        submission, binding, keycloak_username=keycloak_username, area=area
+    )
 
     from celine.sdk.openapi.rec_registry.models import MemberCreate
 

@@ -10,7 +10,22 @@ from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.services import template_service
 
+#: Keyed by the connection's peer, as uvicorn resolved it (see :func:`peer_ip`).
 limiter = Limiter(key_func=get_remote_address)
+
+
+def peer_ip(request: Request) -> str:
+    """The client's address, for consent evidence and the audit trail.
+
+    The connection's peer as uvicorn resolved it, **never a request header**:
+    ``X-Forwarded-For`` and ``X-Real-IP`` are written by whoever sends the
+    request. Behind an ingress, uvicorn replaces the peer with the forwarded
+    client address only when the connection comes from an address listed in
+    ``FORWARDED_ALLOW_IPS``; from anywhere else the header is ignored
+    (REQ-0020). The rate limiter keys on the same value.
+    """
+    return request.client.host if request.client else "unknown"
+
 
 SESSION_TTL_SECONDS = 600
 

@@ -76,6 +76,8 @@ class Transport(Protocol):
         offer_id: str,
     ) -> bytes: ...
 
+    async def registry_sync(self, rec: str, *, dry_run: bool, prune: bool) -> dict: ...
+
     async def aclose(self) -> None: ...
 
 
@@ -232,16 +234,30 @@ class ApiTransport:
             await self._request("POST", f"/api/admin/{rec}/exports/pod-list", json=body)
         ).content
 
+    async def registry_sync(self, rec, *, dry_run, prune):
+        return (
+            await self._request(
+                "POST",
+                f"/api/admin/recs/{rec}/registry-sync",
+                params={"dry_run": str(dry_run).lower(), "prune": str(prune).lower()},
+            )
+        ).json()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
 
 def _detail(response: httpx.Response) -> str:
+    """The API's own sentence: a plain ``detail``, or ``{code, message}``."""
     try:
         body = response.json()
-        return body.get("detail") or response.text
+        detail = body.get("detail") or response.text
     except Exception:
         return response.text
+    if isinstance(detail, dict) and detail.get("message"):
+        code = detail.get("code")
+        return f"{detail['message']}" + (f" [{code}]" if code else "")
+    return detail if isinstance(detail, str) else str(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +518,29 @@ class LocalTransport:
             "export_pod_list",
             lambda count: f"pods={count} offer={offer_id}",
         )
+
+    async def registry_sync(self, rec, *, dry_run, prune):
+        """In process, through the same service layer as the route; audited as the CLI."""
+        from celine.onboarding.services import audit_service, registry_sync, template_service
+
+        async with await self._session() as db:
+            if rec not in template_service.get_slugs():
+                raise CliError(f"REC {rec!r} not found")
+            try:
+                report = await registry_sync.sync(rec, dry_run=dry_run, prune=prune)
+            except registry_sync.SyncRefusedError as exc:
+                raise CliError(f"Refused: {exc.detail} [{exc.code}]") from exc
+            if not dry_run:
+                await audit_service.record_and_commit(
+                    db,
+                    action="registry_sync",
+                    entity_type="rec",
+                    entity_id=rec,
+                    actor=self._actor,
+                    rec_slug=rec,
+                    detail=report.audit_detail(),
+                )
+            return report.to_dict()
 
     async def aclose(self) -> None:
         return None

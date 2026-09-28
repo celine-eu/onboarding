@@ -11,35 +11,33 @@ from celine.onboarding.services.eligibility import (
     RulesChecker,
 )
 
-FOLGARIA = AddressInfo(
-    lat=45.9,
-    lng=11.18,
-    display_name="Folgaria, Magnifica Comunità degli Altipiani Cimbri, TN",
-    municipality="Folgaria",
-    # Both names OSM returns for this point. The comune is the `city` key here
-    # and the `municipality` key is the Comunità di valle above it, which is why
-    # a rule is matched against every candidate rather than one chosen field.
-    municipality_candidates=("Folgaria", "Magnifica Comunità degli Altipiani Cimbri"),
-    postal_code="38064",
-    state="Trentino-Alto Adige/Südtirol",
+TOWN = AddressInfo(
+    lat=0.05,
+    lng=0.2,
+    display_name="Example Town, Example Valley Community, EX",
+    municipality="Example Town",
+    # Both names a geocoder can return for one point: the town is the `city`
+    # key and the `municipality` key is the valley community above it, which is
+    # why a rule is matched against every candidate rather than one chosen field.
+    municipality_candidates=("Example Town", "Example Valley Community"),
+    postal_code="00000",
+    state="Example Region",
     country_code="IT",
 )
 
 
 def test_a_rule_matches_a_candidate_that_is_not_the_display_name():
-    checker = RulesChecker(
-        [{"type": "municipality", "values": ["Magnifica Comunità degli Altipiani Cimbri"]}]
-    )
-    result = checker.check(FOLGARIA)
+    checker = RulesChecker([{"type": "municipality", "values": ["Example Valley Community"]}])
+    result = checker.check(TOWN)
     assert result.eligible
-    assert result.matched_value == "Magnifica Comunità degli Altipiani Cimbri"
+    assert result.matched_value == "Example Valley Community"
 
 
 def test_outside_the_coverage_area_is_refused_and_says_where():
-    checker = RulesChecker([{"type": "municipality", "values": ["Lavarone"]}])
-    result = checker.check(FOLGARIA)
+    checker = RulesChecker([{"type": "municipality", "values": ["Other Town"]}])
+    result = checker.check(TOWN)
     assert not result.eligible
-    assert "Folgaria" in result.reason
+    assert "Example Town" in result.reason
 
 
 def test_a_checker_never_fetches_an_address():
@@ -49,7 +47,7 @@ def test_a_checker_never_fetches_an_address():
     and a second one on the address path, where the caller had already resolved
     the address and thrown it away.
     """
-    checker = RulesChecker([{"type": "municipality", "values": ["Folgaria"]}])
+    checker = RulesChecker([{"type": "municipality", "values": ["Example Town"]}])
     with pytest.raises(ValueError, match="needs an address"):
         checker.check(None)
 
@@ -82,9 +80,9 @@ async def test_a_geocoder_timeout_is_not_an_ineligible_applicant(monkeypatch):
     monkeypatch.setattr(eligibility.httpx, "AsyncClient", lambda **kw: _Timeout())
 
     with pytest.raises(GeocoderUnavailableError):
-        await eligibility.reverse_geocode(45.9, 11.18)
+        await eligibility.reverse_geocode(0.05, 0.2)
     with pytest.raises(GeocoderUnavailableError):
-        await eligibility.geocode_address("Folgaria")
+        await eligibility.geocode_address("Example Town")
 
 
 @pytest.mark.asyncio
@@ -93,7 +91,7 @@ async def test_the_sweep_resolves_the_address_once_for_every_community(monkeypat
 
     async def _reverse(lat, lng):
         calls.append((lat, lng))
-        return FOLGARIA
+        return TOWN
 
     monkeypatch.setattr(eligibility, "reverse_geocode", _reverse)
     monkeypatch.setattr(template_service, "get_slugs", lambda: ["a", "b", "c"])
@@ -102,11 +100,12 @@ async def test_the_sweep_resolves_the_address_once_for_every_community(monkeypat
         "load_manifest",
         lambda slug: {
             "name": slug,
-            "coverage": {"type": "municipalities", "municipalities": ["Folgaria"]},
+            "coverage": {"type": "municipalities", "municipalities": ["Example Town"]},
         },
     )
 
-    found = await eligibility.find_recs_for_location(45.9, 11.18)
+    found = await eligibility.find_recs_for_location(0.05, 0.2)
 
     assert len(calls) == 1, "three communities, one address lookup"
-    assert [r["slug"] for r in found] == ["a", "b", "c"]
+    assert [r["slug"] for r in found["matches"]] == ["a", "b", "c"]
+    assert found["unchecked"] is False

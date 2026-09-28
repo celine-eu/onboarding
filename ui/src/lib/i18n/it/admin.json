@@ -3,7 +3,8 @@
 	"nav": {
 		"submissions": "Pratiche",
 		"audit": "Registro",
-		"exports": "Esportazioni"
+		"exports": "Esportazioni",
+		"areas": "Aree"
 	},
 	"choose_rec": "Scegli comunità...",
 	"profile": "Profilo",
@@ -98,6 +99,10 @@
 		"fiscal_code": "Codice fiscale",
 		"pod": "POD",
 		"supply_municipality": "Comune fornitura",
+		"supply_address": "Indirizzo di fornitura (verificato)",
+		"supply_boundary": "Cabina primaria",
+		"supply_boundary_in_area": "{{id}}, area {{area}}",
+		"supply_boundary_no_area": "{{id}}, in nessuna area di questa comunità",
 		"hide_identifiers": "Nascondi identificativi",
 		"reveal_identifiers": "Mostra codice fiscale e POD",
 		"reveal_audited": "Ogni visualizzazione in chiaro viene registrata nel registro.",
@@ -171,5 +176,24 @@
 	"subject_type": {
 		"user": "utente",
 		"service": "servizio"
+	},
+	"areas": {
+		"title": "Aree nel registro",
+		"lead": "Se le aree del registro REC corrispondono al modello di questa comunità. Il modello fa fede; un amministratore di piattaforma lo applica con la sincronizzazione del registro.",
+		"community": "Comunità nel registro: {{community}}",
+		"matches": "Il registro corrisponde al modello.",
+		"drift": "Il registro differisce dal modello. Un amministratore di piattaforma può eseguire la sincronizzazione (onboarding-cli registry-sync) per allinearlo.",
+		"not_synced": "Le aree di questa comunità non sono confini di cabina primaria, quindi nulla del suo modello viene sincronizzato con il registro.",
+		"col_area": "Area",
+		"col_boundary": "Cabina primaria",
+		"col_state": "Stato",
+		"held_by": "occupata da {{areas}}",
+		"state": {
+			"matches": "corrisponde",
+			"missing": "assente nel registro",
+			"differs": "diversa",
+			"undeclared": "non nel modello"
+		},
+		"failed": "Impossibile leggere il registro: {{message}}"
 	}
 }

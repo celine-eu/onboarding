@@ -65,6 +65,19 @@ class Submission(Base):
     # registered into, and the geocoder resolves it far more reliably than OCR
     # of a bill does. Encrypted like the rest of the address data it comes from.
     supply_municipality: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    # The primary-substation boundary the supply address falls in, for a
+    # community whose areas are boundaries (ADR-0013). Resolved by the service
+    # from the submission's own supply address on save, submit and approval —
+    # never sent by a client, and never beside the coordinates it came from,
+    # which are not stored at all. Encrypted like the address it derives from.
+    supply_boundary_id: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    supply_boundary_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # The supply address the wizard's eligibility step checked, as the geocoder
+    # takes it (`{"text": ...}`, `SupplyAddress`). What the service resolves the
+    # boundary from, before the scanned `extracted_data.indirizzo` (REQ-0018), so
+    # a community with document scanning off can still be submitted. Encrypted
+    # like the rest of the address data; never logged.
+    supply_address: Mapped[dict | None] = mapped_column(EncryptedJSON, nullable=True)
 
     # Session binding — token ties the session to the browser tab
     session_token: Mapped[str] = mapped_column(

@@ -476,13 +476,17 @@ class TestTheMigration:
         assert "DROP TABLE member_sharing_intents" in sql
         assert "UPDATE alembic_version SET version_num='0013'" in sql
 
-    def test_it_is_the_head(self):
+    def test_it_is_on_the_chain_to_the_head(self):
+        """The head moved on (0015, `test_supply_boundary.py` pins it); 0014 stays
+        on the one line of revisions leading to it."""
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         config = Config()
         config.set_main_option("script_location", str(ROOT / "alembic"))
-        assert ScriptDirectory.from_config(config).get_heads() == ["0014"]
+        script = ScriptDirectory.from_config(config)
+        assert len(script.get_heads()) == 1
+        assert "0014" in {rev.revision for rev in script.walk_revisions()}
 
 
 class TestTheWrite:

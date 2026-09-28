@@ -129,7 +129,8 @@ task export-pod-list -- --rec my-rec --offer household-energy-flexibility
   returned go to `POST /admin/lookup/members-by-dids` on the rec-registry, and
   the PODs come from `Member.delivery_points` plus any commissioned meter's
   `properties.pod` — the two are unioned, because an imported member may hold
-  either one alone. Only **active** members of **this** community are disclosed:
+  either one alone (imported members exist on local stacks only; on a deployed
+  realm every member enters through onboarding, [ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md)). Only **active** members of **this** community are disclosed:
   `did` is globally unique and the lookup is cross-community, and `pending`,
   `suspended` and `inactive` are all states in which the REC has said this person
   is not participating. Requires the `rec-registry.lookup` scope.
@@ -177,7 +178,9 @@ the source rather than in the snapshot.
 a POD an operator corrected or retired in the registry never reached
 `submissions.pod_code`. Reading the registry also answers for a participant this
 service never registered: a member the REC manager imported consents through the
-same offer and was silently absent from every export.
+same offer and was silently absent from every export. (On a deployed realm every
+member enters through onboarding, so that member exists on local stacks only —
+[ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md).)
 
 **The file is a snapshot.** It records who stood authorised, and who had
 withdrawn, at the moment it was generated, and the header says when that was. A
@@ -522,7 +525,9 @@ the decisions stand without their history.
 ### The second door — becoming a subject from the wizard
 
 A REC may admit members **offline**: screened on paper, meters installed on
-signature. They hold no submission and never will, so the approval path above
+signature. On a deployed realm it does not — every member enters through
+onboarding ([ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md)) — so this door serves a local stack seeded from a
+bundle. Such members hold no submission and never will, so the approval path above
 cannot reach them — and until they hold a `DataSubjectCredential` there is
 nothing for the connector to authenticate, so the page above could only tell them
 they had no dataspace identity.

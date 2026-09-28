@@ -625,3 +625,78 @@ async def test_the_secret_being_set_says_nothing(seed_rec, monkeypatch, caplog):
         await app_main._validate_dataspace_config()
 
     assert "DS_ORG_CLIENT_SECRET" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Boundary areas need the Digital Twin, and the checks import applies
+# ---------------------------------------------------------------------------
+
+
+def _boundary_rec(seed_rec, **extra):
+    seed_rec(
+        "rec-b",
+        organization="community-b",
+        steps=["consents", "personal", "eligibility", "review"],
+        rec_registry={
+            "community": "example-rec",
+            "areas": {
+                "north": {"boundary": {"source": "gse_cabine_primarie", "id": "AC000E00001"}}
+            },
+        },
+        **extra,
+    )
+
+
+async def test_boundary_areas_without_a_digital_twin_refuse_to_start(seed_rec, monkeypatch):
+    """Every eligibility check, submit and approval of that community would fail closed.
+
+    @verifies REQ-0005
+    """
+    _boundary_rec(seed_rec)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "rec_registry_url", "http://registry:8004")
+    monkeypatch.setattr(app_main.settings, "digital_twin_url", "")
+
+    with pytest.raises(RuntimeError, match="DIGITAL_TWIN_URL"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_boundary_areas_with_a_digital_twin_start(seed_rec, monkeypatch):
+    _boundary_rec(seed_rec)
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "rec_registry_url", "http://registry:8004")
+    monkeypatch.setattr(app_main.settings, "digital_twin_url", "http://dt:8000")
+
+    await app_main._validate_dataspace_config()
+
+
+async def test_a_stored_boundary_template_with_coverage_rules_refuses_to_start(
+    seed_rec, monkeypatch
+):
+    """Manifests come from the database; import is not the only gate.
+
+    @verifies REQ-0017
+    """
+    _boundary_rec(seed_rec, coverage={"rules": [{"type": "municipality", "values": ["X"]}]})
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "rec_registry_url", "http://registry:8004")
+    monkeypatch.setattr(app_main.settings, "digital_twin_url", "http://dt:8000")
+
+    with pytest.raises(ValueError, match="coverage"):
+        await app_main._validate_dataspace_config()
+
+
+async def test_a_municipality_template_needs_no_digital_twin(seed_rec, monkeypatch):
+    """
+    @verifies REQ-0004
+    """
+    seed_rec(
+        "rec-m",
+        organization="community-m",
+        rec_registry={"community": "c", "default_area": "north"},
+    )
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+    monkeypatch.setattr(app_main.settings, "rec_registry_url", "http://registry:8004")
+    monkeypatch.setattr(app_main.settings, "digital_twin_url", "")
+
+    await app_main._validate_dataspace_config()

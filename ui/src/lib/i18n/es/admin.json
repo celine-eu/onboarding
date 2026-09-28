@@ -3,7 +3,8 @@
 	"nav": {
 		"submissions": "Solicitudes",
 		"audit": "Registro",
-		"exports": "Exportaciones"
+		"exports": "Exportaciones",
+		"areas": "Áreas"
 	},
 	"choose_rec": "Elige comunidad...",
 	"profile": "Perfil",
@@ -98,6 +99,10 @@
 		"fiscal_code": "Código fiscal",
 		"pod": "POD",
 		"supply_municipality": "Municipio de suministro",
+		"supply_address": "Dirección de suministro (verificada)",
+		"supply_boundary": "Subestación primaria",
+		"supply_boundary_in_area": "{{id}}, área {{area}}",
+		"supply_boundary_no_area": "{{id}}, en ninguna área de esta comunidad",
 		"hide_identifiers": "Ocultar identificadores",
 		"reveal_identifiers": "Mostrar código fiscal y POD",
 		"reveal_audited": "Cada visualización sin enmascarar queda registrada.",
@@ -171,5 +176,24 @@
 	"subject_type": {
 		"user": "usuario",
 		"service": "servicio"
+	},
+	"areas": {
+		"title": "Áreas en el registro",
+		"lead": "Si las áreas del registro REC coinciden con la plantilla de esta comunidad. La plantilla es la fuente de verdad; un administrador de la plataforma la aplica con la sincronización del registro.",
+		"community": "Comunidad en el registro: {{community}}",
+		"matches": "El registro coincide con la plantilla.",
+		"drift": "El registro difiere de la plantilla. Un administrador de la plataforma puede ejecutar la sincronización (onboarding-cli registry-sync) para alinearlo.",
+		"not_synced": "Las áreas de esta comunidad no son límites de subestación primaria, por lo que nada de su plantilla se sincroniza con el registro.",
+		"col_area": "Área",
+		"col_boundary": "Subestación primaria",
+		"col_state": "Estado",
+		"held_by": "ocupada por {{areas}}",
+		"state": {
+			"matches": "coincide",
+			"missing": "ausente en el registro",
+			"differs": "difiere",
+			"undeclared": "no está en la plantilla"
+		},
+		"failed": "No se ha podido leer el registro: {{message}}"
 	}
 }

@@ -17,5 +17,6 @@
 	"address_placeholder": "Via Roma 1, Borgo Valsugana",
 	"search": "Cerca",
 	"no_rec_found": "Nessuna comunita energetica trovata per questo indirizzo.",
+	"rec_search_unchecked": "Non è stato possibile verificare alcune comunità in questo momento. Riprova più tardi.",
 	"show_all_recs": "Mostra tutte le comunita"
 }

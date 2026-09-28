@@ -80,7 +80,7 @@ sequenceDiagram
     end
 ```
 
-Provisioning takes **facts, not a database row**. `provision_subject(access, facts, binding)` is the whole of it, and `provision_user_identity(submission, ...)` is the approval path's caller: it reads a `SubjectFacts` off the submission and writes the resulting `SubjectIdentity` back. A person who was admitted some other way -- screened offline, with no submission and never one -- is provisioned by filling in the same facts from wherever their admission is recorded. `RegistryAccess` carries the registry URL and one token through the whole flow, so resolve, check and issue cannot address different instances.
+Provisioning takes **facts, not a database row**. `provision_subject(access, facts, binding)` is the whole of it, and `provision_user_identity(submission, ...)` is the approval path's caller: it reads a `SubjectFacts` off the submission and writes the resulting `SubjectIdentity` back. A person who was admitted some other way -- screened offline, with no submission and never one -- is provisioned by filling in the same facts from wherever their admission is recorded. On a deployed realm nobody is admitted another way ([ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md)); that path serves local stacks seeded from a bundle. `RegistryAccess` carries the registry URL and one token through the whole flow, so resolve, check and issue cannot address different instances.
 
 ### Step-by-step
 
@@ -181,8 +181,8 @@ is done under the community's own client:
 
 | Identity | Is | Used for |
 |---|---|---|
-| `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Asking the provisioning service for a login -- a **scope**, not a Keycloak grant |
-| `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Identity registry, connector, registry lookups |
+| `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Asking the provisioning service for a login -- a **scope**, not a Keycloak grant; the Digital Twin's boundary lookups; the registry sync; and the REC registry member client **when `DATASPACE_ENABLED` is false** |
+| `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Identity registry, connector; and the REC registry member client (registration, DID write, supply-point lookups) **only when `DATASPACE_ENABLED` is true** |
 | `svc-ds-connector-<alias>` (`DS_ORG_CLIENT_SECRET`) | **the community's** client, not this service's | Registering a member's consent, and reading one member's decisions back from the participant that holds the data |
 
 ### The two calls, and what they are keyed on
@@ -382,8 +382,12 @@ dataspace identity — and the order is not cosmetic. The registry keys a member
 is last because it is the step that can be retried afterwards.
 
 Registry registration **fails closed**, so a dataspace identity is never issued
-to somebody who is not a community member. See `AGENTS.md` for what is derived
-from the wizard's answers and what is deliberately not.
+to somebody who is not a community member. What the member is registered with — its
+community, and its area from the template's boundaries or municipality lists — is in
+[templates.md](templates.md#rec-registry-binding-optional-per-community); its role is
+`prosumer` when the wizard's `has_pv` answer is yes and `consumer` otherwise. No meter is
+registered: a meter's id is known only once it is installed, and a REC manager attaches it,
+and corrects the role or area, afterwards on the `celine-community` dashboard.
 
 A `409` on the member create is read by its reason, not its status. A taken member
 key is this submission's own earlier attempt and counts as registered. Onboarding checks
@@ -421,12 +425,13 @@ The integration follows a **fail-closed** strategy:
 - **Idempotent membership calls**: `409 Conflict` from `POST /admin/memberships` is treated as success, so re-approving or retrying a failed approval does not error out. A `404` names the missing organization. Any other 4xx/5xx aborts the approval.
 - **Incomplete consent evidence is refused locally**: a data-sharing consent with no `consent_text_version` or no `rendered_text_sha256` is rejected at capture, and `provision_user_shares` pre-flights the same rule rather than sending a record the connector will `422`. That rejection is permanent — you cannot retrospectively prove what somebody was shown — so it is surfaced on the admin view rather than left in a log.
 - **No partial state**: Either the full provisioning succeeds (credential + organization + membership + KC sync) or nothing is committed. The submission remains in its previous status.
-- **Share provisioning is non-fatal**: Data-sharing share provisioning (step 7) runs after the identity is committed and is exempt from fail-closed. A connector rejection or error leaves `share_provisioned=false` and logs, but never rolls back the identity or the approval. Operators retry via `POST /api/admin/submissions/{id}/retry-share` (which surfaces connector rejections as `422`).
+- **Share provisioning is non-fatal**: Data-sharing share provisioning (step 7) runs after the identity is committed and is exempt from fail-closed. A connector rejection or error leaves `share_provisioned=false` and logs, but never rolls back the identity or the approval. Operators retry via `POST /api/admin/{rec}/submissions/{id}/enablement/retry` with `{"step": "dataspace_share"}` (the deprecated `…/retry-share` alias does the same).
 
 ## Dependencies
 
 - `celine-sdk>=1.13.0` -- provides `celine.sdk.auth.OidcClientCredentialsProvider` for M2M token management
-- `celine-sdk>=1.18.0` -- provides `celine.sdk.provisioning.ProvisioningClient`, which is the only way this service gives a participant a login. `pyproject.toml` carries that floor; there is no fallback path
+- `celine-sdk>=1.18.0` -- provides `celine.sdk.provisioning.ProvisioningClient`, which is the only way this service gives a participant a login; there is no fallback path
+- `celine-sdk>=1.21.0` -- provides the `RecRegistryAdminClient` community, topology-node and area calls (area rename included) the registry sync writes through, and `RecRegistryApiError.code`, which it reports refusals by. `pyproject.toml` carries this floor
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
 - **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`

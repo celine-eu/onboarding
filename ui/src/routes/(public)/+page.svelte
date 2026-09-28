@@ -4,6 +4,9 @@
 
 	let allRecs = $state<RecSummary[]>([]);
 	let matchedRecs = $state<RecMatch[]>([]);
+	// Some community could not be checked (its boundaries need a service that
+	// did not answer): the list may be incomplete, so say so.
+	let unchecked = $state(false);
 	let address = $state('');
 	let searching = $state(false);
 	let searched = $state(false);
@@ -20,8 +23,11 @@
 		searched = false;
 		errorMsg = '';
 		matchedRecs = [];
+		unchecked = false;
 		try {
-			matchedRecs = await globalApi.findRecsByAddress(address);
+			const sweep = await globalApi.findRecsByAddress(address);
+			matchedRecs = sweep.matches;
+			unchecked = sweep.unchecked;
 			searched = true;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Search failed';
@@ -73,7 +79,11 @@
 		<div class="error-banner">{errorMsg}</div>
 	{/if}
 
-	{#if searched && matchedRecs.length === 0 && !showAll}
+	{#if searched && unchecked && !showAll}
+		<div class="unchecked-banner">{$t('common.rec_search_unchecked')}</div>
+	{/if}
+
+	{#if searched && matchedRecs.length === 0 && !unchecked && !showAll}
 		<div class="no-results">
 			<p>{$t('common.no_rec_found')}</p>
 		</div>
@@ -255,6 +265,14 @@
 	.show-all-btn:hover {
 		background: var(--celine-bg-hover);
 		border-color: var(--celine-border-strong);
+	}
+
+	.unchecked-banner {
+		background: var(--celine-warning-bg);
+		color: var(--celine-warning-text);
+		padding: var(--celine-space-sm) var(--celine-space-md);
+		border-radius: var(--celine-radius-md);
+		font-size: 0.875rem;
 	}
 
 	.error-banner {

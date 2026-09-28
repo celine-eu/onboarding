@@ -17,5 +17,6 @@
 	"address_placeholder": "123 Main Street, City",
 	"search": "Search",
 	"no_rec_found": "No energy community found for this address.",
+	"rec_search_unchecked": "Some communities could not be checked right now. Please try again later.",
 	"show_all_recs": "Show all communities"
 }

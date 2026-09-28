@@ -4,8 +4,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY pyproject.toml .
-RUN uv sync --no-dev --no-install-project
+# `uv run` in the image (and the compose commands) uses the lock as it is and
+# never re-resolves or rewrites it.
+ENV UV_FROZEN=1
+
+# The lock, not a fresh resolution: `--frozen` installs exactly what uv.lock
+# pins, so an image carries the dependency versions the tests ran against.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src/ src/
 COPY templates/ templates/
@@ -15,7 +21,7 @@ COPY templates/ templates/
 COPY policies/ policies/
 COPY alembic.ini .
 COPY alembic/ alembic/
-RUN uv sync --no-dev
+RUN uv sync --frozen --no-dev
 
 EXPOSE 8040
 

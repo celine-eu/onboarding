@@ -23,19 +23,27 @@ OTHER_ORG = "other-rec"
 # a change to the hierarchy has to be stated here too.
 VIEWER = {"recs.read", "submissions.read", "audit.read"}
 EDITOR = VIEWER | {"submissions.reveal", "submissions.write"}
-MANAGER = EDITOR | {"submissions.review", "enablement.retry", "export"}
+# The drift check (`recs.drift`, REQ-0015, D55): the REC's own managers and
+# admins, and realm admins; not a realm manager, and no scope.
+DRIFT = {"recs.drift"}
+MANAGER = EDITOR | {"submissions.review", "enablement.retry", "export"} | DRIFT
 ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 
 # Reachable only by a service acting for an operator, so no caller holds it alone
 # and no capability set below contains it.
 DELEGATED = {"members.invite"}
 
+# Granted by a realm-level `admins` group and nothing else: no organization
+# group, no scope (the registry sync, REQ-0009).
+REALM_ONLY = {"recs.write"}
+REALM_ADMIN = ADMIN | REALM_ONLY
+
 TIERS = {"viewers": VIEWER, "editors": EDITOR, "managers": MANAGER, "admins": ADMIN}
 
 # Which tiers mean anything at *realm* level. A realm badge grants its actions on
 # every community with no organization check, so the two read-only tiers are
 # excluded from it — they are an organization-level role and nothing else.
-PLATFORM_TIERS = {"admins": ADMIN, "managers": MANAGER}
+PLATFORM_TIERS = {"admins": REALM_ADMIN, "managers": MANAGER - DRIFT}
 NON_PLATFORM_TIERS = ("editors", "viewers")
 
 
@@ -199,7 +207,7 @@ def test_a_read_only_realm_group_grants_nothing_anywhere(policy, tier):
 
 def test_realm_group_applies_without_a_named_community(policy):
     user = operator(realm=("admins",))
-    assert policy.capabilities(user, organization=None) == ADMIN
+    assert policy.capabilities(user, organization=None) == REALM_ADMIN
 
 
 def test_a_realm_manager_still_cannot_purge_or_revoke(policy):
@@ -243,9 +251,9 @@ def test_non_platform_realm_denial_says_so(policy):
 # ---------------------------------------------------------------------------
 
 
-def test_service_admin_scope_grants_everything_but_delegated_actions(policy):
+def test_service_admin_scope_grants_everything_but_delegated_and_realm_only_actions(policy):
     caps = policy.capabilities(service("onboarding.admin"), organization=ORG)
-    assert caps == {c.value for c in ALL_CAPABILITIES} - DELEGATED
+    assert caps == {c.value for c in ALL_CAPABILITIES} - DELEGATED - REALM_ONLY - DRIFT
 
 
 def test_service_with_no_scope_gets_nothing(policy):
@@ -308,7 +316,145 @@ def test_group_named_scope_does_not_authorise_a_service(policy):
     )
     # Typed as a user because groups are present; the realm admins group is what
     # grants it — not the scope.
-    assert policy.capabilities(hybrid, organization=ORG) == ADMIN
+    assert policy.capabilities(hybrid, organization=ORG) == REALM_ADMIN
+
+
+# ---------------------------------------------------------------------------
+# recs.write — the registry sync, realm admins only
+# ---------------------------------------------------------------------------
+
+SYNC = Capability.RECS_WRITE
+
+
+@pytest.mark.parametrize("community", [ORG, OTHER_ORG, None])
+def test_only_a_realm_admin_may_sync(policy, community):
+    """
+    @verifies REQ-0009
+    """
+    assert policy.allow(operator(realm=("admins",)), SYNC, organization=community).allowed
+
+
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_no_organization_group_grants_the_sync(policy, tier):
+    """An organization's own `admins` administer its REC, not its registry areas.
+
+    @verifies REQ-0009
+    """
+    decision = policy.allow(operator(org=ORG, groups=(tier,)), SYNC, organization=ORG)
+    assert not decision.allowed
+
+
+@pytest.mark.parametrize("tier", ["managers", "editors", "viewers"])
+def test_no_other_realm_group_grants_the_sync(policy, tier):
+    """
+    @verifies REQ-0009
+    """
+    assert not policy.allow(operator(realm=(tier,)), SYNC, organization=ORG).allowed
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        ("onboarding.admin",),
+        ("onboarding.recs.read",),
+        ("onboarding.recs.write",),
+        ("onboarding.*",),
+    ],
+)
+def test_no_scope_grants_the_sync(policy, scopes):
+    """No service account holds `recs.write`, `onboarding.admin` and wildcards included.
+
+    @verifies REQ-0009
+    """
+    assert not policy.allow(service(*scopes), SYNC, organization=ORG).allowed
+
+
+def test_an_org_admin_is_told_why_the_sync_is_refused(policy):
+    """
+    @verifies REQ-0009
+    """
+    decision = policy.allow(operator(org=ORG, groups=("admins",)), SYNC, organization=ORG)
+    assert "realm-level admins" in (decision.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# recs.drift — the drift check, the REC's managers and admins and realm admins
+# ---------------------------------------------------------------------------
+
+DRIFT_CHECK = Capability.RECS_DRIFT
+
+
+@pytest.mark.parametrize("tier", ["admins", "managers"])
+def test_the_recs_managers_and_admins_may_check_drift(policy, tier):
+    """
+    @verifies REQ-0015
+    """
+    decision = policy.allow(operator(org=ORG, groups=(tier,)), DRIFT_CHECK, organization=ORG)
+    assert decision.allowed
+
+
+@pytest.mark.parametrize("tier", ["editors", "viewers"])
+def test_the_recs_editors_and_viewers_may_not_check_drift(policy, tier):
+    """D55: not organisation viewers.
+
+    @verifies REQ-0015
+    """
+    decision = policy.allow(operator(org=ORG, groups=(tier,)), DRIFT_CHECK, organization=ORG)
+    assert not decision.allowed
+
+
+def test_another_recs_manager_may_not_check_drift(policy):
+    """
+    @verifies REQ-0015
+    """
+    user = operator(org=OTHER_ORG, groups=("managers",))
+    assert not policy.allow(user, DRIFT_CHECK, organization=ORG).allowed
+
+
+@pytest.mark.parametrize("community", [ORG, OTHER_ORG])
+def test_a_realm_admin_may_check_drift_everywhere(policy, community):
+    """
+    @verifies REQ-0015
+    """
+    assert policy.allow(operator(realm=("admins",)), DRIFT_CHECK, organization=community).allowed
+
+
+@pytest.mark.parametrize("tier", ["managers", "editors", "viewers"])
+def test_no_other_realm_group_may_check_drift(policy, tier):
+    """A realm `managers` badge reaches submissions everywhere, not the drift check.
+
+    @verifies REQ-0015
+    """
+    assert not policy.allow(operator(realm=(tier,)), DRIFT_CHECK, organization=ORG).allowed
+
+
+def test_a_realm_manager_is_told_why(policy):
+    """
+    @verifies REQ-0015
+    """
+    decision = policy.allow(operator(realm=("managers",)), DRIFT_CHECK, organization=ORG)
+    assert "at realm level only an admins group" in (decision.reason or "")
+
+
+def test_a_realm_manager_who_manages_the_rec_may(policy):
+    """The organization grant is not capped by the realm one.
+
+    @verifies REQ-0015
+    """
+    user = operator(org=ORG, groups=("managers",), realm=("managers",))
+    assert policy.allow(user, DRIFT_CHECK, organization=ORG).allowed
+
+
+@pytest.mark.parametrize(
+    "scopes", [("onboarding.admin",), ("onboarding.recs.read",), ("onboarding.*",)]
+)
+def test_no_scope_grants_the_drift_check(policy, scopes):
+    """
+    @verifies REQ-0015
+    """
+    decision = policy.allow(service(*scopes), DRIFT_CHECK, organization=ORG)
+    assert not decision.allowed
+    assert "people only" in (decision.reason or "")
 
 
 # ---------------------------------------------------------------------------

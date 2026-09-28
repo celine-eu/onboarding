@@ -79,6 +79,7 @@ def import_templates(
         # and a typo should fail where an operator is already looking — not the
         # first time a REC manager approves somebody.
         from celine.onboarding.services.template_service import (
+            validate_boundary_template,
             validate_data_sharing_texts,
             validate_dataspace_block,
             validate_organization,
@@ -89,6 +90,7 @@ def import_templates(
             validate_organization(manifest, where=str(manifest_path))
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
             validate_rec_registry_block(manifest.get("rec_registry"), where=str(manifest_path))
+            validate_boundary_template(manifest, where=str(manifest_path))
             validate_data_sharing_texts(
                 ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
                 where=str(manifest_path),
@@ -102,6 +104,22 @@ def import_templates(
     if not manifests:
         typer.echo("No templates found to import.")
         raise typer.Exit(1)
+
+    # Every boundary a template names must be one the Digital Twin knows
+    # (REQ-0002). Checked for all of them before any is stored, and a Digital
+    # Twin that cannot be asked refuses the import rather than letting an
+    # unvalidated template through. A template without boundaries asks nothing.
+    from celine.onboarding.services.boundaries import verify_template_boundaries
+
+    async def _verify():
+        for slug, _name, manifest in manifests:
+            await verify_template_boundaries(manifest, where=f"template {slug!r}")
+
+    try:
+        asyncio.run(_verify())
+    except ValueError as exc:
+        typer.echo(f"  {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     async def _run():
         from sqlalchemy import select
@@ -225,6 +243,101 @@ def export_pod_list(
             "Evidence, kept by this community — not a disclosure, and not for handing "
             "over. A snapshot: a later decision is not in it."
         )
+
+    _run(_go())
+
+
+def _print_sync(report: dict) -> None:
+    mode = "DRY RUN — nothing was written" if report["dry_run"] else "sync"
+    typer.echo(
+        f"{report['rec']} -> registry community {report['community']} "
+        f"({mode}; prune={'on' if report['prune'] else 'off'})"
+    )
+    setup = report["setup"]
+    colour = {
+        "succeeded": typer.colors.GREEN,
+        "failed": typer.colors.RED,
+        "skipped": typer.colors.YELLOW,
+    }.get(setup["status"])
+    line = f"set up community: {setup['status']}"
+    if setup.get("reason"):
+        line += f" — {setup['reason']}"
+    elif setup["status"] == "succeeded":
+        line += f" (members {setup.get('members')}, accounts created {setup.get('created')})"
+    typer.secho(line, fg=colour)
+
+    for kind in ("nodes", "areas"):
+        typer.echo(f"{kind.upper():<8} {'KEY':<30} {'BOUNDARY':<14} OUTCOME")
+        for item in report[kind]:
+            note = item.get("reason") or ""
+            if item.get("renamed_from"):
+                renamed = f"renamed {item['renamed_from']} -> {item['key']}"
+                note = renamed + (f"; {note}" if note else "")
+            if item.get("members") is not None:
+                note = f"members {item['members']}" + (f"; {note}" if note else "")
+            colour = {"refused": typer.colors.RED, "not_run": typer.colors.RED}.get(item["outcome"])
+            typer.secho(
+                f"{'':<8} {item['key'][:30]:<30} {(item.get('boundary_id') or '-'):<14} "
+                f"{item['outcome']}" + (f"  {note}" if note else ""),
+                fg=colour,
+            )
+
+
+@app.command()
+def registry_sync(
+    rec: str = typer.Option(..., "--rec", "-r", help="REC slug"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Write nothing, anywhere; print what a sync would do"
+    ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Also delete registry areas the template no longer declares "
+        "(refused for an area that still has members)",
+    ),
+    local: bool = _LOCAL,
+    api_url: str = _API_URL,
+    token: str = typer.Option(
+        None,
+        "--token",
+        help="A realm admin's own access token. Required unless --local: no service "
+        "account may start a sync",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+):
+    """Push a REC's template areas to its registry community, as a realm admin.
+
+    The same route the console calls, `POST /api/admin/recs/{rec}/registry-sync`,
+    authorised as `recs.write`, which only a realm-level `admins` group holds.
+    Pass that admin's own token with `--token`, or run `--local` in process under
+    the break-glass rules (ALLOW_LOCAL_ADMIN=true). The CLI's own
+    client-credentials identity is never used for it.
+
+    Exits 1 when any area or node was refused, or the community set-up failed.
+    """
+    if not local and not token:
+        typer.secho(
+            "registry-sync needs --token <a realm admin's access token>, or --local. "
+            "It is a person's decision: the CLI's service account cannot start one.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    async def _go():
+        transport = build(local, api_url=api_url, token=token)
+        try:
+            report = await transport.registry_sync(rec, dry_run=dry_run, prune=prune)
+        finally:
+            await transport.aclose()
+        if as_json:
+            import json
+
+            typer.echo(json.dumps(report, indent=2))
+        else:
+            _print_sync(report)
+        if not report["ok"] or report["setup"]["status"] == "failed":
+            raise typer.Exit(1)
 
     _run(_go())
 

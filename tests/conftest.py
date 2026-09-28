@@ -256,3 +256,15 @@ def submission():
     # Set explicitly: a MagicMock would otherwise invent one.
     sub.verification = None
     return sub
+
+
+@pytest.fixture()
+def fake_dt(monkeypatch):
+    """A Digital Twin behind `respx`, reached through the real SDK client.
+
+    See `fake_digital_twin.py`: synthetic squares, the Digital Twin's own
+    edge-is-inside and lowest-id rules, and every request recorded.
+    """
+    from fake_digital_twin import running_fake_dt
+
+    yield from running_fake_dt(monkeypatch)

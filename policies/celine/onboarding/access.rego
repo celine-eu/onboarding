@@ -74,6 +74,27 @@ required_groups := {
 	"enablement.revoke": {"admins"},
 	# Delegated: the group is the acting operator's, never the caller's.
 	"members.invite": {"admins", "managers"},
+	# Pushing a template's areas to the REC registry, and setting the community
+	# up through the provisioning reconcile. Realm-level `admins` only: see
+	# `realm_only_actions` below.
+	"recs.write": {"admins"},
+	# The console's drift check: whether the registry's areas match the
+	# template. The REC's own managers and admins, and realm `admins` only: see
+	# `realm_required_groups` below. No scope grants it.
+	"recs.drift": {"admins", "managers"},
+}
+
+# Actions whose **realm**-level grant is narrower than the table above. For
+# these, a realm group grants the action only when it is named here; the
+# organization-level grant is still the table above. The drift check is for the
+# platform's admins and for the REC's own managers and admins (D55), so a realm
+# `managers` badge does not reach it.
+realm_required_groups := {"recs.drift": {"admins"}}
+
+realm_groups_for_action := realm_required_groups[input.action.name]
+
+realm_groups_for_action := required_groups[input.action.name] if {
+	not realm_required_groups[input.action.name]
 }
 
 # Which of those groups mean anything at **realm** level. A realm badge is a
@@ -118,6 +139,19 @@ required_scopes := {
 # header.
 delegated_actions := {"members.invite"}
 
+# Actions only a **realm**-level group grants. The registry sync writes a whole
+# community's areas and topology in the REC registry and sets its Keycloak
+# organization up, which is platform business: an organization's own `admins`
+# do not reach it, and no scope grants it — it has no entry in
+# `required_scopes`, so `onboarding.admin` does not either, and a sync always
+# follows a person's decision.
+realm_only_actions := {"recs.write"}
+
+# Actions no scope grants, for people only: they have no entry in
+# `required_scopes`, so no service account reaches them, `onboarding.admin`
+# included. `recs.write` is one too (above).
+people_only_actions := {"recs.drift"}
+
 known_action if required_groups[input.action.name]
 
 is_delegated if input.action.name in delegated_actions
@@ -135,7 +169,7 @@ has_actor if actor.type == "user"
 # A realm-level group grants the action everywhere, so no organization check —
 # and for that reason only a platform group qualifies.
 realm_group_grants(principal) if {
-	some g in required_groups[input.action.name]
+	some g in realm_groups_for_action
 	g in platform_groups
 	g in principal.groups
 }
@@ -147,6 +181,7 @@ realm_group_grants(principal) if {
 # its type attribute — read from the flattened `type` key a real token carries,
 # falling back to the nested `attributes.type` a fixture may use.
 org_group_grants(principal) if {
+	not input.action.name in realm_only_actions
 	principal.claims.organization != null
 	principal.claims.organization == input.resource.attributes.organization
 	principal.claims.org_type == rec_organization_type
@@ -220,6 +255,9 @@ reason := "granted by realm group" if {
 	data.celine.scopes.is_anonymous
 } else := "unknown action — no capability is declared for it" if {
 	not known_action
+} else := "no scope grants this action; it is for people only" if {
+	is_service
+	input.action.name in people_only_actions
 } else := "service is missing a scope granting this action" if {
 	is_service
 	not data.celine.scopes.has_any_scope(required_scopes[input.action.name])
@@ -231,6 +269,12 @@ reason := "granted by realm group" if {
 	not has_actor
 } else := "the acting operator holds no group granting this action" if {
 	is_delegated
+} else := "only a realm-level admins group grants this action" if {
+	input.action.name in realm_only_actions
+} else := "at realm level only an admins group grants this action" if {
+	realm_required_groups[input.action.name]
+	some g in required_groups[input.action.name]
+	g in input.subject.groups
 } else := "a realm group is not a platform-wide grant — only admins and managers are" if {
 	some g in required_groups[input.action.name]
 	g in input.subject.groups

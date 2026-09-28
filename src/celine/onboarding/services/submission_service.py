@@ -308,8 +308,17 @@ async def update_submission(
 
     target_status = updates.pop("status", None)
 
+    from celine.onboarding.services import supply_boundary
+
+    address_before = supply_boundary.supply_address(submission)
     for key, value in updates.items():
         setattr(submission, key, value)
+
+    # The boundary follows the supply address the submission holds, resolved
+    # here and never taken from the client (REQ-0007). A submit resolves again
+    # in `review.transition`, whichever caller drives it.
+    if target_status != SubmissionStatus.SUBMITTED:
+        await supply_boundary.refresh_on_save(submission, address_before=address_before)
 
     if target_status is not None:
         # One implementation of the state machine, shared with the admin API and

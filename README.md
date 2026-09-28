@@ -15,7 +15,7 @@ This platform automates the process: a public-facing wizard collects data from a
 1. **Accept consents** — GDPR privacy policy and community rules, with links to the actual documents. This step creates the submission and records the IP address, timestamp, and document versions.
 2. **Upload utility bill** (optional, and only where [document scanning](#document-upload-and-scanning) is enabled) — photos or PDFs of the electricity bill. The system uses AI vision to extract the holder's name, fiscal code, POD code, address, and provider. Multiple pages can be uploaded; each one refines the extracted data.
 3. **Confirm personal data** — a form, pre-filled with extracted data when there is some. The applicant reviews and corrects. Fiscal code and POD are validated against their official formats. Where scanning is enabled, an optional ID card upload provides cross-validation against bill data; where it is not, the applicant types these fields and nothing is uploaded.
-4. **Eligibility check** (if configured) — the applicant's address is geocoded and checked against the community's coverage area (municipalities, postal codes, or regions).
+4. **Eligibility check** (if configured) — the applicant's address is geocoded and checked against the community's coverage area: its primary-substation boundaries, which also decide the member's area, or, for a template without boundaries, municipalities, postal codes or regions.
 5. **Accept statute** — the community's founding document, presented separately from the data-collection consents. If the community enables it, this step also offers an **optional data-sharing consent**: the applicant can authorise sharing specific offers into the dataspace. It is never required and does not block submission (GDPR Art. 7(4)).
 6. **Review and submit** — summary of all entered data. On submit, the applicant receives a PDF summary and the operator is notified by email.
 
@@ -35,8 +35,8 @@ Each REC gets a template folder that customizes the platform without code change
 
 - **Branding** — name, logo, primary color (applied as CSS variables site-wide)
 - **Consent documents** — local PDFs or links to external URLs, with versioning
-- **Coverage area** — municipalities, postal codes, or regions for eligibility checks
-- **Wizard steps** — reorderable via the manifest (skip eligibility if no coverage restriction)
+- **Coverage area** — the community's areas as GSE primary-substation boundaries (eligibility and each member's area by boundary, synced to the REC registry by a realm admin), or municipalities, postal codes and regions for a template without boundaries
+- **Wizard steps** — reorderable via the manifest (skip eligibility if no coverage restriction; a template with boundaries requires it, after `consents`)
 - **Content** — markdown files for the welcome page, consent intro, and success message
 - **Notifications** — sender address, operator email list, optional storage backend (S3/Google Drive), optional webhook
 
@@ -50,7 +50,9 @@ Templates are imported into the database with `task import-templates`, and serve
 
 **Extraction pipeline**: uploaded files are classified by magic bytes. Images are compressed to JPEG (max 1600px, quality 75) and sent to the OpenAI Vision API. PDFs are converted to text via markitdown. Both go into a single LLM call that returns structured JSON. The model is configurable via env var.
 
-**Eligibility**: addresses are geocoded via Nominatim (OpenStreetMap). The reverse-geocoded municipality/postal code is checked against rules defined in the template manifest. The checker is a protocol — swap in a different implementation for polygon checks, external APIs, etc.
+**Eligibility**: addresses are geocoded via Nominatim (OpenStreetMap). The reverse-geocoded municipality/postal code is checked against rules defined in the template manifest. A template may instead declare its areas as GSE primary-substation boundaries: the geocoded point is then sent to the Digital Twin (`DIGITAL_TWIN_URL`, `boundary_at_point`, with this service's own token) and the boundary covering it decides both eligibility and the member's area; the point is not kept, only the boundary id is recorded on the submission, and the check fails closed when the Digital Twin does not answer. See [Templates](docs/templates.md#rec-registry-binding-optional-per-community). The anonymous checks are rate-limited per client (`RATE_LIMIT_ELIGIBILITY`). When a boundary community cannot be checked, the cross-community finder answers the other communities and flags `unchecked`, and the page asks to try again later.
+
+**Registry sync**: a template with boundary areas is the source of truth for its community's areas in the REC registry. A realm admin pushes them with `onboarding-cli registry-sync --rec <slug> --token <their token>` (or `--local`), `--dry-run` to see the plan and `--prune` to remove areas the template no longer declares (an area whose key the template renamed is moved by the registry with its members, no prune needed); the same is `POST /api/admin/recs/{rec}/registry-sync`, capability `recs.write`, which no organization group and no service account holds. A real sync first sets the community's Keycloak organization up through the provisioning service's reconcile, reported and never blocking. The registry calls use this service's own client (`OIDC_CLIENT_ID`) with `rec-registry.read`, and ask for the optional scopes `rec-registry.community.write` and `provisioning.reconcile` only for the calls that need them. The console's *Areas* page shows whether the registry still matches, to realm admins and the REC's own managers and admins (`recs.drift`). See [API reference](docs/api-reference.md) and [Operator console](docs/admin-console.md#the-registry-sync).
 
 ## Security
 
@@ -59,8 +61,8 @@ Templates are imported into the database with `task import-templates`, and serve
 All PII is encrypted using Fernet symmetric encryption (`ENCRYPTION_KEY`). This covers:
 
 - Uploaded documents (utility bills, ID cards) encrypted on disk
-- Database columns: `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`, `consent_ip`
-- JSON fields: `extracted_data`, `id_extracted_data` (OCR results), `raw_response` (LLM responses)
+- Database columns: `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`, `consent_ip`, `supply_municipality`, `supply_boundary_id`
+- JSON fields: `extracted_data`, `id_extracted_data` (OCR results), `raw_response` (LLM responses), `supply_address` (the address the eligibility step checked)
 
 Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false` (dev-only). Legacy unencrypted data is read gracefully during migration.
 
@@ -72,7 +74,9 @@ Encryption is mandatory by default. The app refuses to start without `ENCRYPTION
 
 ### HTTP hardening
 
-Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy. CORS is configurable with restricted methods/headers. Rate limiting on extraction (10/hr), submission creation (20/hr), PDF download (5/min).
+Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy. CORS is configurable with restricted methods/headers. Rate limiting on extraction (10/hr), submission creation (20/hr), PDF download (5/min). Every limit is keyed by the client address uvicorn reports. uvicorn takes that address from `X-Forwarded-For` only when the connecting peer is listed in `FORWARDED_ALLOW_IPS` (read by uvicorn itself; default `127.0.0.1`). Behind an ingress, set `FORWARDED_ALLOW_IPS` to the ingress's address range: otherwise every visitor shares the ingress's address and one limit — for the anonymous eligibility checks, 30 an hour for the whole deployment. Never set it to `*` when the port is reachable other than through the ingress, or a caller can pick its own key.
+
+**`FORWARDED_ALLOW_IPS` is a deployment requirement.** The same address is what the service records as a consent's evidence IP (`consent_ip`) and in every audit row. The service reads only the address uvicorn resolved and never `X-Forwarded-For` or `X-Real-IP` itself, since any caller can write those headers (REQ-0020). Without `FORWARDED_ALLOW_IPS` set to the ingress's range, every consent and audit row carries the ingress's address; with it set too wide, a caller that reaches the port directly can choose its own.
 
 ### GDPR
 
@@ -130,6 +134,8 @@ docker compose up
 
 This creates the database, runs migrations, and starts backend + frontend. Requires an external PostgreSQL instance (configured via `DB_HOST`, `DB_PORT`, etc.).
 
+The defaults wire the backend to the `celine-dev` stack with its public dev values, so a plain `docker compose up` (or `task docker:start` in `celine-dev`) on that stack runs a working onboarding: `REC_REGISTRY_URL` and `DIGITAL_TWIN_URL` on the stack's host ports through `host.docker.internal`, `PROVISIONING_URL` at the proxy's internal-only host `provisioning.internal.celine.localhost`, `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` as `svc-onboarding` with the dev realm's public secret, SMTP to `celine-policies`' Mailpit on `172.17.0.1:1025`, and `DATASPACE_ENABLED=false`, so no dataspace client is needed. Anything set in the shell or in `.env` overrides them; a deployment sets its own. The image installs exactly what `uv.lock` pins (`uv sync --frozen`).
+
 ### Choosing a template
 
 ```bash
@@ -156,7 +162,7 @@ the wrong issuer.
 
 An address whose emptiness *disables* a dependency keeps no default, because the
 address is the only thing that says whether the dependency is there:
-`PROVISIONING_URL`, `REC_REGISTRY_URL`, `DS_CONNECTOR_URL`, `DS_NS_URL`,
+`PROVISIONING_URL`, `REC_REGISTRY_URL`, `DIGITAL_TWIN_URL`, `DS_CONNECTOR_URL`, `DS_NS_URL`,
 `DS_PROVENANCE_URL`, `IDENTITY_REGISTRY_URL`, `DATASPACE_KEYCLOAK_REALM`.
 
 ### Required
@@ -178,6 +184,7 @@ address is the only thing that says whether the dependency is there:
 | Variable | Description |
 |---|---|
 | `PROVISIONING_URL` | Internal address of `celine-policies`' provisioning service, which provisions participant logins (e.g. `http://provisioning:8010`). Empty onboards participants without a login. It must have no public route — which is also why it has no both-sides address to default to |
+| `DIGITAL_TWIN_URL` | The Digital Twin (e.g. `http://digital-twin:8000`), asked which primary-substation boundary a supply address falls in and, at template import, which boundary ids exist. Needed only by a community whose template declares boundary areas; startup refuses such a template while it is empty. Called as `OIDC_CLIENT_ID` with scope `digital-twin.values.read`. `DIGITAL_TWIN_TIMEOUT` (seconds, default `5`) bounds each call; a timeout fails the check closed |
 
 ### Document upload and scanning
 
@@ -259,8 +266,8 @@ After approval a participant manages and withdraws their sharing decisions in th
 | `DATASPACE_ENABLED` | `false` | Deployment-wide gate for dataspace identity provisioning. A community also needs a `dataspace:` block in its manifest |
 | `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service |
 | `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | OIDC issuer URL for M2M token acquisition — the same issuer the admin console verifies inbound tokens against |
-| `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M auth |
-| `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M auth |
+| `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | The dataspace's client, for the identity registry, the connector and, only when `DATASPACE_ENABLED` is true, the REC registry member client. With the dataspace disabled the registry member is written as `OIDC_CLIENT_ID` (`svc-onboarding`) and this client is not needed ([REQ-0022](docs/specifications/registry-member.md)) |
+| `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Its secret. Required when `DATASPACE_ENABLED` is true |
 | `DS_ORG_CLIENT_ID` | *(derived)* | The community's own client, which is what registers a consent — a service client is refused. Empty derives `svc-ds-connector-<alias>` from the manifest's `dataspace.organization` |
 | `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret. Required to register or withdraw any sharing consent |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
@@ -287,7 +294,7 @@ templates/my-rec/
     success.md           # shown after submission
 ```
 
-The manifest declares everything the platform needs to customize for this community: name, branding, consent document versions and locations, coverage rules, wizard step order, notification recipients, optional storage backend, and optional webhook. See `AGENTS.md` for the full manifest schema.
+The manifest declares everything the platform needs to customize for this community: name, branding, consent document versions and locations, coverage rules or area boundaries, the REC registry and dataspace bindings, wizard step order, notification recipients, optional storage backend, and optional webhook. See [docs/templates.md](docs/templates.md) for the full manifest schema.
 
 ## Development
 

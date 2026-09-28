@@ -44,26 +44,51 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 from celine.onboarding.config.settings import settings
 from celine.onboarding.services.errors import ConfigurationError
 
-_providers: dict[str, OidcClientCredentialsProvider] = {}
+_providers: dict[tuple[str, str | None], OidcClientCredentialsProvider] = {}
 
 
-def _provider_for(client_id: str, client_secret: str) -> OidcClientCredentialsProvider:
+def _provider_for(
+    client_id: str, client_secret: str, *, scope: str | None = None
+) -> OidcClientCredentialsProvider:
+    """One provider per client **and per requested optional scope**.
+
+    A token asked for with ``scope`` carries that optional scope on top of the
+    client's defaults, so it is cached apart from the default token: a call that
+    needs no write must never be handed the token of one that did.
+    """
     if not settings.oidc_base_url:
         raise ConfigurationError(
             "OIDC_BASE_URL is required for any call this service makes as itself"
         )
-    if client_id not in _providers:
-        _providers[client_id] = OidcClientCredentialsProvider(
+    key = (client_id, scope)
+    if key not in _providers:
+        _providers[key] = OidcClientCredentialsProvider(
             base_url=settings.oidc_base_url,
             client_id=client_id,
             client_secret=client_secret,
+            scope=scope,
         )
-    return _providers[client_id]
+    return _providers[key]
 
 
 def service_token_provider() -> OidcClientCredentialsProvider:
     """The dataspace-facing identity: the identity registry and the connector."""
     return _provider_for(settings.ds_onboarding_client_id, settings.ds_onboarding_client_secret)
+
+
+def registry_token_provider() -> OidcClientCredentialsProvider:
+    """The identity the REC registry member client presents (REQ-0022).
+
+    ``svc-onboarding`` when the dataspace is disabled, ``svc-ds-onboarding``
+    only when ``DATASPACE_ENABLED`` (D60). Both are granted
+    ``rec-registry.members.write`` and ``rec-registry.lookup``; the dataspace
+    client exists only on a realm that runs the dataspace, so a deployment
+    without one registers members as celine's own client instead of failing
+    approval with a 401 from the token endpoint.
+    """
+    if settings.dataspace_enabled:
+        return service_token_provider()
+    return celine_token_provider()
 
 
 def organisation_client_id(organization_alias: str) -> str:
@@ -119,7 +144,7 @@ async def organisation_auth_headers(organization_alias: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token.access_token}"}
 
 
-def celine_token_provider() -> OidcClientCredentialsProvider:
+def celine_token_provider(scope: str | None = None) -> OidcClientCredentialsProvider:
     """The celine-facing identity: this service's own client.
 
     Was ``keycloak_admin_token_provider``, and the rename is the point of the
@@ -127,8 +152,16 @@ def celine_token_provider() -> OidcClientCredentialsProvider:
     ``provisioning.participants.write`` and is presented to the provisioning
     service, which is the thing that administers the realm. A name saying
     "keycloak admin" would keep describing a grant this client no longer has.
+
+    ``scope`` asks for one of the client's **optional** scopes on top of its
+    defaults, for the one call that needs it: ``rec-registry.community.write``
+    for the registry sync's writes and ``provisioning.reconcile`` for its set-up
+    step. Neither is in the default token, so nothing else this service does
+    carries them.
     """
-    return _provider_for(settings.oidc_client_id, settings.oidc_client_secret)
+    if scope is None:
+        return _provider_for(settings.oidc_client_id, settings.oidc_client_secret)
+    return _provider_for(settings.oidc_client_id, settings.oidc_client_secret, scope=scope)
 
 
 def issuer_realm(oidc_base_url: str) -> str | None:

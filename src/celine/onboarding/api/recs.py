@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from celine.onboarding.api.deps import limiter
+from celine.onboarding.config.settings import settings
 from celine.onboarding.services import template_service
 from celine.onboarding.services.eligibility import (
     GeocoderUnavailableError,
@@ -24,7 +26,11 @@ class FindByAddressRequest(BaseModel):
 
 
 @router.post("/recs/find-by-address")
-async def find_recs_by_address(req: FindByAddressRequest):
+@limiter.limit(lambda: settings.rate_limit_eligibility)
+async def find_recs_by_address(request: Request, req: FindByAddressRequest):
+    # Rate-limited like `POST /api/{rec}/eligibility` (REQ-0019): it is the same
+    # check for every community at once, with the same geocoder and Digital
+    # Twin cost.
     addr = None
     try:
         if req.lat is not None and req.lng is not None:
@@ -41,6 +47,9 @@ async def find_recs_by_address(req: FindByAddressRequest):
     except GeocoderUnavailableError as e:
         raise HTTPException(503, f"Address service unavailable: {e}")
 
+    # A Digital Twin outage leaves out only the communities whose areas are
+    # boundaries, and says so with `unchecked`; every other community is still
+    # answered (REQ-0019).
     return await find_recs_for_location(lat, lng, addr)
 
 

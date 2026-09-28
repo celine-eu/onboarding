@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from celine.onboarding.models.document import DocumentType
 from celine.onboarding.models.submission import ParticipantLocale, SubmissionStatus
@@ -26,6 +26,20 @@ class PresentedOffer(BaseModel):
     version: str | None = Field(None, max_length=50)
 
 
+class SupplyAddress(BaseModel):
+    """The supply address the wizard's eligibility step checked (REQ-0018).
+
+    In the shape the geocoder takes: the free-text query, exactly as the
+    applicant typed it and the check geocoded it. The server geocodes the same
+    text again at submit and at approval to resolve the boundary; nothing the
+    browser computed from it (a point, a boundary, an area) is accepted.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    text: str = Field(min_length=1, max_length=300)
+
+
 class SubmissionUpdate(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
@@ -35,8 +49,16 @@ class SubmissionUpdate(BaseModel):
     pod_code: str | None = Field(None, max_length=20)
     # Set by the wizard from the eligibility check, which geocodes the supply
     # address. Preferred over the extracted value when deciding a member's
-    # registry area.
+    # registry area, for a template whose areas are municipality lists.
+    #
+    # There is deliberately no `supply_boundary_id` or `supply_boundary_source`
+    # here (REQ-0007): the service resolves both from the supply address, and a
+    # value a client sends is dropped with every other undeclared key.
     supply_municipality: str | None = Field(None, max_length=200)
+    # The address the eligibility step checked. For a template whose areas are
+    # boundaries it is what the server resolves the boundary from, before the
+    # scanned `extracted_data.indirizzo` (REQ-0018).
+    supply_address: SupplyAddress | None = None
     extracted_data: dict | None = None
     id_extracted_data: dict | None = None
     extra_data: dict | None = None
@@ -132,6 +154,9 @@ class SubmissionRead(BaseModel):
     fiscal_code: str | None
     pod_code: str | None
     supply_municipality: str | None
+    # The applicant's own address as they checked it; the boundary it resolves
+    # to is not here (ADR-0013).
+    supply_address: dict | None = None
     extracted_data: dict | None
     id_extracted_data: dict | None
     extra_data: dict | None
@@ -205,6 +230,17 @@ class SubmissionAdminRead(SubmissionRead):
     # The REC's verification in force, if any. Approval refuses without one; the
     # full history is at `.../verifications`.
     verification: VerificationRead | None = None
+    # The primary-substation boundary the supply address resolved to, and the
+    # area of the template in force whose boundary it is (None when none is).
+    # Resolved by the service, never sent by a client, and deliberately absent
+    # from `SubmissionRead`: the applicant is told they are eligible, not where
+    # (ADR-0013). Set by the admin API.
+    supply_boundary_id: str | None = None
+    supply_boundary_source: str | None = None
+    supply_boundary_area: str | None = None
+    # That area's display name in the template in force (its key when the
+    # template gives none), which is what the review shows (REQ-0023).
+    supply_boundary_area_name: str | None = None
 
     @model_validator(mode="after")
     def explain_unprovisioned_share(self) -> "SubmissionAdminRead":

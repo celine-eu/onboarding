@@ -60,8 +60,15 @@ services:
       # proxy. `extra_hosts` below resolves it in here and /etc/hosts resolves it
       # on the host, so one string serves both sides and matches the app's default.
       OIDC_BASE_URL: ${OIDC_BASE_URL:-http://keycloak.celine.localhost/realms/celine}
+      # Off by default on a local stack: no dataspace identity, no share, and the
+      # registry member is written as `svc-onboarding` (OIDC_CLIENT_ID below),
+      # not as the dataspace client, which only a dataspace host declares.
+      DATASPACE_ENABLED: ${DATASPACE_ENABLED:-false}
+      # The dataspace's own client. Used only when DATASPACE_ENABLED=true. No
+      # default: ds owns this client and its secret, so there is no public dev
+      # value, and a made-up one only fails as a 401 at the token endpoint.
       DS_ONBOARDING_CLIENT_ID: ${DS_ONBOARDING_CLIENT_ID:-svc-ds-onboarding}
-      DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-dev-secret}
+      DS_ONBOARDING_CLIENT_SECRET: ${DS_ONBOARDING_CLIENT_SECRET:-}
       # The community's own client, `svc-ds-connector-<alias>`, which is what
       # registers a consent — the connector refuses a plain service token there.
       # The id is derived from the REC's `dataspace.organization`, so only the
@@ -74,15 +81,37 @@ services:
       # anybody a login — it holds no Keycloak grant of its own. INTERNAL
       # address only: the service has no public route and must not be given one.
       # Unset onboards participants without a login, which is supported.
-      PROVISIONING_URL: ${PROVISIONING_URL:-http://provisioning:8010}
+      #
+      # On the celine-dev stack it is reached through the proxy's internal-only
+      # host (`config/caddy/Caddyfile`, `provisioning.internal.celine.localhost`),
+      # resolved to the host gateway by `extra_hosts` below. `provisioning:8010`
+      # is a name on celine-policies' own network, which this project does not
+      # join, so it resolved nowhere.
+      PROVISIONING_URL: ${PROVISIONING_URL:-http://provisioning.internal.celine.localhost}
+      # The REC registry (approval registers the member there, the registry
+      # sync writes a template's areas) and the Digital Twin (the boundary a
+      # supply address falls in). Their host ports on the celine-dev stack,
+      # through the host gateway. Empty disables the registry step; a boundary
+      # template needs the Digital Twin.
+      REC_REGISTRY_URL: ${REC_REGISTRY_URL:-http://host.docker.internal:8004}
+      DIGITAL_TWIN_URL: ${DIGITAL_TWIN_URL:-http://host.docker.internal:8002}
+      # celine-policies' Mailpit, published on the host's 1025 (UI on
+      # http://mailpit.celine.localhost). Keeps nothing from leaving the machine.
+      SMTP_HOST: ${SMTP_HOST:-172.17.0.1}
+      SMTP_PORT: ${SMTP_PORT:-1025}
       # Admin console. The issuer above is shared: operator tokens and the
       # service's own outbound M2M tokens come from the same realm.
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-svc-onboarding}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-svc-onboarding}
-      # Also the credential presented to the provisioning service: celine's own
-      # client, carrying the scope `provisioning.participants.write` and no
-      # Keycloak right at all. Required when PROVISIONING_URL is set.
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      # Also the credential presented to the provisioning service, the REC
+      # registry (without the dataspace) and the Digital Twin: celine's own
+      # client, carrying `provisioning.participants.write`,
+      # `rec-registry.members.write`, `rec-registry.lookup` and no Keycloak
+      # right at all. Required when PROVISIONING_URL is set. The default is the
+      # dev realm's public one (celine-policies `clients.yaml`,
+      # `SVC_ONBOARDING_SECRET`), as the other services' dev defaults are; a
+      # deployment sets its own.
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-svc-onboarding}
       POLICIES_DIR: /app/policies
     # `.env` is gitignored, so a fresh checkout has none — and a plain list entry
     # makes compose refuse to start rather than fall through to the defaults
@@ -94,6 +123,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "keycloak.celine.localhost:host-gateway"
+      - "provisioning.internal.celine.localhost:host-gateway"
     volumes:
       - ./data:/app/data
     depends_on:

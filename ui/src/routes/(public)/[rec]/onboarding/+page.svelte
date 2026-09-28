@@ -548,20 +548,29 @@
 		eligibilityChecking = true;
 		eligibilityResult = null;
 		errorMsg = '';
+		// The address exactly as it is checked: this is what the server geocodes
+		// again, at submit and at approval, to decide the member's primary
+		// substation (REQ-0018). Never a point or a boundary, which the server
+		// would not accept anyway.
+		const checked = eligibilityAddress.trim();
 		try {
-			eligibilityResult = await recApi.checkEligibility({ address: eligibilityAddress });
+			eligibilityResult = await recApi.checkEligibility({ address: checked });
 
-			// Persist the geocoded municipality. It decides which registry area
-			// the member is registered into after approval, and a geocoder
-			// resolves it far more reliably than OCR of a bill does.
-			if (submissionId && eligibilityResult?.municipality) {
+			if (submissionId && eligibilityResult) {
+				// Persist the address the check used and, where the geocoder gave
+				// one, the municipality (which decides the area of a community
+				// whose areas are municipality lists).
+				const patch: Record<string, unknown> = { supply_address: { text: checked } };
+				if (eligibilityResult.municipality) {
+					patch.supply_municipality = eligibilityResult.municipality;
+				}
 				try {
-					await saveSubmission(submissionId, {
-						supply_municipality: eligibilityResult.municipality,
-					});
-				} catch {
-					// Not worth blocking the wizard: the extraction carries a
-					// fallback and the community has a default area.
+					await saveSubmission(submissionId, patch);
+				} catch (e) {
+					// Without the saved address a community whose areas are
+					// boundaries cannot resolve the submission, so say so rather
+					// than let the submit fail later for no visible reason.
+					errorMsg = e instanceof Error ? e.message : 'Failed to save the address';
 				}
 			}
 		} catch (e) {

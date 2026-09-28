@@ -287,6 +287,18 @@
 					<dd class="mono">{submission.pod_code ?? '—'}</dd>
 					<dt>{$t('admin.detail.supply_municipality')}</dt>
 					<dd>{submission.supply_municipality ?? '—'}</dd>
+					{#if submission.supply_address?.text}
+						<dt>{$t('admin.detail.supply_address')}</dt>
+						<dd>{submission.supply_address.text}</dd>
+					{/if}
+					{#if submission.supply_boundary_id}
+						<dt>{$t('admin.detail.supply_boundary')}</dt>
+						<dd class="mono">
+							{submission.supply_boundary_area
+								? $t('admin.detail.supply_boundary_in_area', { id: submission.supply_boundary_id, area: submission.supply_boundary_area_name ?? submission.supply_boundary_area })
+								: $t('admin.detail.supply_boundary_no_area', { id: submission.supply_boundary_id })}
+						</dd>
+					{/if}
 				</dl>
 				{#if can('submissions.reveal')}
 					<button class="secondary small" onclick={toggleReveal} disabled={busy !== null}>

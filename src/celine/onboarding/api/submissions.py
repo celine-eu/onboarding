@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import limiter, valid_rec_slug
+from celine.onboarding.api.deps import limiter, peer_ip, valid_rec_slug
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.models.schemas import (
@@ -17,6 +17,7 @@ from celine.onboarding.models.schemas import (
 )
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import submission_service, template_service
+from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.workflows.engine import InvalidTransitionError
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -66,9 +67,11 @@ async def create_submission(
     rec_slug: str = Depends(valid_rec_slug),
     db: AsyncSession = Depends(get_db),
 ):
-    client_ip = request.headers.get(
-        "x-forwarded-for", request.client.host if request.client else "unknown"
-    )
+    # The consent's evidence IP is the connection's peer as uvicorn resolved it,
+    # never a header the client wrote: uvicorn replaces the peer with the
+    # forwarded address only when the connection comes from a proxy listed in
+    # FORWARDED_ALLOW_IPS (REQ-0020).
+    client_ip = peer_ip(request)
     submission = await submission_service.create_from_consent(db, data, client_ip, rec_slug)
     return submission
 
@@ -97,6 +100,12 @@ async def update_submission(
         return await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
         )
+    except BoundaryUnavailableError:
+        # The boundary could not be resolved, so the submit is not accepted. Not
+        # a 422: nothing the applicant sent is wrong, and nothing was decided.
+        raise HTTPException(
+            503, "We cannot check your address right now. Please try again later."
+        ) from None
     except template_service.SharingOffersUnavailableError as e:
         # The offers could not be checked, so the consent is not recorded. 503
         # rather than 422: the client's payload is not known to be wrong, it is

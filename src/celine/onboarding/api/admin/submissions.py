@@ -32,7 +32,13 @@ from celine.onboarding.config.settings import settings
 from celine.onboarding.models.schemas import SubmissionAdminRead, SubmissionUpdate
 from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.security.policy import Capability, get_policy
-from celine.onboarding.services import audit_service, review, submission_service
+from celine.onboarding.services import (
+    audit_service,
+    review,
+    submission_service,
+    supply_boundary,
+)
+from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.services.enablement import EnablementError
 from celine.onboarding.workflows.engine import InvalidTransitionError
 
@@ -54,6 +60,11 @@ def _read(submission, *, reveal: bool = False) -> SubmissionAdminRead:
     """
     model = SubmissionAdminRead.model_validate(submission)
     model.phone_verification_waived = review.phone_verification_waived(submission)
+    # "Primary substation <id>, area <name>" (REQ-0023): the area is read
+    # against the template in force now, so a boundary the template dropped
+    # shows no area; the console shows its display name, the key stays beside.
+    model.supply_boundary_area = supply_boundary.area_of(submission)
+    model.supply_boundary_area_name = supply_boundary.area_name_of(submission)
     if reveal:
         return model
     return model.model_copy(
@@ -209,6 +220,8 @@ async def update_submission(
         result = await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks
         )
+    except BoundaryUnavailableError as exc:
+        raise HTTPException(503, f"The supply address cannot be checked right now: {exc}")
     except (ValueError, InvalidTransitionError) as exc:
         raise HTTPException(422, str(exc))
 
@@ -277,6 +290,8 @@ async def transition_submission(
         )
     except EnablementError as exc:
         raise HTTPException(422, str(exc))
+    except BoundaryUnavailableError as exc:
+        raise HTTPException(503, f"The supply address cannot be checked right now: {exc}")
     except (ValueError, InvalidTransitionError) as exc:
         raise HTTPException(422, str(exc))
     return _read(result)

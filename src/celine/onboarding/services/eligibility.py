@@ -1,9 +1,12 @@
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
 
 from celine.onboarding.services import template_service
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,16 +34,15 @@ class EligibilityResult:
     reason: str | None = None
 
 
-# **OSM has no single key for "the comune", and in Trentino the obvious one is
-# wrong.** `municipality` there is the *Comunità di valle*, a body above the
-# comune: Volano comes back as `village=Volano, municipality=Comunità della
-# Vallagarina`, and Folgaria as `city=Folgaria, municipality=Magnifica Comunità
-# degli Altipiani Cimbri`. A frazione is the mirror image — Gionghi is
-# `village=Gionghi, municipality=Lavarone`, and Lavarone is the comune the
-# coverage rule names.
+# **OSM has no single key for "the comune", and in some regions the obvious one
+# is wrong.** Where a body sits above the comune (a valley or district union),
+# `municipality` names that body: a town comes back as `village=Springfield,
+# municipality=Union of the Valley`. A frazione is the mirror image — a hamlet
+# comes back as `village=Shelbyville Heights, municipality=Shelbyville`, and
+# Shelbyville is the comune the coverage rule names.
 #
 # So neither order works: preferring `village` rejects every frazione, and
-# preferring `municipality` rejects most of a real community's comuni. A
+# preferring `municipality` rejects most of such a community's comuni. A
 # `municipality` rule is therefore matched against **all** of these, and only
 # the display value is chosen by precedence.
 MUNICIPALITY_KEYS = ("city", "town", "village", "municipality")
@@ -116,8 +118,60 @@ class NoRestrictionChecker:
         return EligibilityResult(eligible=True, address=addr)
 
 
+#: What an address outside a boundary community is told. It names nothing: not
+#: the boundary the point fell in, not an area, not the municipality (ADR-0013).
+OUTSIDE_THE_COMMUNITY = "This address is not in the community's area"
+
+
+class BoundaryChecker:
+    """Eligibility by primary-substation boundary, through the Digital Twin (REQ-0003).
+
+    Eligible only when the boundary covering the address's point is the boundary
+    of one of the template's areas; outside every declared boundary, not
+    eligible; no fallback to a municipality, to ``coverage.rules`` or to a
+    default area. It is the one checker that does I/O, so it is asked through
+    :func:`evaluate`, never :meth:`check`.
+
+    The result carries **no boundary id, no area and no matched rule or value**
+    (REQ-0006): an anonymous caller learns whether an address is inside, never
+    where inside.
+    """
+
+    requires_address = True
+
+    def __init__(self, binding: template_service.RecRegistryBinding):
+        self.binding = binding
+
+    def check(self, addr: AddressInfo | None) -> EligibilityResult:
+        raise TypeError("BoundaryChecker asks the Digital Twin; use `await evaluate(...)`")
+
+    async def check_async(self, addr: AddressInfo | None) -> EligibilityResult:
+        """Raises ``DigitalTwinUnavailableError`` when the Digital Twin cannot answer."""
+        from celine.onboarding.services.boundaries import resolve_point
+
+        if addr is None:
+            raise ValueError("BoundaryChecker needs an address to resolve")
+        resolution = await resolve_point(self.binding, addr.lat, addr.lng)
+        if resolution.eligible:
+            return EligibilityResult(eligible=True, address=addr)
+        return EligibilityResult(eligible=False, address=addr, reason=OUTSIDE_THE_COMMUNITY)
+
+
+async def evaluate(checker: EligibilityChecker, addr: AddressInfo | None) -> EligibilityResult:
+    """Ask *checker* about *addr*, whether or not it has to go over the network."""
+    if isinstance(checker, BoundaryChecker):
+        return await checker.check_async(addr)
+    return checker.check(addr)
+
+
 def get_checker(rec_slug: str) -> EligibilityChecker:
+    # A template whose areas are boundaries has one eligibility answer, the
+    # boundary's. Import refuses `coverage.rules` beside it (REQ-0017), and even
+    # a manifest that slipped past import never reaches the rules below.
     manifest = template_service.load_manifest(rec_slug)
+    if template_service.declares_boundaries(manifest.get("rec_registry")):
+        return BoundaryChecker(template_service.rec_registry_binding(rec_slug))
+
     coverage = manifest.get("coverage")
     if not coverage:
         return NoRestrictionChecker()
@@ -133,10 +187,14 @@ def get_checker(rec_slug: str) -> EligibilityChecker:
     return RulesChecker(rules)
 
 
-async def find_recs_for_location(
-    lat: float, lng: float, addr: AddressInfo | None = None
-) -> list[dict]:
-    """Every community whose coverage admits this location.
+async def find_recs_for_location(lat: float, lng: float, addr: AddressInfo | None = None) -> dict:
+    """Every community whose coverage admits this location, and whether any went unchecked.
+
+    ``{"matches": [...], "unchecked": bool}``. ``unchecked`` is true when a
+    community whose areas are boundaries could not be checked because the
+    Digital Twin did not answer (REQ-0019): it is left out of ``matches``, and
+    the caller can say "try again later" rather than "no community covers this
+    address", which is not what was found.
 
     One address lookup for the whole sweep, not one per community: the
     coordinates are the same for all of them, so asking the geocoder once per
@@ -148,9 +206,25 @@ async def find_recs_for_location(
     if addr is None and any(c.requires_address for _, c in checkers):
         addr = await reverse_geocode(lat, lng)
 
+    from celine.onboarding.services.boundaries import DigitalTwinUnavailableError
+
     results = []
+    unchecked = False
     for slug, checker in checkers:
-        result = checker.check(addr)
+        # A boundary community the Digital Twin cannot answer for fails closed
+        # **on its own** (REQ-0019): it is not listed, since an admission nobody
+        # computed is not an admission; and the other communities are still
+        # answered, since a municipality community's check never needed the
+        # Digital Twin. The point is not logged.
+        try:
+            result = await evaluate(checker, addr)
+        except DigitalTwinUnavailableError:
+            logger.warning(
+                "find-by-address: community %s left out, its boundaries could not be checked",
+                slug,
+            )
+            unchecked = True
+            continue
         if result.eligible:
             manifest = template_service.load_manifest(slug)
             results.append(
@@ -163,7 +237,7 @@ async def find_recs_for_location(
                     "matched_value": result.matched_value,
                 }
             )
-    return results
+    return {"matches": results, "unchecked": unchecked}
 
 
 def _parse_address(addr: dict) -> dict:

@@ -190,7 +190,7 @@ def get_config(rec_slug: str) -> dict[str, Any]:
         "branding": manifest.get("branding", {}),
         "fields": manifest.get("fields", {"extra": [], "hidden": []}),
         "consent": manifest.get("consent", {}),
-        "steps": manifest.get("steps", ["consents", "personal", "review"]),
+        "steps": manifest.get("steps", list(DEFAULT_STEPS)),
         "content": _load_content(rec_slug, manifest),
     }
 
@@ -456,6 +456,44 @@ def offer_recipient(offer: dict[str, Any]) -> str:
     return str(value).strip()
 
 
+#: The boundary sources a template may name. A closed set: each value is one
+#: table the Digital Twin's boundary fetchers read, and another country's
+#: boundaries are a new value here and there, not new code (ADR-0012).
+BOUNDARY_SOURCES: frozenset[str] = frozenset({"gse_cabine_primarie"})
+
+#: The Digital Twin accepts a boundary id of 1 to 64 characters.
+BOUNDARY_ID_MAX_LENGTH = 64
+
+#: What a registry area key may be when this service writes it: it goes into a
+#: registry URL path (`PUT …/areas/{area_key}`) and a 128-character column, so
+#: URL-safe characters only, starting with a letter or digit.
+AREA_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+#: The longest display ``name`` a boundary area may carry (D57). It is written
+#: to the registry area's ``name`` and its topology node's ``name``.
+AREA_NAME_MAX_LENGTH = 128
+
+#: The wizard's steps when a manifest names none (see :func:`get_config`).
+DEFAULT_STEPS = ("consents", "personal", "review")
+
+#: The wizard step that creates the submission; nothing a step before it checks
+#: can be saved (see :func:`validate_boundary_template`).
+SUBMISSION_CREATING_STEP = "consents"
+
+
+@dataclass(frozen=True)
+class BoundaryRef:
+    """One primary-substation boundary, by source and id — never a shape.
+
+    For ``gse_cabine_primarie`` the id is the substation's ``cod_ac``. The shape
+    stays in gold and is read through the Digital Twin; this service holds no
+    geometry and no list of codes (ADR-0012).
+    """
+
+    source: str
+    id: str
+
+
 @dataclass(frozen=True)
 class RecRegistryBinding:
     """Where a REC's approved participants are registered as community members.
@@ -463,9 +501,28 @@ class RecRegistryBinding:
     Per-REC for the same reason the dataspace binding is: one deployment serves
     several communities, and each is its own community in the registry.
 
-    ``areas`` maps each registry area key to the municipalities it covers —
-    a coarse stand-in for the community's real geofences, authored the same way
-    the manifest's ``coverage.rules`` already are:
+    A template declares its areas in one of two ways, never both.
+
+    **As primary-substation boundaries** (``boundaries``; ADR-0012, REQ-0001):
+
+    .. code-block:: yaml
+
+        areas:
+          north:
+            name: North valley          # optional; the key when absent
+            boundary: {source: gse_cabine_primarie, id: AC000E00001}
+
+    The optional ``name`` is the area's display name (D57), written to the
+    registry area's ``name`` and its topology node's ``name`` by the registry
+    sync; ``names`` holds only the areas that give one (see :meth:`area_name`).
+
+    The boundary that contains the supply address decides both eligibility and
+    the member's area, through the Digital Twin (ADR-0013). Such a template has
+    no municipality lists and no ``default_area``: there is no fallback.
+
+    **As municipality lists** (``areas``), for a template that declares no
+    boundaries — a coarse stand-in, authored the way the manifest's
+    ``coverage.rules`` are:
 
     .. code-block:: yaml
 
@@ -473,29 +530,66 @@ class RecRegistryBinding:
           valley-north: [Springfield, Shelbyville]
           valley-south: [Ogdenville]
 
-    Broad is the point. Matching a municipality is not the same as resolving a
-    point against a polygon, and it will be wrong for a member whose supply
-    address sits in a municipality split across two areas. It is right often
-    enough to be worth doing, and a REC manager moves the rest — which is why
-    ``default_area`` is required rather than optional. A member with no area at
-    all could not be registered; a member in the wrong one is visible and
-    movable.
+    Matching a municipality is not resolving a point against a polygon, and it
+    is wrong for a member whose supply address sits in a municipality split
+    across two areas; a REC manager moves the rest, which is why
+    ``default_area`` is required on this path. A member with no area at all
+    could not be registered; a member in the wrong one is visible and movable.
     """
 
     community: str = ""
     default_area: str = ""
     areas: dict[str, list[str]] = field(default_factory=dict)
+    boundaries: dict[str, BoundaryRef] = field(default_factory=dict)
+    #: Boundary area key -> the display name the template gives it (D57).
+    names: dict[str, str] = field(default_factory=dict)
+
+    def area_name(self, area_key: str) -> str:
+        """The area's display name: the template's ``name``, or the key itself."""
+        return self.names.get(area_key) or area_key
 
     @property
     def enabled(self) -> bool:
         return bool(self.community)
+
+    @property
+    def uses_boundaries(self) -> bool:
+        """Whether areas, and eligibility, are decided by boundary."""
+        return bool(self.boundaries)
+
+    @property
+    def boundary_sources(self) -> tuple[str, ...]:
+        """Every source the template's boundaries name, in a stable order."""
+        return tuple(sorted({ref.source for ref in self.boundaries.values()}))
+
+    def area_for_boundary(self, source: str | None, boundary_id: str | None) -> str | None:
+        """The area whose boundary is exactly this one, or ``None``.
+
+        An exact match on source and id: the id is a code, not a name, so there
+        is no case or padding to forgive.
+        """
+        if not source or not boundary_id:
+            return None
+        for area_key, ref in self.boundaries.items():
+            if ref.source == source and ref.id == boundary_id:
+                return area_key
+        return None
 
     def area_for(self, municipality: str | None) -> str:
         """The area covering *municipality*, or the default.
 
         Case- and whitespace-insensitive, because the name arrives from OCR of a
         utility bill rather than from a picker.
+
+        Refused for a template with boundaries: its area comes from the boundary
+        the supply address falls in, and a municipality or a default would be the
+        fallback ADR-0013 rules out.
         """
+        if self.uses_boundaries:
+            raise ValueError(
+                "This community's areas are primary-substation boundaries; a member's "
+                "area is the boundary their supply address falls in, never a municipality"
+            )
         if not municipality:
             return self.default_area
 
@@ -504,6 +598,97 @@ class RecRegistryBinding:
             if any(m.strip().casefold() == needle for m in municipalities):
                 return area_key
         return self.default_area
+
+
+def declares_boundaries(block: Any) -> bool:
+    """Whether a ``rec_registry`` block declares any area as a boundary.
+
+    Read leniently, so a caller can branch before validation says why a block is
+    malformed: one area given as a mapping is enough.
+    """
+    if not isinstance(block, dict):
+        return False
+    areas = block.get("areas")
+    return isinstance(areas, dict) and any(isinstance(v, dict) for v in areas.values())
+
+
+def _validate_boundary_areas(block: dict, *, where: str) -> None:
+    """The boundary form of ``rec_registry.areas`` (REQ-0001, REQ-0002)."""
+    areas = block["areas"]
+
+    if any(not isinstance(v, dict) for v in areas.values()):
+        raise ValueError(
+            f"{where}: 'rec_registry.areas' mixes boundaries with municipality lists. "
+            "A template declares every area as a boundary, or none."
+        )
+    if str(block.get("default_area") or "").strip():
+        raise ValueError(
+            f"{where}: 'rec_registry.default_area' is not allowed beside boundaries. "
+            "A member's area is the boundary their supply address falls in; there is "
+            "no fallback."
+        )
+
+    seen: dict[tuple[str, str], str] = {}
+    for area_key, entry in areas.items():
+        at = f"{where}: 'rec_registry.areas.{area_key}'"
+        if not isinstance(area_key, str) or not AREA_KEY.fullmatch(area_key):
+            raise ValueError(
+                f"{at}: {area_key!r} is not a valid registry area key — letters, digits, "
+                "'-' and '_', starting with a letter or digit, at most 128 characters"
+            )
+        extra = set(entry) - {"boundary", "name"}
+        if extra:
+            raise ValueError(f"{at}: unknown key(s) {', '.join(sorted(map(str, extra)))}")
+        if "name" in entry:
+            name = entry["name"]
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or name != name.strip()
+                or len(name) > AREA_NAME_MAX_LENGTH
+            ):
+                raise ValueError(
+                    f"{at}.name must be the area's display name, a string of 1 to "
+                    f"{AREA_NAME_MAX_LENGTH} characters with no surrounding spaces "
+                    f"(got {name!r}); leave it out to use the key"
+                )
+        boundary = entry.get("boundary")
+        if not isinstance(boundary, dict):
+            raise ValueError(
+                f"{at}.boundary must be a mapping {{source: gse_cabine_primarie, id: <cod_ac>}}"
+            )
+        extra = set(boundary) - {"source", "id"}
+        if extra:
+            raise ValueError(f"{at}.boundary: unknown key(s) {', '.join(sorted(map(str, extra)))}")
+
+        source = boundary.get("source")
+        if source not in BOUNDARY_SOURCES:
+            raise ValueError(
+                f"{at}.boundary.source must be one of {', '.join(sorted(BOUNDARY_SOURCES))} "
+                f"(got {source!r})"
+            )
+        boundary_id = boundary.get("id")
+        if (
+            not isinstance(boundary_id, str)
+            or not boundary_id.strip()
+            or boundary_id != boundary_id.strip()
+            or len(boundary_id) > BOUNDARY_ID_MAX_LENGTH
+        ):
+            raise ValueError(
+                f"{at}.boundary.id must be the boundary's id in {source!r}, a string of 1 "
+                f"to {BOUNDARY_ID_MAX_LENGTH} characters with no surrounding spaces "
+                f"(got {boundary_id!r})"
+            )
+
+        # Two names for one substation are indistinguishable to everything
+        # downstream: the pipelines key on the substation, not on the name.
+        key = (source, boundary_id)
+        if key in seen:
+            raise ValueError(
+                f"{where}: boundary {boundary_id!r} ({source}) is declared by both "
+                f"{seen[key]!r} and {area_key!r}; one boundary is one area"
+            )
+        seen[key] = area_key
 
 
 def validate_rec_registry_block(block: Any, *, where: str) -> None:
@@ -518,6 +703,11 @@ def validate_rec_registry_block(block: Any, *, where: str) -> None:
             f"{where}: 'rec_registry.community' is required. Omit the whole "
             "'rec_registry' block to skip registry registration."
         )
+
+    if declares_boundaries(block):
+        _validate_boundary_areas(block, where=where)
+        return
+
     if not str(block.get("default_area", "")).strip():
         raise ValueError(
             f"{where}: 'rec_registry.default_area' is required — it is where a "
@@ -554,6 +744,55 @@ def validate_rec_registry_block(block: Any, *, where: str) -> None:
             seen[key] = area_key
 
 
+def validate_boundary_template(manifest: dict[str, Any], *, where: str) -> None:
+    """What a template with boundaries may not also say (REQ-0017, D33).
+
+    - **No ``coverage.rules``** (nor the older ``coverage.municipalities``): the
+      boundary alone decides eligibility, and a rule set beside it would be a
+      second answer that reads as if it applied.
+    - **An ``eligibility`` step**: it is where the supply address is checked
+      against the boundaries; without it an applicant outside every boundary
+      could reach submission.
+    - **The ``eligibility`` step after ``consents``**: the checked address is
+      saved on the submission, which ``consents`` creates; checked before it,
+      the address is lost and the submission has nothing to resolve from.
+
+    A template without boundaries is not affected.
+    """
+    if not declares_boundaries(manifest.get("rec_registry")):
+        return
+
+    coverage = manifest.get("coverage")
+    if isinstance(coverage, dict) and (coverage.get("rules") or coverage.get("municipalities")):
+        raise ValueError(
+            f"{where}: 'coverage' rules are not allowed beside boundary areas. The "
+            "boundary the supply address falls in decides eligibility; remove "
+            "'coverage.rules' (and 'coverage.municipalities')."
+        )
+
+    steps = manifest.get("steps")
+    if steps is None:
+        steps = list(DEFAULT_STEPS)
+    if not isinstance(steps, list) or "eligibility" not in steps:
+        raise ValueError(
+            f"{where}: a template with boundary areas must include the 'eligibility' "
+            "step, where the supply address is checked against the boundaries."
+        )
+
+    # The address the eligibility step checks is saved onto the submission, and
+    # the submission exists only once the `consents` step has created it. An
+    # eligibility step before that checks an address nothing can save, and the
+    # boundary is resolved from the saved address at submit and at approval.
+    if SUBMISSION_CREATING_STEP not in steps or steps.index("eligibility") < steps.index(
+        SUBMISSION_CREATING_STEP
+    ):
+        raise ValueError(
+            f"{where}: a template with boundary areas must place the 'eligibility' step "
+            f"after the '{SUBMISSION_CREATING_STEP}' step, which creates the submission "
+            "the checked supply address is saved on."
+        )
+
+
 def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
     """Resolve a REC's registry binding from its manifest."""
     block = load_manifest(rec_slug).get("rec_registry")
@@ -561,8 +800,18 @@ def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
         return RecRegistryBinding()
 
     validate_rec_registry_block(block, where=f"REC {rec_slug!r}")
+    community = str(block["community"]).strip()
+    if declares_boundaries(block):
+        return RecRegistryBinding(
+            community=community,
+            boundaries={
+                str(k): BoundaryRef(source=v["boundary"]["source"], id=v["boundary"]["id"])
+                for k, v in block["areas"].items()
+            },
+            names={str(k): v["name"] for k, v in block["areas"].items() if v.get("name")},
+        )
     return RecRegistryBinding(
-        community=str(block["community"]).strip(),
+        community=community,
         default_area=str(block["default_area"]).strip(),
         areas={str(k): [str(m) for m in v] for k, v in (block.get("areas") or {}).items()},
     )

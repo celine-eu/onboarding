@@ -178,7 +178,7 @@ class TestPayload:
 
     def test_the_address_is_not_substring_matched(self):
         """Italian street names routinely contain other municipalities' names:
-        substring-matching "Via Roma 1, Lavarone" against a municipality list
+        substring-matching "Via Roma 1, Springfield" against a municipality list
         would file the member under Roma."""
         payload = rr.build_member_payload(
             _sub(extracted_data={"indirizzo": "Via Springfield 1, Ogdenville"}),

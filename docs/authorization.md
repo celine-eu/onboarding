@@ -43,7 +43,7 @@ authorise an action on community B.
 |---|---|
 | `viewers` | read submissions (fiscal code and POD masked), read the audit trail |
 | `editors` | + take in charge, edit fields and notes, unmask identifiers |
-| `managers` | + approve, reject, reopen, retry a failed enablement step, export |
+| `managers` | + approve, reject, reopen, retry a failed enablement step, export, see whether the registry's areas match the template (organization level only; see below) |
 | `admins` | + GDPR erasure, reverse enablement |
 
 An **organization**-level group grants those for that community's RECs. A
@@ -67,6 +67,27 @@ submission or revoke a credential, because the table above names only `admins` f
 those. The two tiers keep their full meaning at organization level, which is where
 a read-only member of one REC belongs.
 
+### `recs.write` is realm `admins` only
+
+The registry sync (`POST /api/admin/recs/{rec}/registry-sync`) writes a whole community's
+areas and topology in the REC registry and sets its Keycloak organization up, so its
+capability, `recs.write`, is granted by a **realm-level** `admins` group and nothing else:
+not an organization's own `admins` (`realm_only_actions` in the rego), not a realm
+`managers`, and no scope — it has no `onboarding.*` scope, so `onboarding.admin` does not
+satisfy it either. A sync always follows a person's decision: `onboarding-cli
+registry-sync` takes that person's `--token`, or runs `--local`. See
+[ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md).
+
+### `recs.drift` is realm `admins` and the REC's own managers and admins
+
+The console's drift check (`GET /api/admin/recs/{rec}/registry-drift`, the *Areas* page)
+shows whether the registry's areas match the template. Its capability, `recs.drift`, is
+granted to the REC's own `managers` and `admins` (organization level), and at realm level to
+`admins` only: `realm_required_groups` in the rego narrows the realm grant for this action,
+so a realm `managers`, who reaches submissions everywhere, does not reach it. The REC's
+`editors` and `viewers` do not either, and no scope grants it (`people_only_actions`), so
+`onboarding.admin` does not satisfy it (D55).
+
 ### An organization grant requires a REC
 
 `granted_by_org_group` also checks the **type** of the matched organization: it
@@ -74,7 +95,8 @@ must be `rec`. An organization typed `dso`, typed anything else, or carrying no
 type at all grants nothing here, whatever its members are called.
 
 The attribute is written by `celine-policies keycloak sync-orgs` from the owner's
-`organization.role`. Reading it is the SDK's job: `Organization.type` takes the
+`organization.role`, or, for an organization the provisioning service's reconcile
+creates, from the registry community's type (default `rec`). Reading it is the SDK's job: `Organization.type` takes the
 flattened `type` key a real token carries
 (`"organization": {"my-rec": {"type": ["rec"], "groups": [...]}}`) and falls back
 to the nested `attributes.type`, so a policy written against `attributes.type`
@@ -142,7 +164,9 @@ and startup logs a warning naming every affected REC.
 ## Scopes
 
 For service accounts and `onboarding-cli`. Defined in `celine-policies`'
-`clients.yaml`; `onboarding.admin` satisfies all of them.
+`clients.yaml`; `onboarding.admin` satisfies all of them. None grants `recs.write` (the
+registry sync), which is a realm `admins` group's alone, or `recs.drift` (the drift check),
+which is for people only.
 
 ```
 onboarding.recs.read            onboarding.enablement.retry

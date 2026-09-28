@@ -2,23 +2,66 @@
 
 **Public (session-gated, rate-limited):**
 
+Every per-community route is under `/api/{rec}`, where `{rec}` is the template's slug; an
+unknown slug is `404`. Only the cross-community routes, downloads, `/api/me/**` and
+`/api/health` are not.
+
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/api/submissions` | none | Create (consent-first), returns session token |
-| `GET/PATCH` | `/api/submissions/{id}` | session | Read/update own (10min TTL) |
-| `POST` | `/api/submissions/{id}/documents` | session | Upload (10min TTL) |
-| `GET` | `/api/submissions/{id}/pdf` | session | Download summary (10min TTL) |
-| `POST` | `/api/extract` | session | Bill OCR (10/hr) |
-| `POST` | `/api/extract-id` | session | ID card OCR (10/hr) |
-| `POST` | `/api/documents/{id}/extract` | session | Extract from uploaded doc (ownership check) |
-| `POST` | `/api/extractions/{id}/confirm` | session | Confirm extraction (ownership check) |
+| `GET` | `/api/health` | none | Liveness |
+| `GET` | `/api/recs` | none | Every community this deployment serves, for the landing page |
+| `POST` | `/api/recs/find-by-address` | none | The coverage check across every community (`RATE_LIMIT_ELIGIBILITY`, shared with the per-community check); see below |
+| `GET` | `/api/{rec}/config` | none | Template config, `login_invitation` and `features` |
+| `GET` | `/api/{rec}/template/{path}` | none | A template asset (logo, content) |
+| `GET` | `/api/{rec}/sharing-offers` | none | Data-sharing offers for the wizard, proxied from the connector's `/ns/sharing-offers` and filtered by the manifest allow-list |
+| `GET` | `/api/{rec}/consent-documents` | none | The community's local consent documents' metadata |
+| `GET` | `/api/{rec}/consent-documents/{slug}` | none | PDF or redirect (`/meta` for its metadata) |
+| `POST` | `/api/{rec}/eligibility` | none | Coverage check (`RATE_LIMIT_ELIGIBILITY`, default 30/hr per client address); see below |
+| `POST` | `/api/{rec}/submissions` | none | Create (consent-first), returns session token (20/hr) |
+| `GET/PATCH` | `/api/{rec}/submissions/{id}` | session | Read/update own (10min TTL) |
+| `POST/GET` | `/api/{rec}/submissions/{id}/documents` | session | Upload, list (10min TTL) |
+| `GET` | `/api/{rec}/submissions/{id}/pdf` | session | Download summary (10min TTL, 5/min) |
+| `POST` | `/api/{rec}/extract` | session | Bill OCR (10/hr) |
+| `POST` | `/api/{rec}/extract-id` | session | ID card OCR (10/hr) |
+| `POST` | `/api/{rec}/documents/{id}/extract` | session | Extract from uploaded doc (ownership check) |
+| `POST` | `/api/{rec}/extractions/{id}/confirm` | session | Confirm extraction (ownership check) |
 | `POST` | `/api/{rec}/submissions/{id}/verify-phone` | session | Send SMS OTP (10/hr) |
 | `POST` | `/api/{rec}/submissions/{id}/confirm-phone` | session | Confirm OTP, mark verified (20/hr) |
-| `POST` | `/api/eligibility` | none | Coverage check |
-| `GET` | `/api/config` | none | Template config |
-| `GET` | `/api/{rec}/sharing-offers` | none | Data-sharing offers for the wizard, proxied from the connector's `/ns/sharing-offers` and filtered by the manifest allow-list |
-| `GET` | `/api/consent-documents/{slug}` | none | PDF or redirect |
 | `GET` | `/api/downloads/{token}` | token | Time-limited document download |
+
+**The coverage check for a community whose areas are boundaries.**
+`POST /api/{rec}/eligibility` takes `{"address"}` or `{"lat", "lng"}` as before and
+answers `{"eligible": bool, ...}`. The geocoded point goes to the Digital Twin's
+`boundary_at_point` with this service's own token (`svc-onboarding`,
+`digital-twin.values.read`; the caller sends no credential and receives no token).
+`matched_rule` and `matched_value` are always `null` and `reason` names nothing:
+the answer carries no boundary id and no area. **No answer carries a coordinate**, for
+any community: there is no `lat` or `lng` in it (removed in 0.4.0), whether the caller
+sent an address or a point — the point geocoded from an address decides the answer and
+is dropped (REQ-0006). `find-by-address` carries none either (REQ-0019). A Digital Twin that does not answer
+is **503** with `detail` "We cannot check your address right now. Please try again
+later.", as an unreachable geocoder is 503 — never `eligible`. Over the rate limit
+the caller gets **429** and no geocoder or Digital Twin call is made.
+`POST /api/recs/find-by-address` takes the same body and answers `{"matches": [{"slug",
+"name", "branding", "locale", "matched_rule", "matched_value"}, …], "unchecked": bool}`
+(`400` with neither an address nor a point, `404` for an address the geocoder cannot
+place, `503` when the geocoder does not answer). It lists a boundary community only when the address is inside one of its
+areas, with no matched rule. When the Digital Twin does not answer, only the boundary
+communities fail closed: each is left out of `matches` (never listed on a guess),
+`unchecked` is `true`, and every other community is still answered, so the route stays
+**200**; the finder page then asks to try again later rather than saying nothing covers
+the address. It shares the eligibility rate limit (REQ-0019).
+
+**Submitting, for a community whose areas are boundaries.** `PATCH
+/api/{rec}/submissions/{id}` (and the admin `PATCH` and `transition`) resolve the
+submission's boundary from its supply address: the one the wizard checked,
+`supply_address: {"text": "<address>"}` (saved by the eligibility step; the free-text
+query the geocoder takes, 1 to 300 characters, no other key accepted), or, when
+there is none, the scanned `extracted_data.indirizzo` (REQ-0018). No request field
+sets `supply_boundary_id` or `supply_boundary_source`, and a value sent is ignored. A move to `submitted` is **422** when there is no supply address
+or it falls in no boundary of the template's areas, and **503** when it cannot be
+checked right now. The session read (`SubmissionRead`) carries the applicant's own
+`supply_address` but not the boundary.
 
 The four extraction routes, and an upload with `doc_type` `utility_bill` or
 `id_card`, answer **403** with `{"detail": {"code": "document_processing_disabled", ...}}`
@@ -75,7 +118,9 @@ fatal to the request, and detailed in [data-sharing.md](data-sharing.md).
 hold no presentable credential, `GET /api/me/data-sharing` issues one on the
 strength of the REC's preregistration and re-resolves. This is a write behind a
 `GET`, which is unusual and deliberate: members admitted offline hold no
-submission, so the door they are standing at is the only one they have. It is
+submission, so the door they are standing at is the only one they have. (On a
+deployed realm every member enters through this service, so a member admitted
+offline is a local-development case — [ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md).) It is
 guarded by the resolve that precedes it — ds's own per-role idempotency is a
 floor, and the resolve asks the stronger question of whether the credential can
 be read back — and it never runs for a community outside the dataspace, which is
@@ -95,9 +140,11 @@ endpoint needs is in brackets.
 | `GET` | `/api/admin/me` | Identity + per-community capabilities. 403 when the caller administers nothing, which is what drives the console's denied page |
 | `GET` | `/api/admin/recs` | Communities the caller may administer |
 | `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so realm `admins`/`managers` only) [`recs.read`] |
+| `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **Realm `admins` only**, no scope grants it; see below [`recs.write`] |
+| `GET` | `/api/admin/recs/{rec}/registry-drift` | Whether the registry's areas and topology match the template; a read, see below. Realm `admins` and the REC's own `managers`/`admins` only, no scope [`recs.drift`] |
 | `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
-| `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action |
+| `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action. Carries `supply_boundary_id`, `supply_boundary_source`, `supply_boundary_area` (the key of the area of the template in force whose boundary it is, or `null`) and `supply_boundary_area_name` (that area's display name, its key when the template gives none, or `null`; REQ-0023) |
 | `PATCH` | `/api/admin/{rec}/submissions/{id}` | Edit fields and notes [`submissions.write`] |
 | `POST` | `/api/admin/{rec}/submissions/{id}/transition` | Drive the state machine. A reason is required when rejecting [`submissions.review`] |
 | `DELETE` | `/api/admin/{rec}/submissions/{id}` | GDPR erasure (files + DB) [`submissions.purge`] |
@@ -114,13 +161,91 @@ endpoint needs is in brackets.
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/invitation` | Email a registry member an invitation to set a password. **Delegated**, see below [`members.invite`] |
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/password-reset` | Email a registry member a password reset. **Delegated**, see below [`members.invite`] |
 
+**Registry sync (`/api/admin/recs/{rec}/registry-sync`, ADR-0012, ADR-0014):**
+
+The template is the source of truth for a community's areas; this route is the only thing
+that writes them to the REC registry, and it runs only when a realm admin calls it (never on
+a template load). `onboarding-cli registry-sync --rec <slug> [--dry-run] [--prune]` calls
+the same route with a realm admin's own `--token`, or runs `--local` in process under the
+break-glass rules; the CLI's client-credentials identity is never used for it
+([specification](specifications/registry-sync.md)).
+
+In order:
+
+1. **The template is validated as it is now**, with template import's checks, every boundary
+   id against the Digital Twin included. Refusals: `422 template_invalid`, `422
+   template_not_syncable` (no `rec_registry` block, or municipality-list areas), `503
+   boundaries_unavailable`. The body is `{"detail": {"code", "message"}}`.
+2. **The registry community is read** with this service's `rec-registry.read`:
+   `503 registry_not_configured`, `404 community_not_found`, `502 registry_unavailable` or
+   `registry_refused`. For each registry area the template does not declare, its members
+   are counted (never returned).
+3. **The community is set up** (not in a dry run): the provisioning service's `POST
+   /reconcile/{community}`, with a token asking for the optional scope
+   `provisioning.reconcile`. A failure, or no `PROVISIONING_URL`, is reported in `setup` and
+   does not stop step 4.
+4. **The writes** (not in a dry run), with a token asking for the optional scope
+   `rec-registry.community.write`: each topology node `{id: <boundary id>, type:
+   primary_substation, name: <area name>}`, then each renamed area (below) through the
+   registry's `POST …/areas/{old_key}/rename` `{"new_key"}`, then, with `prune=true`, the
+   undeclared areas that hold no member, then each area `{name: <area name>, boundary:
+   {source, id}, topology: [<boundary id>]}`, then the topology nodes only a pruned area
+   used. The area name is the template's optional `name` for the area, or its key. What the
+   template does not own (a node's `operator_id`/`parent`, an area's `location`/`geometry`)
+   is kept.
+
+   **A renamed area** — a template key the registry does not have, whose boundary the
+   registry holds under one key the template no longer declares — is moved by the registry
+   in one request, with every member naming the old key; no `prune` is needed. It is listed
+   once, under the new key, as `renamed` with `renamed_from` and `members` (how many moved).
+
+The answer, `200` whenever the sync ran:
+
+```json
+{
+  "rec": "rec-b", "community": "example-rec", "dry_run": false, "prune": false, "ok": true,
+  "setup": {"status": "succeeded", "code": null, "reason": null, "members": 0, "created": 0},
+  "nodes": [{"key": "AC000E00001", "boundary_id": "AC000E00001", "outcome": "created",
+             "code": null, "reason": null, "members": null, "renamed_from": null}],
+  "areas": [{"key": "north", "boundary_id": "AC000E00001", "outcome": "created",
+             "code": null, "reason": null, "members": null, "renamed_from": null},
+            {"key": "south", "boundary_id": "AC000E00002", "outcome": "renamed",
+             "code": null, "reason": null, "members": 4, "renamed_from": "old-south"},
+            {"key": "east", "boundary_id": null, "outcome": "undeclared",
+             "code": null, "reason": null, "members": 3, "renamed_from": null}],
+  "summary": {"nodes": {"created": 1}, "areas": {"created": 1, "renamed": 1, "undeclared": 1}}
+}
+```
+
+- `outcome`: `created`, `changed`, `unchanged`, `refused` (with `code` and `reason`),
+  `deleted`, `undeclared` (kept: no `prune`), `renamed` (moved from `renamed_from`, with
+  `members` moved; in a dry run, counted), or `not_run` (the registry stopped answering).
+  In a dry run it is what a real run would do.
+- Refusal codes on an item: `area_in_use` (with `members`), `boundary_held` (the registry
+  holds the boundary under another area key and the new key is already taken, so no rename
+  is possible; `prune` removes the old one once it has no members),
+  `topology_node_not_written`, or the registry's own code (a refused rename carries
+  `area_key_taken`, `area_not_found` or `invalid_area_key`).
+- `ok` is `false` when any item is refused or not run. The set-up step does not decide it:
+  `setup.status` is `succeeded`, `failed` (with `reason`), `skipped` or `not_run`.
+- A real run writes one audit row, `registry_sync` on entity `rec`, with counts only.
+
+`GET /api/admin/recs/{rec}/registry-drift` answers `{"rec", "community", "status":
+"matches" | "drift" | "not_synced", "areas": [{"key", "boundary_id", "state", "held_by"}],
+"nodes": [{"key", "state"}]}`, `state` being `matches`, `missing`, `differs` or
+`undeclared`. It reads with `rec-registry.read` and asks the Digital Twin nothing. It needs
+`recs.drift`: a realm `admins`, or a `managers`/`admins` of the REC's own organization; not
+its editors or viewers, not a realm `managers`, and no service account (D55).
+
 **Member-keyed, delegated (`/api/admin/communities/**`):**
 
 These two routes are how a community manager's "Send invitation" and "Reset password"
 buttons on the `celine-community` dashboard reach the provisioning service. This service is
 the provisioning service's only caller. Unlike the rest of the admin surface, they are keyed
 on the registry's own pair, not on a REC slug and a submission. A member imported into the
-registry is therefore as reachable as one onboarded here.
+registry is therefore as reachable as one onboarded here. On a deployed realm every member
+enters through this service, so an imported member is a local-development case
+([ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md)).
 
 - `{community}` is the **registry community key**: the manifest's `rec_registry.community`,
   not the slug. It resolves to exactly one REC. A key that no manifest declares is

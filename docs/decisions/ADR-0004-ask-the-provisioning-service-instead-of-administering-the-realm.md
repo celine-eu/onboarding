@@ -1,7 +1,7 @@
 # ADR-0004 — This service asks for a login instead of administering the realm
 
 **Date:** 2026-09-12
-**Status:** accepted
+**Status:** accepted — the `provisioning.reconcile` consequence superseded by ADR-0014
 
 Supersedes [ADR-0003](ADR-0003-provision-into-the-group-this-service-may-administer.md),
 and with it the whole line of reasoning in

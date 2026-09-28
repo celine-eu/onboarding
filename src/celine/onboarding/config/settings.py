@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     rate_limit_extraction: str = "10/hour"
     rate_limit_otp_send: str = "10/hour"
     rate_limit_otp_confirm: str = "20/hour"
+    # The anonymous coverage checks (`POST /api/{rec}/eligibility` and
+    # `POST /api/recs/find-by-address`). Each check costs a geocoder call and,
+    # for a community whose areas are primary-substation boundaries, a Digital
+    # Twin call made with this service's own token; unlimited, the routes let
+    # anyone spend both and probe a community's perimeter address by address.
+    rate_limit_eligibility: str = "30/hour"
 
     # Dev default: the Mailpit `../celine-policies`' compose publishes on the host's
     # 1025 — the same catch-all Keycloak's invitation emails land in, so a
@@ -233,6 +239,18 @@ class Settings(BaseSettings):
     # member. Empty disables registration entirely, which is the configuration a
     # deployment without a registry runs.
     rec_registry_url: str = ""
+
+    # The Digital Twin, which answers which primary-substation boundary a point
+    # falls in and which boundary ids exist (`boundary_at_point`,
+    # `boundary_shape`). Needed only by a community whose template declares its
+    # areas as boundaries; startup refuses such a template while this is empty.
+    # Called with this service's own token (`OIDC_CLIENT_ID`, scope
+    # `digital-twin.values.read`). No default, like the other addresses whose
+    # emptiness means the dependency is not there.
+    digital_twin_url: str = ""
+    # Seconds. The applicant waits on the wizard step while it runs, and a
+    # timeout fails the check closed (503) rather than admitting or refusing.
+    digital_twin_timeout: float = 5.0
 
     # The dataspace binding is per-REC and lives in the template manifest's
     # `dataspace:` block. There is deliberately no deployment-wide equivalent:

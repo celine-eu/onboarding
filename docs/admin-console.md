@@ -121,8 +121,10 @@ shows only what `/api/admin/me` lists, has no button for it. The only send this 
 cause besides Approve is the retry of a failed one.
 
 A send from the dashboard changes no step row here. A submission whose step 1 says
-`send_failed` still says so after a manager has sent from the dashboard. Nothing links a
-registry member back to a submission.
+`send_failed` still says so after a manager has sent from the dashboard. On a deployed
+realm every member has a submission, and its reference is the member's key
+([ADR-0011](decisions/ADR-0011-on-a-deployed-realm-every-member-enters-through-onboarding.md)), but nothing reads that link: the send does not look the
+submission up.
 
 Step 3 does one thing more than its name says: the DID it mints is written back
 onto the member step 2 created. That is the key anything else uses to attribute a
@@ -152,6 +154,18 @@ and a delivery point another member holds. Only the first is an earlier attempt 
 same step, and it counts as registered. The others leave no member for this person, so
 the step fails with the registry's reason. Retrying will not clear it. Resolve the clash in
 the registry first, then retry the step.
+
+For a community whose areas are primary-substation boundaries, step 2 **resolves the
+boundary again** from the submission's supply address, against the template in force
+at approval, records the id it finds on the submission, and registers the member into
+the area whose boundary it is. When no area of that template has that boundary — the
+template dropped it since the wizard ran, or the address now resolves elsewhere — the
+step fails with `boundary_not_in_community` in its error and registers nothing; it
+never falls back to a municipality, a default area or the id recorded at submission.
+When the geocoder or the Digital Twin does not answer, the step fails with
+`BoundaryUnavailableError` and registers nothing. Both are retried like any failed
+step, and a retry resolves again: it succeeds once the template (and the registry
+community's areas) declare that boundary, or once the Digital Twin answers.
 
 `retry` only re-runs steps that are not already `succeeded` or `skipped`, with two
 exceptions, both only when the step is named: `keycloak_user` re-runs a login step
@@ -201,7 +215,13 @@ in every email.
 all four consents with version and timestamp, the uploaded documents, the REC's
 verification and its history, the geocoded municipality, the energy answers, phone
 verification, operator notes, the transition buttons, the enablement panel, and this
-submission's own history.
+submission's own history. For a community whose areas are primary-substation
+boundaries it also shows **"Primary substation `<id>`, area `<name>`"**: the boundary
+the supply address resolved to, and the area of the template in force whose boundary
+it is, by the display name the template gives it (its key when it gives none;
+REQ-0023) — or "in no area of this community" when the template no longer declares it,
+which is a submission whose approval will fail at step 2. The applicant is never shown
+either.
 
 **`/admin/{rec}/audit`** — the community's trail. Scoped to this community only:
 rows written before the trail recorded a community, and not recoverable by the
@@ -210,6 +230,17 @@ rows written before the trail recorded a community, and not recoverable by the
 **`/admin/{rec}/exports`** — CSV of every submission, and the supply-point evidence
 for one offer (who stood authorised, who withdrew). Both stream and leave nothing on
 disk.
+
+**`/admin/{rec}/areas`** — whether the REC registry's areas match this community's
+template (the drift check, [REQ-0015](specifications/registry-sync.md)). Each template area
+with its primary substation is shown as *matches*, *missing from the registry* or
+*differs*, and each registry area the template does not declare as *not in the template* —
+which is how an area reintroduced by a bundle import becomes visible. It reads the registry
+and writes nothing. It is shown to realm-level `admins` and to the REC's own `managers` and
+`admins` (`recs.drift`), and the navigation offers the page only to them; the REC's editors
+and viewers, and a realm `managers`, do not see it. A community whose areas are
+municipality lists is not synced, and the page says so. Bringing the registry in line is the
+registry sync (below), which the console does not offer: it is a realm admin's act.
 
 ## Language
 
@@ -262,6 +293,36 @@ guessed at.
 Authentication is a `client_credentials` token for `svc-onboarding-cli`. `--local`
 talks to the database directly for a deployment with no Keycloak — see
 [authorization.md](authorization.md#break-glass).
+
+### The registry sync
+
+A realm admin pushes a community's template areas to the REC registry, and sets the
+community's Keycloak organization up on the way ([ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md),
+[ADR-0014](decisions/ADR-0014-registry-sync-sets-up-the-community-through-the-provisioning-reconcile.md)):
+
+```bash
+onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN" --dry-run   # the plan, nothing written
+onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN"             # set up, then write
+onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN" --prune     # also delete undeclared areas
+onboarding-cli registry-sync --rec my-rec --local                            # in process, break-glass
+```
+
+It needs `recs.write`, which only a realm-level `admins` group holds, so `--token` is that
+person's own access token; the CLI's service account is refused, and the command will not
+start without `--token` or `--local`. It prints the set-up step and every node and area
+with its outcome, takes `--json`, and exits 1 when anything was refused or the set-up
+step failed. A re-run is safe: it changes nothing that already matches and completes a
+set-up that failed.
+
+Removing an area is two steps. `--prune` refuses an area members still reference and says
+how many: move them on the `celine-community` dashboard first, then prune.
+
+A renamed area (same substation, new key in the template) needs no prune: the sync asks the
+registry to move the old area to the new key, and its members move with it, in one request.
+The output lists it as `renamed old-key -> new-key` with the number of members moved; a dry
+run lists the same and moves nothing. Only when the new key already names another registry
+area is the rename not possible: the new key is refused (`boundary_held`) until the old one
+is pruned.
 
 ## Audit trail
 

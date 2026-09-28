@@ -30,7 +30,10 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
 | Fiscal code (CF) | `submissions.fiscal_code` | ✅ checksum (`src/celine/onboarding/validators/fiscal_code.py`) | ✅ |
 | POD code | `submissions.pod_code` | ✅ format (`src/celine/onboarding/validators/pod_code.py`) | ✅ |
 | Email / phone | `submissions.email/phone` | format; phone optionally SMS-verified | ✅ (one of) |
-| Supply address | `extracted_data.indirizzo` (bill OCR, only where scanning is enabled) | ❌ unstructured, optional | ❌ |
+| Supply address (checked) | `submissions.supply_address` (encrypted JSON, `{"text": …}`): the address the eligibility step geocoded, saved by the wizard; what the service resolves the boundary from at submit and approval; never logged | geocoder (must be found) | ❌, except for a community whose areas are boundaries, where it (or the scanned address) must resolve to one of them |
+| Supply address (scanned) | `extracted_data.indirizzo` (bill OCR, only where scanning is enabled); the fallback when no checked address is saved | ❌ unstructured, optional | as above |
+| Supply municipality | `submissions.supply_municipality` (eligibility geocoder, encrypted) | geocoder | ❌ |
+| Primary-substation boundary | `submissions.supply_boundary_id` (encrypted) and `supply_boundary_source`, only for a community whose areas are boundaries; resolved by the service from the supply address (checked, else scanned) on save, submit and approval, never sent by a client; **the geocoded coordinates are not stored** | ✅ must be the boundary of one of the template's areas | ✅ for such a community |
 | Energy assets (PV, kWp, battery, EV, heat pump) | `extra_data` (manifest fields) | type only | only if manifest marks `required` |
 | Property type | `extra_data.property_type` | enum | ❌ |
 | GDPR / policy / statute consent | `submissions.*_consent` + timestamp + version | ✅ | ✅ |
@@ -77,6 +80,15 @@ A member can be in the right municipality but the wrong CP zone, or vice-versa.
 **Recommendation:** support a CP-zone coverage rule type (GSE publishes the CP
 map / an API), or clearly document municipality matching as a pre-screen that
 GSE's own CP check supersedes.
+**Implemented for a template that opts in:** a template may declare its areas as
+GSE primary-substation boundaries. For such a template the geocoded supply point
+is sent to the Digital Twin with this service's own credential, not kept, and the
+boundary containing it decides eligibility and the member's area; only its id and
+source are stored on the submission. The GSE shapes are conventional areas: the
+distributor's assignment of a POD to a substation stays authoritative. See
+[ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md),
+[ADR-0013](decisions/ADR-0013-eligibility-and-area-are-decided-by-boundary-through-the-digital-twin.md)
+and [specifications/eligibility-and-areas.md](specifications/eligibility-and-areas.md).
 
 #### G2. Supply address is not a first-class field
 The POD's supply address is only captured as free text inside
@@ -88,8 +100,10 @@ within the CP perimeter, so the platform should persist a structured,
 required address for the POD.
 **Recommendation:** add structured address fields (street, house number,
 municipality, postal code, province) as required submission fields; persist the
-geocoded eligibility result (lat/lng, matched CP/municipality, outcome) rather
-than discarding it.
+eligibility result (matched CP/municipality, outcome) rather than discarding it —
+but not the geocoded latitude and longitude: the matched primary-substation
+boundary id is all later steps need, and it is far less identifying
+([ADR-0013](decisions/ADR-0013-eligibility-and-area-are-decided-by-boundary-through-the-digital-twin.md)).
 
 #### G3. Member role not explicit
 GSE distinguishes **consumer / producer / prosumer**. Today this is only

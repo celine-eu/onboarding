@@ -16,6 +16,18 @@ export interface AdminSubmission extends SubmissionResponse {
 	fiscal_code?: string | null;
 	pod_code?: string | null;
 	supply_municipality?: string | null;
+	/** The supply address the wizard's eligibility step checked; what the server
+	 *  resolves the primary substation from, before the scanned address. */
+	supply_address?: { text: string } | null;
+	/** Admin reads only. The primary-substation boundary the supply address resolved
+	 *  to, resolved by the server (never sent by a client), and the area of the
+	 *  template in force whose boundary it is, or null when none is. */
+	supply_boundary_id?: string | null;
+	supply_boundary_source?: string | null;
+	supply_boundary_area?: string | null;
+	/** The area's display name in the template in force (its key when none is
+	 *  given): what the review shows. */
+	supply_boundary_area_name?: string | null;
 	extra_data?: Record<string, unknown> | null;
 	notes?: string | null;
 	created_at: string;
@@ -203,6 +215,14 @@ export interface RecMatch extends RecSummary {
 	matched_value?: string;
 }
 
+/** The sweep's answer: the communities that admit the address, and whether any
+ *  community could not be checked (its boundaries need the Digital Twin, which
+ *  did not answer). `unchecked` means "try again later", not "no match". */
+export interface RecSweep {
+	matches: RecMatch[];
+	unchecked: boolean;
+}
+
 export interface RecApi {
 	getConfig: () => Promise<SiteConfig>;
 	getSharingOffers: () => Promise<SharingOffer[]>;
@@ -212,8 +232,6 @@ export interface RecApi {
 	uploadDocument: (submissionId: string, file: File, docType: string) => Promise<unknown>;
 	checkEligibility: (data: { lat?: number; lng?: number; address?: string }) => Promise<{
 		eligible: boolean;
-		lat?: number;
-		lng?: number;
 		municipality?: string;
 		postal_code?: string;
 		state?: string;
@@ -495,8 +513,29 @@ export function createRecAdminApi(recSlug: string) {
 				body: JSON.stringify({ offer_id: offerId })
 			});
 			return res.blob();
-		}
+		},
+
+		// Whether the registry's areas match this community's template. A read:
+		// the sync itself is a realm admin's, from the CLI or the API.
+		registryDrift: () => adminRequest<RegistryDrift>(`/api/admin/recs/${recSlug}/registry-drift`)
 	};
+}
+
+export interface RegistryDriftArea {
+	key: string;
+	boundary_id: string | null;
+	/** matches | missing | differs | undeclared */
+	state: string;
+	held_by: string[];
+}
+
+export interface RegistryDrift {
+	rec: string;
+	community: string | null;
+	/** matches | drift | not_synced */
+	status: string;
+	areas: RegistryDriftArea[];
+	nodes: { key: string; state: string }[];
 }
 
 export type RecAdminApi = ReturnType<typeof createRecAdminApi>;
@@ -604,7 +643,7 @@ export const globalApi = {
 	health: () => request<{ status: string }>('/api/health'),
 	listRecs: () => request<RecSummary[]>('/api/recs'),
 	findRecsByAddress: (address: string) =>
-		request<RecMatch[]>('/api/recs/find-by-address', {
+		request<RecSweep>('/api/recs/find-by-address', {
 			method: 'POST',
 			body: JSON.stringify({ address })
 		})

@@ -59,6 +59,16 @@
 				>
 					{$t('admin.nav.exports')}
 				</a>
+				{#if currentAccess?.capabilities.includes('recs.drift')}
+					<!-- The drift check is for realm admins and the REC's own managers
+					     and admins (`recs.drift`); the API refuses anyone else. -->
+					<a
+						href="/admin/{currentRec}/areas"
+						class:active={page.url.pathname.endsWith('/areas')}
+					>
+						{$t('admin.nav.areas')}
+					</a>
+				{/if}
 			</nav>
 		{/if}
 

@@ -23,6 +23,7 @@ from celine.sdk.auth import JwtUser
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celine.onboarding.api.deps import peer_ip
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 from celine.onboarding.security.oidc import is_configured, oidc_settings
@@ -131,13 +132,14 @@ def require_global(capability: Capability):
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip
-    return request.client.host if request.client else "unknown"
+    """The audit row's IP: the connection's peer, never a request header.
+
+    `X-Forwarded-For` and `X-Real-IP` are written by whoever sends the request,
+    so reading them here let any caller put any address in the audit trail.
+    uvicorn already applies the forwarded headers, and only from the proxies
+    `FORWARDED_ALLOW_IPS` names (REQ-0020).
+    """
+    return peer_ip(request)
 
 
 def current_actor(user: Annotated[JwtUser, Depends(get_current_user)]) -> Actor:
