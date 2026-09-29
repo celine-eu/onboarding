@@ -211,24 +211,31 @@ class TestWhatTheWizardIsTold:
 # ── the upsert ────────────────────────────────────────────────────────────────
 
 
-class TestTheUpsertAsksForAnInvitation:
-    """Approval always asks; the provisioning service decides whether one is sent.
+class TestTheUpsertAsksForNoInvitation:
+    """Approval's upsert creates the account and emails nobody (celine-eu/onboarding#8).
 
-    This repository cannot see credentials, so it does not decide whether an
-    account "needs" an invitation. The service sends only to an account created
-    in the call or one without a password, which is what makes a retry safe.
+    It runs before the steps that can still fail approval, so an invitation asked
+    for here reached applicants who were then not approved. The invitation is
+    sent afterwards, by `invite_participant`; the codes below are still read,
+    because the answer carries one either way.
     """
 
-    async def test_invite_is_true(self, bound, enabled, api):
-        route = upsert_route(api)
+    async def test_invite_is_false(self, bound, enabled, api):
+        route = upsert_route(api, invitation="not_requested", invited=False)
         await pv.provision_participant(_sub())
-        assert json.loads(route.calls[0].request.content)["invite"] is True
+        assert json.loads(route.calls[0].request.content)["invite"] is False
 
-    async def test_a_retry_asks_again(self, bound, enabled, api):
-        route = upsert_route(api, created=False, invitation="has_password", invited=False)
+    async def test_a_retry_does_not_ask_either(self, bound, enabled, api):
+        route = upsert_route(api, created=False, invitation="not_requested", invited=False)
         await pv.provision_participant(_sub())
         await pv.provision_participant(_sub())
-        assert [json.loads(c.request.content)["invite"] for c in route.calls] == [True, True]
+        assert [json.loads(c.request.content)["invite"] for c in route.calls] == [False, False]
+
+    async def test_the_locale_still_goes_on_the_account(self, bound, enabled, api):
+        """The later invitation is written in the language the account holds."""
+        route = upsert_route(api, invitation="not_requested", invited=False)
+        await pv.provision_participant(_sub(locale="es"))
+        assert json.loads(route.calls[0].request.content)["locale"] == "es"
 
     @pytest.mark.parametrize(
         ("code", "invited"),
@@ -268,6 +275,73 @@ class TestTheUpsertAsksForAnInvitation:
         result = await pv.provision_participant(_sub())
         assert result.user_id == "kc-uuid-1"
         assert result.invitation == "account_disabled"
+
+
+def invitation_route(api, response, *, community=COMMUNITY, key="20260727-abcd"):
+    return api.post(f"/participants/{community}/{key}/invitation").mock(return_value=response)
+
+
+def invitation_sent(invitation: str = "sent") -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "user_id": "kc-uuid-1",
+            "username": "alice.rossi@example.org",
+            "actions": ["UPDATE_PASSWORD", "VERIFY_EMAIL"],
+            "lifespan": 604800,
+            "invitation": invitation,
+        },
+    )
+
+
+class TestTheInvitationAfterApproval:
+    """`invite_participant`: the member-keyed route, once approval cannot fail.
+
+    Its refusals that are invitation outcomes come back as the same codes the
+    upsert used to answer with, so the step row and the console know them all.
+    """
+
+    async def test_it_asks_for_an_invitation_by_member_key(self, bound, enabled, api):
+        route = invitation_route(api, invitation_sent())
+        assert await pv.invite_participant(_sub()) == "sent"
+        assert json.loads(route.calls[0].request.content) == {"intent": "invitation"}
+
+    async def test_dev_email_mode_is_a_code(self, bound, enabled, api):
+        invitation_route(api, invitation_sent("not_on_dev_list"))
+        assert await pv.invite_participant(_sub()) == "not_on_dev_list"
+
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [
+            (409, "has_password"),
+            (409, "account_disabled"),
+            (409, "no_email"),
+            (429, "cooldown"),
+            (502, "send_failed"),
+        ],
+    )
+    async def test_an_outcome_refusal_is_its_code(self, bound, enabled, api, status, code):
+        invitation_route(api, error(status, code, "the service's own words"))
+        assert await pv.invite_participant(_sub()) == code
+
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [(404, "member_not_found"), (404, "account_not_found"), (502, "registry_unavailable")],
+    )
+    async def test_any_other_refusal_raises(self, bound, enabled, api, status, code):
+        invitation_route(api, error(status, code, "the service's own words"))
+        with pytest.raises(ValueError):
+            await pv.invite_participant(_sub())
+
+    async def test_a_refused_credential_is_a_configuration_error(self, bound, enabled, api):
+        invitation_route(api, error(403, "insufficient_scope", "requires scope"))
+        with pytest.raises(ConfigurationError):
+            await pv.invite_participant(_sub())
+
+    async def test_no_registry_binding_is_a_configuration_error(self, bind_rec, enabled, api):
+        bind_rec("plain")
+        with pytest.raises(ConfigurationError):
+            await pv.invite_participant(_sub(rec_slug="plain"))
 
 
 class TestTheInvitationLanguage:

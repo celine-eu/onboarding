@@ -63,13 +63,17 @@ realm; this service holds no Keycloak grant. A community that declares no
 registry binding has no community to key the account on, so step 1 is **skipped**
 for it — see [ADR-0004](decisions/ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md).
 
-Step 1 also **asks for an invitation**: Keycloak emails the participant a link to set
+Approval also **sends an invitation**: Keycloak emails the participant a link to set
 their password, valid for 7 days, in the language they last used in the wizard (or
-the community manifest's `locale`, or the realm default). It asks every time,
-including on a retry, and the provisioning service decides whether an email goes out,
-because only it can see whether the account already has a password. The step row
-records what it decided, and **every outcome is a success**: the account exists, and
-an invitation that did not go out is not a failed login.
+the community manifest's `locale`, or the realm default). **It is sent only after
+steps 1–3 have all succeeded**, and recorded on step 1's row. Step 1 creates the
+account without inviting anybody to it, so an approval that fails at step 2 or 3 has
+emailed nobody: the account exists, with no password and no link to set one, and the
+invitation goes out when approval is pressed again and completes. The provisioning
+service decides whether an email goes out, because only it can see whether the
+account already has a password. The step row records what it decided, and **every
+outcome is a success**: the account exists, and an invitation that did not go out is
+not a failed login.
 
 | Code | Console says | Meaning |
 |---|---|---|
@@ -77,9 +81,9 @@ an invitation that did not go out is not a failed login.
 | `has_password` | already has a password | nothing to invite to |
 | `not_on_dev_list` | not sent, recipient list | the provisioning service is in dev email mode and the address is not on its list |
 | `account_disabled` | not sent, account disabled | a participant approved again after revocation: revocation disables the account, and re-approval does not re-enable it |
-| `not_requested` | no invitation requested | not produced by approval, which always asks |
+| `not_requested` | not sent yet | approval has not completed: a later step failed, and the invitation goes out when approval is pressed again and succeeds |
 | `cooldown` | not sent, emailed moments ago | the account was sent an email within the provisioning service's per-account cooldown, so nothing was sent again |
-| `send_failed` | not sent, the email could not be sent | Keycloak did not accept the send; nothing went out and no cooldown started |
+| `send_failed` | not sent, the email could not be sent | Keycloak did not accept the send, or the provisioning service could not be asked; nothing went out and no cooldown started |
 | `no_email` | not sent, no email address | the account the provisioning service holds for this member has no address, so no invitation can ever be sent to it |
 
 The console shows the code translated; the CLI prints the code beside an English

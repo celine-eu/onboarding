@@ -24,7 +24,7 @@ Onboarding stores only the subject ID, DID, credential ID, and issuance timestam
 
 When a submission is approved, `DATASPACE_ENABLED` is true and the REC declares a `dataspace:` block:
 
-1. `provision_participant()` asks the provisioning service to ensure the account, and to invite the participant to set a password, and returns its Keycloak `user_id`, `username` and the invitation outcome.
+1. `provision_participant()` asks the provisioning service to ensure the account, **without** inviting the participant yet, and returns its Keycloak `user_id` and `username`. The invitation is sent by `invite_participant()` once every fail-closed step has succeeded; see [The invitation](#the-invitation).
 2. `provision_user_identity()` calls the identity-registry to issue a credential and sync the DID to Keycloak, then provisions any data-sharing shares to the connector as its last step.
 
 ```mermaid
@@ -84,7 +84,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 ### Step-by-step
 
-1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. The body always carries `invite: true` and, when there is one, the participant's `locale` (see [The invitation](#the-invitation)); the answer's `invitation` code is recorded on the step row. Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
+1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. The body always carries `invite: false` and, when there is one, the participant's `locale`, which the account keeps for the invitation sent later (see [The invitation](#the-invitation)). Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
 
 2. **Subject resolution** -- `GET /users/resolve?email=…&derive=false` asks the identity-registry whether it already maps this person. If it does, that `subject_id` is reused: one human keeps one DID, and minting beside it would split their consent records and provenance in two. A `404` is the registry's answer for *no mapping* and is not an error. Then onboarding reuses the id the submission already recorded, if it has one, and otherwise mints a random **UUIDv4**. The id is written onto the submission **before** issuance. The registry is never asked to derive one.
 
@@ -227,12 +227,21 @@ in that pass; revoking again runs both, in order.
 
 ### The invitation
 
-Every upsert from step 1 carries `invite: true`, including a retry. This service
-cannot see credentials, so it does not decide whether an account needs an
-invitation: the provisioning service sends one only to an account created in that
-call or one without a password, and at most one email per account within its
-cooldown, which is also what makes a retry safe. Keycloak writes the email; nothing
-here sends one about the login.
+**Step 1's upsert carries `invite: false`**, including on a retry. The invitation is
+sent after the steps, by `POST /participants/{community}/{key}/invitation` with intent
+`invitation`, and only once every fail-closed step (1–3) is `succeeded` or `skipped`
+and step 1 still reads `not_requested`. An approval that fails at the registry or the
+dataspace identity has therefore emailed nobody (celine-eu/onboarding#8). The account
+step 1 created cannot be disabled at that point: revocation resolves the member through
+the registry export, and there is no member yet. It has no credential, and nobody is
+told it exists.
+
+This service cannot see credentials, so it does not decide whether an account needs
+an invitation: the provisioning service sends one only to an account without a
+password, and at most one email per account within its cooldown. Keycloak writes the
+email; nothing here sends one about the login. The route is the one the community
+dashboard's button reaches through [the member-keyed routes](api-reference.md), under
+the same scope.
 
 `locale` is the submission's own (the language the person last used in the wizard),
 then the REC manifest's `locale`, then absent, which leaves the realm default. Both
@@ -241,9 +250,11 @@ answers `422` for any other value, and a `422` would fail step 1 closed and bloc
 approval over a language tag. A manifest saying `it-IT` therefore gets the realm
 default, which is the email Keycloak would have sent anyway.
 
-The answer's `invitation` is `sent`, `has_password`, `not_on_dev_list`,
-`account_disabled`, `not_requested`, `cooldown`, `send_failed` or `no_email`, and none
-of them fails the step. It is stored on the step row beside `detail`, and the console
+The recorded `invitation` is `sent` or `not_on_dev_list` from the answer, or the
+refusal's code — `has_password`, `account_disabled`, `no_email` (`409`), `cooldown`
+(`429`), `send_failed` (`502`) — and `not_requested` until it is sent. Any other
+refusal, or no answer, is recorded as `send_failed` and logged. None of them fails the
+step or the approval. It is stored on the step row beside `detail`, and the console
 translates it ([Operator console](admin-console.md#the-invitation-for-the-operator)).
 `account_disabled` is a participant approved again after revocation: revocation
 disables the account, and neither answer re-enables it. `send_failed` is the one

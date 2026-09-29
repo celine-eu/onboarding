@@ -168,7 +168,7 @@
 		"has_password": "L'account ha già una password: nessun invito necessario.",
 		"not_on_dev_list": "Invito non inviato: questo ambiente invia email solo agli indirizzi della sua lista di destinatari.",
 		"account_disabled": "Invito non inviato: l'account è disabilitato.",
-		"not_requested": "Nessun invito richiesto.",
+		"not_requested": "Non ancora inviato: parte quando l'approvazione è completata.",
 		"cooldown": "Invito non inviato: a questo account è stata inviata un'email pochi istanti fa, quindi non ne è stata inviata una seconda.",
 		"send_failed": "Invito non inviato: non è stato possibile inviare l'email. Ritenta questo passo per riprovare.",
 		"no_email": "Invito non inviato: l'account non ha un indirizzo email, quindi nessun invito può raggiungerlo."

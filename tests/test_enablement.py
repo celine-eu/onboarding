@@ -101,7 +101,14 @@ def happy_path(monkeypatch):
 
     async def _kc(sub):
         calls.append("keycloak_user")
-        return ParticipantProvisionResult(user_id="kc-123", username=sub.email, created=True)
+        # What the service answers an upsert that asks for no invitation.
+        return ParticipantProvisionResult(
+            user_id="kc-123", username=sub.email, created=True, invitation="not_requested"
+        )
+
+    async def _invite(sub):
+        calls.append("invitation")
+        return "sent"
 
     async def _registry(sub, *, keycloak_username=None):
         calls.append(f"rec_registry_member(user={keycloak_username})")
@@ -131,6 +138,7 @@ def happy_path(monkeypatch):
     monkeypatch.setattr(provisioning, "provisioning_enabled", lambda: True)
     monkeypatch.setattr(provisioning, "participant_community", _community)
     monkeypatch.setattr(provisioning, "provision_participant", _kc)
+    monkeypatch.setattr(provisioning, "invite_participant", _invite)
     monkeypatch.setattr(rec_registry, "register_member", _registry)
     monkeypatch.setattr(rec_registry, "set_member_did", _set_did)
     monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
@@ -152,8 +160,10 @@ def happy_path(monkeypatch):
 class TestTheLoginStepReportsTheInvitation:
     """Step 1 records the provisioning service's invitation code and a sentence.
 
-    Every outcome is `succeeded`: an invitation that did not go out is not a
-    failed login, and failing closed would block approval over an email.
+    The code comes from the invitation sent once approval can no longer fail,
+    not from the upsert, which asks for none (celine-eu/onboarding#8). Every
+    outcome is `succeeded`: an invitation that did not go out is not a failed
+    login, and failing closed would block approval over an email.
     """
 
     @pytest.mark.parametrize(
@@ -168,7 +178,11 @@ class TestTheLoginStepReportsTheInvitation:
                 "account_disabled",
                 "already existed, invitation not sent: account is disabled",
             ),
-            (True, "not_requested", "created, no invitation requested"),
+            (
+                True,
+                "not_requested",
+                "created, invitation not sent yet: it goes out when approval completes",
+            ),
             (
                 False,
                 "cooldown",
@@ -199,10 +213,14 @@ class TestTheLoginStepReportsTheInvitation:
                 user_id="kc-123",
                 username=sub.email,
                 created=outcome["created"],
-                invitation=outcome["code"],
+                invitation="not_requested",
             )
 
+        async def _invite(sub):
+            return outcome["code"]
+
         monkeypatch.setattr(provisioning, "provision_participant", _kc)
+        monkeypatch.setattr(provisioning, "invite_participant", _invite)
         return outcome
 
     @pytest.mark.parametrize(
@@ -212,19 +230,23 @@ class TestTheLoginStepReportsTheInvitation:
             "has_password",
             "not_on_dev_list",
             "account_disabled",
-            "not_requested",
             "cooldown",
             "send_failed",
             "no_email",
         ],
     )
-    async def test_every_code_is_a_success_and_is_recorded(self, db, submission, invitation, code):
+    @pytest.mark.parametrize("created", [True, False])
+    async def test_every_code_is_a_success_and_is_recorded(
+        self, db, submission, invitation, code, created
+    ):
         invitation["code"] = code
+        invitation["created"] = created
         rows = await enablement.enable(db, submission)
         row = rows[EnablementStep.KEYCLOAK_USER]
         assert row.status == EnablementStatus.SUCCEEDED
         assert row.invitation == code
-        assert row.detail == enablement.login_detail(False, code)
+        # The account half is the upsert's, kept when the invitation's is added.
+        assert row.detail == enablement.login_detail(created, code)
 
     async def test_only_the_login_step_carries_a_code(self, db, submission, invitation):
         rows = await enablement.enable(db, submission)
@@ -263,6 +285,9 @@ class TestEnable:
             # member step 2 created, and this list is calls rather than steps.
             "set_member_did",
             "dataspace_share",
+            # Not a step either: step 1's invitation, held back until nothing
+            # left can fail the approval (celine-eu/onboarding#8).
+            "invitation",
         ]
         assert all(r.status == EnablementStatus.SUCCEEDED for r in rows.values())
         assert enablement.state_of(rows) == "complete"
@@ -512,6 +537,203 @@ class TestFailClosed:
             await enablement.enable(db, submission)
         rows = await enablement.load_steps(db, submission.id)
         assert enablement.state_of(rows) == "failed"
+
+
+class TestAFailedApprovalInvitesNobody:
+    """celine-eu/onboarding#8: the invitation waits until approval cannot fail.
+
+    Step 1 used to ask the upsert for the invitation, so an approval that then
+    failed at the registry had already emailed the applicant a link to set a
+    password on an enabled login. Disabling that login afterwards is not possible
+    through the provisioning seam: revocation resolves the member through the
+    registry, and the registry step is the one that failed.
+    """
+
+    @pytest.fixture()
+    def invites(self, monkeypatch, happy_path):
+        sent: list[str] = []
+
+        async def _invite(sub):
+            sent.append(sub.ref)
+            happy_path.append("invitation")
+            return "sent"
+
+        monkeypatch.setattr(provisioning, "invite_participant", _invite)
+        return sent
+
+    async def test_a_registry_failure_sends_no_invitation(
+        self, db, submission, invites, monkeypatch
+    ):
+        async def _boom(sub, *, keycloak_username=None):
+            raise ValueError("registry said no")
+
+        monkeypatch.setattr(rec_registry, "register_member", _boom)
+
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        assert invites == []
+        row = (await enablement.load_steps(db, submission.id))[EnablementStep.KEYCLOAK_USER]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.invitation == "not_requested"
+        assert row.detail == (
+            "created, invitation not sent yet: it goes out when approval completes"
+        )
+
+    async def test_a_dataspace_identity_failure_sends_no_invitation(
+        self, db, submission, invites, monkeypatch
+    ):
+        async def _boom(sub, **kwargs):
+            raise ValueError("identity registry said no")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _boom)
+
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        assert invites == []
+
+    async def test_the_invitation_follows_every_fail_closed_step(
+        self, db, submission, invites, happy_path
+    ):
+        rows = await enablement.enable(db, submission)
+
+        assert invites == [submission.ref]
+        calls = [c.split("(")[0] for c in happy_path]
+        assert calls.index("invitation") > calls.index("set_member_did")
+        assert rows[EnablementStep.KEYCLOAK_USER].invitation == "sent"
+        assert rows[EnablementStep.KEYCLOAK_USER].detail == "created, invitation sent"
+
+    async def test_approving_again_once_the_registry_answers_sends_it_once(
+        self, db, submission, invites, monkeypatch
+    ):
+        async def _boom(sub, *, keycloak_username=None):
+            raise ValueError("registry said no")
+
+        monkeypatch.setattr(rec_registry, "register_member", _boom)
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        async def _ok(sub, *, keycloak_username=None):
+            return "member-key-1"
+
+        monkeypatch.setattr(rec_registry, "register_member", _ok)
+        await enablement.enable(db, submission)
+        await enablement.enable(db, submission)
+        await enablement.retry(db, submission)
+
+        assert invites == [submission.ref]
+
+    async def test_a_skipped_fail_closed_step_does_not_hold_it_back(
+        self, db, submission, invites, monkeypatch
+    ):
+        """A community with no dataspace binding skips step 3; that is complete."""
+
+        async def _identity(sub, **kwargs):
+            pass
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
+        rows = await enablement.enable(db, submission)
+
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SKIPPED
+        assert invites == [submission.ref]
+
+    async def test_a_soft_failure_does_not_hold_it_back(self, db, submission, invites, monkeypatch):
+        async def _boom(sub, **kwargs):
+            raise ValueError("connector down")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_shares", _boom)
+        rows = await enablement.enable(db, submission)
+
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.FAILED
+        assert invites == [submission.ref]
+
+    async def test_no_login_means_no_invitation(self, db, submission, invites, monkeypatch):
+        monkeypatch.setattr(provisioning, "provisioning_enabled", lambda: False)
+        rows = await enablement.enable(db, submission)
+
+        assert rows[EnablementStep.KEYCLOAK_USER].status == EnablementStatus.SKIPPED
+        assert invites == []
+
+    async def test_a_retry_naming_another_step_sends_nothing(
+        self, db, submission, invites, monkeypatch
+    ):
+        """The one way to reach "every step done, invitation still due": the stage
+        itself never ran. A retry named for the consent step is about that step."""
+        rows = await enablement.ensure_rows(db, submission)
+        for step, row in rows.items():
+            row.status = EnablementStatus.SUCCEEDED
+        rows[EnablementStep.KEYCLOAK_USER].invitation = "not_requested"
+        rows[EnablementStep.KEYCLOAK_USER].detail = "created, invitation not sent yet"
+
+        await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+        assert invites == []
+
+        await enablement.retry(db, submission)
+        assert invites == [submission.ref]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("Provisioning refused sending the invitation (404 member_not_found)"),
+            ConfigurationError("PROVISIONING_URL is required"),
+            RuntimeError("connection reset"),
+        ],
+    )
+    async def test_an_invitation_that_cannot_be_sent_is_a_retryable_send_failed(
+        self, db, submission, happy_path, monkeypatch, error
+    ):
+        """Never a failed approval: every fail-closed step has succeeded by now."""
+
+        async def _invite(sub):
+            raise error
+
+        monkeypatch.setattr(provisioning, "invite_participant", _invite)
+        rows = await enablement.enable(db, submission)
+
+        row = rows[EnablementStep.KEYCLOAK_USER]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.invitation == "send_failed"
+        assert row.detail == "created, invitation not sent: the email could not be sent"
+        assert enablement.state_of(rows) == "complete"
+
+    async def test_the_approval_itself_completes_and_the_blocked_one_does_not(
+        self, db, invites, monkeypatch, happy_path, seed_rec
+    ):
+        """The issue's scenario, through `review.transition`."""
+        from celine.onboarding.services import audit_service, review
+        from celine.onboarding.services.audit_service import Actor
+
+        seed_rec("rec-a", steps=["consents", "review"])
+
+        async def _record_and_commit(db, **kwargs):
+            pass
+
+        monkeypatch.setattr(audit_service, "record_and_commit", _record_and_commit)
+        monkeypatch.setattr(review.audit_service, "record", lambda db, **kwargs: None)
+
+        async def _boom(sub, *, keycloak_username=None):
+            raise ValueError("registry unreachable")
+
+        monkeypatch.setattr(rec_registry, "register_member", _boom)
+        submission = FakeSubmission(status=SubmissionStatus.UNDER_REVIEW, verification=OFFLINE)
+
+        with pytest.raises(EnablementError):
+            await review.transition(
+                db, submission, SubmissionStatus.APPROVED, actor=Actor.system("test")
+            )
+        assert submission.status == SubmissionStatus.UNDER_REVIEW
+        assert invites == []
+
+        async def _ok(sub, *, keycloak_username=None):
+            return "member-key-1"
+
+        monkeypatch.setattr(rec_registry, "register_member", _ok)
+        await review.transition(
+            db, submission, SubmissionStatus.APPROVED, actor=Actor.system("test")
+        )
+        assert submission.status == SubmissionStatus.APPROVED
+        assert invites == [submission.ref]
 
 
 class TestAMisconfiguredStep:
@@ -790,23 +1012,31 @@ class TestAFailedSendIsRetriedByName:
     `no_email` are not re-run: the first would be a second email nobody decided
     on, and the second can never be sent. An unnamed retry, like approval, never
     re-sends.
+
+    The re-run is step 1's idempotent upsert, which asks for no invitation, then
+    the invitation itself, which is where the codes come from.
     """
 
     @pytest.fixture()
     def login(self, monkeypatch, happy_path):
-        """Step 1 answers the queued codes in order, one per call."""
-        state = {"codes": [], "calls": 0}
+        """The invitation answers the queued codes in order, one per call."""
+        state = {"codes": [], "calls": 0, "upserts": 0}
 
         async def _kc(sub):
-            state["calls"] += 1
+            state["upserts"] += 1
             return ParticipantProvisionResult(
                 user_id="kc-123",
                 username=sub.email,
-                created=state["calls"] == 1,
-                invitation=state["codes"].pop(0),
+                created=state["upserts"] == 1,
+                invitation="not_requested",
             )
 
+        async def _invite(sub):
+            state["calls"] += 1
+            return state["codes"].pop(0)
+
         monkeypatch.setattr(provisioning, "provision_participant", _kc)
+        monkeypatch.setattr(provisioning, "invite_participant", _invite)
         return state
 
     async def _approved_with(self, db, submission, login, code):
@@ -875,6 +1105,7 @@ class TestAFailedSendIsRetriedByName:
         rows = await enablement.retry(db, submission, step=EnablementStep.KEYCLOAK_USER)
 
         assert login["calls"] == 1
+        assert login["upserts"] == 1
         assert rows[EnablementStep.KEYCLOAK_USER].invitation == code
         assert rows[EnablementStep.KEYCLOAK_USER].attempts == 1
 
@@ -893,6 +1124,8 @@ class TestAFailedSendIsRetriedByName:
         assert row.status == EnablementStatus.FAILED
         # The account is still recorded, so the steps after it keep their reference.
         assert row.external_ref == "kc-123"
+        # And no invitation was attempted on a step that did not succeed.
+        assert login["calls"] == 1
 
 
 # ---------------------------------------------------------------------------

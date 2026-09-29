@@ -168,7 +168,7 @@
 		"has_password": "La cuenta ya tiene contraseña: no hace falta invitación.",
 		"not_on_dev_list": "Invitación no enviada: este entorno solo envía correos a las direcciones de su lista de destinatarios.",
 		"account_disabled": "Invitación no enviada: la cuenta está deshabilitada.",
-		"not_requested": "No se solicitó ninguna invitación.",
+		"not_requested": "Aún no enviada: se envía cuando se completa la aprobación.",
 		"cooldown": "Invitación no enviada: a esta cuenta se le envió un correo hace unos instantes, así que no se ha enviado un segundo.",
 		"send_failed": "Invitación no enviada: no se ha podido enviar el correo. Reintenta este paso para volver a intentarlo.",
 		"no_email": "Invitación no enviada: la cuenta no tiene dirección de correo electrónico, así que ninguna invitación puede llegarle."

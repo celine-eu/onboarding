@@ -168,7 +168,7 @@
 		"has_password": "The account already has a password: no invitation needed.",
 		"not_on_dev_list": "Invitation not sent: this environment only emails the addresses on its recipient list.",
 		"account_disabled": "Invitation not sent: the account is disabled.",
-		"not_requested": "No invitation was requested.",
+		"not_requested": "Not sent yet: it goes out when approval completes.",
 		"cooldown": "Invitation not sent: this account was emailed moments ago, so a second one was not sent.",
 		"send_failed": "Invitation not sent: the email could not be sent. Retry this step to try again.",
 		"no_email": "Invitation not sent: the account has no email address, so no invitation can reach it."

@@ -278,11 +278,12 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
     Idempotent on ``(community, key)``: a retry finds the account the first call
     made and comes back with ``created`` false.
 
-    **Always asks for an invitation**, including on a retry. Whether one is sent
-    is the provisioning service's decision, because it is the one that can see
-    credentials: it sends only to an account created in this call or one without
-    a password, so a retry never emails somebody who has already set theirs. What
-    it decided comes back as ``invitation``, and no outcome of it fails the call.
+    **Never asks for an invitation** (celine-eu/onboarding#8). This runs first in
+    approval, before the steps that can still fail it, and an invitation sent here
+    reached an applicant whose approval then failed. The invitation is sent by
+    :func:`invite_participant` once every fail-closed step has succeeded. The
+    ``locale`` still goes on the upsert: the account keeps it, and that later
+    email is written in it. The service answers ``invitation`` ``not_requested``.
     """
     if not provisioning_enabled():
         return None
@@ -302,7 +303,7 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
             first_name=_display_name(submission.first_name),
             last_name=_display_name(submission.last_name),
             locale=participant_locale(submission),
-            invite=True,
+            invite=False,
         )
     except ProvisioningApiError as exc:
         raise _refused("provisioning a login", exc, community=community) from exc
@@ -324,6 +325,50 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
         created=account.created,
         invitation=invitation,
     )
+
+
+#: The refusals of ``POST …/invitation`` that are an invitation outcome rather than a
+#: fault. Each is also a code the upsert answers with, so the step row and the
+#: console already know them.
+INVITATION_REFUSALS: frozenset[str] = frozenset(
+    {"has_password", "account_disabled", "no_email", "cooldown", "send_failed"}
+)
+
+
+async def invite_participant(submission: Submission) -> str:
+    """Send this participant the invitation to set a password, and return the code.
+
+    Approval's last act, after every fail-closed step has succeeded: see
+    :func:`provision_participant` for why the upsert no longer asks. Sent through
+    the member-keyed route the community dashboard uses. That route resolves
+    ``(community, key)`` through the registry export, and the member is there by
+    now, ``active``, because step 2 registered them.
+
+    Returns ``sent`` or ``not_on_dev_list``, or the refusal's code when it is one
+    of :data:`INVITATION_REFUSALS`. Any other refusal raises, as
+    :func:`_refused` shapes it.
+    """
+    community = await participant_community(submission.rec_slug)
+    if community is None:
+        raise ConfigurationError(
+            f"REC {submission.rec_slug!r} declares no rec_registry binding, so there is "
+            f"no community to send the invitation in"
+        )
+
+    from celine.sdk.provisioning import ProvisioningApiError
+
+    try:
+        answer = await _get_client().send_invitation(community, submission.ref, intent="invitation")
+    except ProvisioningApiError as exc:
+        if exc.code in INVITATION_REFUSALS:
+            logger.info("No invitation sent to %s/%s: %s", community, submission.ref, exc.code)
+            return exc.code
+        raise _refused("sending the invitation", exc, community=community) from exc
+
+    # A plain `Enum` in the generated schema, as on the upsert.
+    invitation = getattr(answer.invitation, "value", answer.invitation)
+    logger.info("Invitation for %s/%s: %s", community, submission.ref, invitation)
+    return invitation
 
 
 async def send_member_email(community: str, member_key: str, *, intent: str):

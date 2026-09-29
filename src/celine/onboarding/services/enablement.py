@@ -33,6 +33,13 @@ before it are committed rather than rolled back. They really happened — a
 credential was issued, a member was created — and forgetting them locally would
 orphan them remotely, so the next attempt would mint a second one. Recording them
 is what makes the retry idempotent.
+
+That is why step 1 creates the login **without** inviting anybody to it. The
+invitation to set a password is sent after the fail-closed steps have all
+succeeded, and recorded on step 1's row: an approval that fails leaves an account
+with no credential and no email about it (celine-eu/onboarding#8). The account
+itself cannot be disabled at that point — revocation resolves the member through
+the registry, and step 2 is the step that may have failed.
 """
 
 from __future__ import annotations
@@ -133,7 +140,7 @@ INVITATION_DETAIL: dict[str, str] = {
     "has_password": "has a password",
     "not_on_dev_list": "invitation not sent (provisioning email mode)",
     "account_disabled": "invitation not sent: account is disabled",
-    "not_requested": "no invitation requested",
+    "not_requested": "invitation not sent yet: it goes out when approval completes",
     "cooldown": "invitation not sent: this account was emailed moments ago",
     "send_failed": "invitation not sent: the email could not be sent",
     "no_email": "invitation not sent: the account has no email address",
@@ -147,6 +154,12 @@ INVITATION_DETAIL: dict[str, str] = {
 #: send to an account without an address.
 RESENDABLE_INVITATIONS: frozenset[str] = frozenset({"send_failed"})
 
+#: Step 1's code while the invitation has not been asked for. The upsert never
+#: asks (celine-eu/onboarding#8), so the service answers this, and it stays on the
+#: row until :func:`_send_invitation` replaces it — which happens only once every
+#: fail-closed step has succeeded.
+AWAITING_INVITATION = "not_requested"
+
 
 def login_detail(created: bool, invitation: str | None) -> str:
     """Step 1's `detail`: whether the account is new, and whether it can sign in.
@@ -154,7 +167,7 @@ def login_detail(created: bool, invitation: str | None) -> str:
     Every outcome is a success. An invitation that did not go out is not a
     failed login: the account exists, and failing closed would block an approval
     over an email. A `send_failed` is repaired by retrying step 1 by name (see
-    :data:`RESENDABLE_INVITATIONS`); nothing else here sends one.
+    :data:`RESENDABLE_INVITATIONS`); nothing but that and approval sends one.
 
     An unknown code is kept visible rather than dropped, so a code the service
     adds later still reaches the operator.
@@ -163,6 +176,54 @@ def login_detail(created: bool, invitation: str | None) -> str:
     if invitation is None:
         return account
     return f"{account}, {INVITATION_DETAIL.get(invitation, f'invitation: {invitation}')}"
+
+
+def _invitation_is_due(ctx: RunContext) -> bool:
+    """Whether this run should send step 1's invitation now.
+
+    Only once approval can no longer fail: every fail-closed step `succeeded` or
+    `skipped`. Before that, the applicant may never be approved, and an invitation
+    to set a password was the defect (celine-eu/onboarding#8). And only while step 1
+    still waits for it, so approving again or "retry all" never re-sends.
+    """
+    login = ctx.rows.get(EnablementStep.KEYCLOAK_USER)
+    if login is None:
+        return False
+    if login.status != EnablementStatus.SUCCEEDED or login.invitation != AWAITING_INVITATION:
+        return False
+    return all(
+        ctx.rows[spec.step].status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED)
+        for spec in PIPELINE
+        if spec.fail_closed
+    )
+
+
+async def _send_invitation(db: AsyncSession, ctx: RunContext) -> None:
+    """Send the invitation step 1 held back, and record the outcome on its row.
+
+    Never fails anything: the fail-closed steps have succeeded, so the person is
+    approved, and an email is no reason to undo that. What cannot be read as an
+    outcome — the service unreachable, a refusal that is not an invitation code,
+    this deployment's credential refused — is recorded as `send_failed`, which a
+    named retry of step 1 repairs, and the reason goes to the log.
+    """
+    from celine.onboarding.services import provisioning
+
+    row = ctx.rows[EnablementStep.KEYCLOAK_USER]
+    try:
+        code = await provisioning.invite_participant(ctx.submission)
+    except ConfigurationError as exc:
+        logger.error("Could not send the invitation for %s: %s", ctx.submission.ref, exc)
+        code = "send_failed"
+    except Exception as exc:
+        logger.warning("Could not send the invitation for %s: %s", ctx.submission.ref, exc)
+        code = "send_failed"
+
+    # The account half of the sentence step 1 wrote, kept: whether this run or an
+    # earlier one created the account is on the row and nowhere else.
+    row.detail = login_detail((row.detail or "").startswith("created"), code)
+    row.invitation = code
+    await db.commit()
 
 
 async def _run_keycloak_user(ctx: RunContext) -> StepOutcome:
@@ -622,6 +683,10 @@ async def enable(
     `(community, key)` and the provisioning service applies its send rule again;
     step 4 because it writes only where a connector disagrees with the member's
     newest decision.
+
+    **The invitation is sent after the steps, not by step 1** (celine-eu/onboarding#8):
+    only when no fail-closed step is left unfinished, so an approval that fails
+    has emailed nobody. See :func:`_invitation_is_due`.
     """
     rows = await ensure_rows(db, submission)
     ctx = RunContext(submission=submission, rows=rows, named=only)
@@ -642,6 +707,11 @@ async def enable(
                 EnablementStep(spec.step),
                 f"{spec.label} could not be provisioned: {row.last_error}",
             )
+
+    # Last, after every step: a retry naming another step is about that step, and
+    # sends nobody an email.
+    if only in (None, EnablementStep.KEYCLOAK_USER) and _invitation_is_due(ctx):
+        await _send_invitation(db, ctx)
 
     return rows
 
