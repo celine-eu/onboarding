@@ -83,7 +83,7 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
 - Right to erasure: `DELETE /api/admin/{rec}/submissions/{id}` removes files from disk and all DB records
 - Audit trail: all admin operations logged with action, entity, IP, detail **and the operator who performed them**
-- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `EXTRACTION_ENABLED=yes` and `EXTRACTION_API_KEY` are both set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). Phone verification follows the same pattern: a real SMS provider without `DPA_SMS_SIGNED=yes` starts with verification **off** (see [Phone Verification](#phone-verification-sms-otp))
+- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `EXTRACTION_ENABLED=yes`, `LLM_BASE_URL` and `LLM_VISION_MODEL` are all set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). Phone verification follows the same pattern: a real SMS provider without `DPA_SMS_SIGNED=yes` starts with verification **off** (see [Phone Verification](#phone-verification-sms-otp))
 - CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins
 - Markdown content sanitized with DOMPurify to prevent XSS
@@ -188,7 +188,7 @@ address is the only thing that says whether the dependency is there:
 
 ### Document upload and scanning
 
-Off by default. Scanning sends a participant's utility bill and identity document to the extraction endpoint at `EXTRACTION_BASE_URL`, any OpenAI-compatible API. Unless the deployment's own operator runs that endpoint, its provider is a processor under GDPR Art. 28. Both variables must be set to switch it on; with either missing the app still starts, logs one warning naming what is missing, and runs without the feature:
+Off by default. Scanning sends a participant's utility bill and identity document to the model endpoint at `LLM_BASE_URL`, any OpenAI-compatible API (vLLM, Ollama, llama.cpp…). The endpoint has **no default**, so no vendor is reached by leaving it unset; to use OpenAI itself, set `https://api.openai.com/v1`. The names match celine-ai-assistant's. Unless the deployment's own operator runs that endpoint, its provider is a processor under GDPR Art. 28. `EXTRACTION_ENABLED`, `LLM_BASE_URL` and `LLM_VISION_MODEL` must all be set to switch it on. With any of them missing the app still starts, logs one warning naming what is missing, and runs without the feature:
 
 - the wizard offers no upload on any step and drops a `utility` step, so the participant types their personal data;
 - `POST /api/{rec}/extract`, `/extract-id`, `/documents/{id}/extract`, `/extractions/{id}/confirm`, and a `utility_bill` or `id_card` upload to `/submissions/{id}/documents`, answer **403** with `detail.code` `document_processing_disabled`;
@@ -196,10 +196,17 @@ Off by default. Scanning sends a participant's utility bill and identity documen
 
 | Variable | Default | Description |
 |---|---|---|
-| `EXTRACTION_ENABLED` | `false` | Set to `yes` only once the endpoint at `EXTRACTION_BASE_URL` is operated by this deployment's own operator, or covered by a processing agreement that keeps processing in the EU |
-| `EXTRACTION_API_KEY` | *(none)* | Key for the endpoint at `EXTRACTION_BASE_URL`. An in-house server is started with a key too (for vLLM, `--api-key`) |
+| `EXTRACTION_ENABLED` | `false` | Set to `yes` only once the endpoint at `LLM_BASE_URL` is operated by this deployment's own operator, or covered by a processing agreement that keeps processing in the EU |
+| `LLM_BASE_URL` | *(none)* | OpenAI-compatible endpoint that reads the documents |
+| `LLM_VISION_MODEL` | *(none)* | Vision model at that endpoint |
+| `LLM_API_KEY` | *(none)* | Key for the endpoint, if it needs one (for vLLM, `--api-key`) |
 
-`DPA_SIGNED` and `OPENAI_API_KEY` were renamed to these on 2026-09-14 and are no longer read. A deployment still setting them starts with scanning off and logs the rename.
+Some older names are no longer read:
+
+- `DPA_SIGNED` and `OPENAI_API_KEY` were renamed on 2026-09-14.
+- `EXTRACTION_API_KEY`, `EXTRACTION_BASE_URL` and `EXTRACTION_MODEL` became the generic `LLM_*` on 2026-10-01.
+
+A deployment still setting any of them starts with scanning off and logs the rename.
 
 ### Security
 
@@ -217,8 +224,6 @@ Off by default. Scanning sends a participant's utility bill and identity documen
 | `TEMPLATES_DIR` | `./templates` | Root directory templates are imported from |
 | `DATA_DIR` | `./data` | Upload and export storage path |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Maximum file upload size |
-| `EXTRACTION_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
-| `EXTRACTION_MODEL` | `gpt-5.4` | Model for OCR extraction |
 
 ### Email (SMTP)
 

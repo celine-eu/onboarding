@@ -49,7 +49,7 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
   verification, this reaches *reasonable assurance* — consistent with utility
   onboarding practice. See [phone-verification.md](phone-verification.md).
 
-  **Without document scanning** (`EXTRACTION_ENABLED` or `EXTRACTION_API_KEY` unset — see
+  **Without document scanning** (`EXTRACTION_ENABLED`, `LLM_BASE_URL` or `LLM_VISION_MODEL` unset — see
   the README's *Document upload and scanning*), bill extraction and ID-card
   cross-validation are absent, and no bill or ID card is uploaded. What remains
   is the CF checksum, the POD format and, where the community's steps include

@@ -456,9 +456,26 @@ written. Only a grant at a holder is compared: a withdrawal is never re-sent, th
 community's own connector is never sent keys, and a grant whose keys the holder
 does not return (another party registered it) is left as it is. While the
 registry cannot be read the keys are not compared: the declared POD that stands
-in for it may be the very value a correction replaced. A member the registry now
-knows no supply point for gets the run's usual refusal ("no supply point is
-recorded"), and the holder's grant is left as it is until someone looks.
+in for it may be the very value a correction replaced.
+
+**No POD left, the grant waits** (R19). When the registry, asked, holds no supply
+point for a member whose grant stands at a holder, the grant is **kept** and sent
+again with `keys: []`. ds empties the row's keys, and the holder's row filter
+(`subject_key_match`) then releases nothing for that member: it matches the keys
+and ignores principals, and no key of its type means no rows, never no filter.
+The grant is never withdrawn for this, because losing a POD is not the member's
+decision. The run reports it ("kept, and released for none until one is
+added"), and an empty key set is agreement with an empty registry, so it is not
+sent again and again. When a POD is added later, the next run sees the keyless
+grant (the community's own row, by its `collector`) differ from the registry and
+sends the keys: on a retry of the `dataspace_share` step for a POD added in the
+registry, and at once for a POD added by revision. Only the registry's own
+answer empties keys: while it cannot be read, a standing grant is refused as
+before ("no supply point is recorded") rather than emptied. A **new** grant
+without a POD is still refused: there is nothing to keep. "Releases nothing"
+holds for a holder dataset filtered by `subject_key_match`, as the grid
+operator's readings are; a dataset filtered on principals would release a granted
+member by username whatever their keys, with or without this rule.
 
 **A corrected POD refreshes the keys at once.** When an operator corrects the POD
 of an approved member ([admin console](admin-console.md#propagation)), the
@@ -467,8 +484,8 @@ meters are relinked, in one write), then the `consent_keys` step re-sends
 **every grant the member holds at a holder** with the keys read from the registry
 now — the same relay, the same evidence (the newest decision's) and
 `decided_by: subject`, one write per grant, whether or not its keys could be
-compared. The holder updates the row's keys in place and records the change in its key ledger (ds
-ADR-0022). A grant the holder refused earlier because no supply point was recorded
+compared. The holder updates the row's keys in place and records the change in
+its key ledger (ds ADR-0022). A grant the holder refused earlier because no supply point was recorded
 is granted by the same run. A withdrawal stays a withdrawal: only a grant is
 re-sent, and the community's own connector, which needs no keys, is not written
 to.

@@ -207,15 +207,18 @@ def _warn_document_processing() -> None:
     not to take the whole onboarding down: the wizard works from the fields the
     participant types, and the API refuses the document routes on its own.
 
-    It also names `DPA_SIGNED` and `OPENAI_API_KEY` when a deployment still sets
-    them: they were renamed, and a leftover would otherwise look like the reason
-    scanning is on.
+    It also names `DPA_SIGNED`, `OPENAI_API_KEY` and the `EXTRACTION_*` endpoint
+    settings when a deployment still sets them: they were renamed, and a leftover
+    would otherwise look like the reason scanning is on.
     """
     renamed = [
         f"{old} (now {new})"
         for old, new, value in (
             ("DPA_SIGNED", "EXTRACTION_ENABLED", settings.removed_dpa_signed),
-            ("OPENAI_API_KEY", "EXTRACTION_API_KEY", settings.removed_openai_api_key),
+            ("OPENAI_API_KEY", "LLM_API_KEY", settings.removed_openai_api_key),
+            ("EXTRACTION_API_KEY", "LLM_API_KEY", settings.removed_extraction_api_key),
+            ("EXTRACTION_BASE_URL", "LLM_BASE_URL", settings.removed_extraction_base_url),
+            ("EXTRACTION_MODEL", "LLM_VISION_MODEL", settings.removed_extraction_model),
         )
         if value
     ]
@@ -231,18 +234,19 @@ def _warn_document_processing() -> None:
         name
         for name, present in (
             ("EXTRACTION_ENABLED", settings.extraction_enabled),
-            ("EXTRACTION_API_KEY", bool(settings.extraction_api_key)),
+            ("LLM_BASE_URL", bool(settings.llm_base_url)),
+            ("LLM_VISION_MODEL", bool(settings.llm_vision_model)),
         )
         if not present
     ]
     logger.warning(
         "Document upload and scanning are disabled: %s not set. The wizard collects "
         "personal data without a bill or ID card, and the upload and extraction "
-        "endpoints answer 403. Scanning sends identity documents to the extraction "
+        "endpoints answer 403. Scanning sends identity documents to the model "
         "endpoint (%s), so enable it only when that endpoint is operated in-house or "
         "covered by a processing agreement keeping processing in the EU (GDPR Art. 28).",
         " and ".join(missing),
-        settings.extraction_base_url,
+        settings.llm_base_url or "none named",
     )
 
 

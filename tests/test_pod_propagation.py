@@ -468,6 +468,7 @@ async def test_a_retry_leaves_a_grant_whose_keys_it_cannot_read(submission, hold
     # (ds `_keys_for`) — has nothing to compare and is not overwritten.
     assert await di.provision_user_shares(submission) is True
     holder.rows[(HOLDER_URL, RELEASE)]["keys"] = []
+    holder.rows[(HOLDER_URL, RELEASE)]["collector"] = "did:web:another-collector.example"
     holder.state["pods"] = [CORRECT]
     holder.requests.clear()
 
@@ -475,13 +476,110 @@ async def test_a_retry_leaves_a_grant_whose_keys_it_cannot_read(submission, hold
     assert holder.posts() == []
 
 
-async def test_a_retry_refuses_rather_than_sending_a_grant_with_no_keys(submission, holder):
+# ── R19: no POD left, the grant waits ─────────────────────────────────────────
+
+
+async def test_no_pod_left_keeps_the_grant_and_empties_its_keys(submission, holder):
+    """R19. The registry, asked, holds no POD for the member any more: the
+    standing grant is re-sent with `keys: []` — not withdrawn, not left with the
+    old POD — so the holder's `subject_key_match` releases nothing for it."""
     assert await di.provision_user_shares(submission) is True
     holder.state["pods"] = []
     holder.requests.clear()
+    report: list[str] = []
+
+    assert await di.provision_user_shares(submission, raise_on_error=True, report=report) is True
+
+    posts = [b for base, b in holder.posts() if base == HOLDER_URL]
+    assert len(posts) == 1
+    sent = posts[0]
+    assert (sent["offer_id"], sent["enabled"], sent["decided_by"]) == (RELEASE, True, "subject")
+    # Sent, and empty: absent would leave the old POD in force at the holder.
+    assert "keys" in sent and sent["keys"] == []
+    row = holder.rows[(HOLDER_URL, RELEASE)]
+    assert (row["status"], row["keys"]) == ("granted", [])
+    assert "released for none" in report[0]
+    # Nothing withdrawn anywhere, and the community's own connector untouched.
+    assert [b for base, b in holder.posts() if base != HOLDER_URL] == []
+
+
+async def test_a_keyless_grant_is_not_re_sent_again_and_again(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = []
+    assert await di.provision_user_shares(submission) is True
+    holder.requests.clear()
+
+    assert await di.provision_user_shares(submission) is True
+
+    assert holder.posts() == []
+
+
+async def test_a_pod_added_later_re_sends_the_keys(submission, holder):
+    """After R19 emptied the keys, a POD added in the registry is carried on the
+    next ordinary run; one added by revision, by the forced refresh."""
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = []
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = [CORRECT]
+    holder.requests.clear()
+
+    assert await di.provision_user_shares(submission) is True
+
+    posts = [b for base, b in holder.posts() if base == HOLDER_URL]
+    assert [p["keys"] for p in posts] == [[f"pod:{CORRECT}"]]
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{CORRECT}"]
+
+
+async def test_the_forced_refresh_also_empties_and_refills(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = []
+    assert await di.refresh_keys(submission, report=[]) is True
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == []
+
+    holder.state["pods"] = [CORRECT]
+    assert await di.refresh_keys(submission, report=[]) is True
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{CORRECT}"]
+
+
+async def test_a_new_grant_without_a_pod_is_still_refused(submission, holder):
+    holder.state["pods"] = []
 
     with pytest.raises(ValueError, match="no supply point is recorded"):
         await di.provision_user_shares(submission, raise_on_error=True)
 
+    assert [b for base, b in holder.posts() if base == HOLDER_URL] == []
+    assert (HOLDER_URL, RELEASE) not in holder.rows
+
+
+async def test_an_unreadable_registry_never_empties_the_keys(submission, holder, monkeypatch):
+    """Only the registry's own answer may empty a holder's keys: with the
+    registry down the declared POD stands in, and with none declared the
+    standing grant is refused rather than emptied."""
+    assert await di.provision_user_shares(submission) is True
+    submission.pod_code = None
+
+    async def _down(dids, *, rec_slug):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(rec_registry, "supply_points_by_did", _down)
+    holder.requests.clear()
+
+    with pytest.raises(ValueError, match="no supply point is recorded"):
+        await di.refresh_keys(submission, report=[])
+
     assert holder.posts() == []
     assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{DECLARED}"]
+
+
+async def test_a_withdrawal_is_untouched_by_r19(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.decide(HOLDER_URL, RELEASE, granted=False)
+    holder.state["pods"] = []
+    holder.requests.clear()
+
+    await di.provision_user_shares(submission)
+
+    assert holder.rows[(HOLDER_URL, RELEASE)]["status"] == "revoked"
+    assert [
+        p for p in [b for base, b in holder.posts() if base == HOLDER_URL] if p["enabled"]
+    ] == []

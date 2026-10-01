@@ -604,6 +604,36 @@ async def replace_delivery_point(
     return f"registry member {member_key} holds the corrected supply point"
 
 
+class RegistryNotConfiguredError(LookupError):
+    """There is no registry to ask for this REC: no URL, or no ``rec_registry`` block."""
+
+
+async def shared_delivery_points(rec_slug: str) -> Any:
+    """This community's delivery points that more than one active member holds.
+
+    The registry's per-community report (registry plan F8, ``GET /admin/communities/
+    {c}/delivery-points/duplicates``, ``rec-registry.read``): each point in its
+    compared form (trimmed, lower-cased), this community's active holders by
+    member key with the spelling each stored, and how many active members of
+    other communities hold it, as a count only. These are the points the
+    registry refuses to give again (``delivery_point_held``) until resolved.
+
+    Returns the SDK's ``DeliveryPointDuplicatesSchema``. Raises
+    :class:`RegistryNotConfiguredError` when there is no registry to ask, and
+    lets ``RecRegistryApiError`` and transport errors through for the caller to
+    answer.
+    """
+    if not settings.rec_registry_url:
+        raise RegistryNotConfiguredError("no REC registry is configured")
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(rec_slug)
+    if not binding.enabled:
+        raise RegistryNotConfiguredError("this community declares no rec_registry binding")
+
+    return await _get_client().list_duplicate_delivery_points(binding.community)
+
+
 class RegistryRefusalError(ValueError):
     """The registry answered an error status; ``status_code`` is it."""
 

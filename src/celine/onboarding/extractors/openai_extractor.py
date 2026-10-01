@@ -150,8 +150,8 @@ class OpenAIExtractor:
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ) -> tuple[dict, dict]:
-        if not settings.extraction_api_key:
-            raise RuntimeError("EXTRACTION_API_KEY is not set")
+        if not settings.llm_base_url or not settings.llm_vision_model:
+            raise RuntimeError("LLM_BASE_URL and LLM_VISION_MODEL must be set")
 
         content: list = []
         for i, (data, declared_mime) in enumerate(pages):
@@ -191,12 +191,13 @@ class OpenAIExtractor:
         content.append({"type": "text", "text": user_prompt or EXTRACTION_USER_PROMPT})
 
         client = AsyncOpenAI(
-            api_key=settings.extraction_api_key,
-            base_url=settings.extraction_base_url,
+            # The client refuses an empty key; a self-hosted server usually wants none.
+            api_key=settings.llm_api_key or "not-used",
+            base_url=settings.llm_base_url,
         )
 
         response = await client.chat.completions.create(
-            model=settings.extraction_model,
+            model=settings.llm_vision_model,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt or EXTRACTION_SYSTEM_PROMPT},

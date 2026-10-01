@@ -1511,13 +1511,24 @@ async def _subject_rows(
 
 
 async def _read_connector(
-    client: httpx.AsyncClient, route: ConsentRoute, *, subject_id: str
+    client: httpx.AsyncClient,
+    route: ConsentRoute,
+    *,
+    subject_id: str,
+    collector_did: str | None = None,
 ) -> dict[str, _Held]:
     """What ``route``'s connector records for this member, by offer.
 
     Raises when the connector cannot say (:func:`_subject_rows`): the caller
     must then not write, because without it the member's newest decision is
     unknown.
+
+    ``collector_did`` is this community's dataspace DID, when the manifest names
+    it. A standing grant it wrote and that carries **no** keys (R19: re-sent
+    keyless when the member's POD was removed) is then an empty key set, so a POD
+    added later is seen as a change. ds returns ``[]`` too for a row another
+    party wrote (``_keys_for``), which is why the collector is checked: that row
+    is not this community's to re-send.
     """
     rows = await _subject_rows(client, route, subject_id=subject_id)
 
@@ -1552,7 +1563,9 @@ async def _read_connector(
                 if r.get("status") == "granted"
                 and str(r.get("consumer_id") or _ANY_CONSUMER) == _ANY_CONSUMER
                 and isinstance(r.get("keys"), list)
-                and r["keys"]
+                and (
+                    r["keys"] or (collector_did is not None and r.get("collector") == collector_did)
+                )
             ),
         )
     return held
@@ -1672,7 +1685,8 @@ async def register_share(
 
     ``keys`` travel with a grant only. ds refuses them on a withdrawal — a
     withdrawal drops the keys it had — and they are personal data, so they are
-    sent only where they are needed: a holder's data plane has no other way to
+    sent only where they are needed. ``None`` sends none, and ds keeps what a
+    standing grant has; ``[]`` is sent, and empties them: a holder's data plane has no other way to
     find this member's rows, and the community's own connector resolves its
     members without them.
 
@@ -1700,7 +1714,10 @@ async def register_share(
         body["legal_basis"] = legal_basis
     if reason:
         body["reason"] = reason
-    if enabled and keys:
+    # `None` is "not sent": ds leaves a standing grant's keys alone. An empty
+    # list is sent: it empties them, which the holder's row filter reads as
+    # "release nothing" (R19, a standing grant whose member has no POD left).
+    if enabled and keys is not None:
         body["keys"] = keys
 
     try:
@@ -2069,6 +2086,12 @@ async def provision_user_shares(
             return False
         return any(held_keys != current for held_keys in standing.keys)
 
+    # What ds stamps as `collector` on the rows this community writes. Only the
+    # manifest's value, never a lookup: it only lets a keyless grant of our own
+    # be told from another party's (R19), and without it that grant is simply
+    # not compared — a forced refresh still reaches it.
+    collector_did = binding.organization_did or None
+
     failures: dict[tuple[str, str], str] = {}
     #: Every decision written, so a read that still disagrees after it can be
     #: told apart from a decision that changed meanwhile.
@@ -2081,7 +2104,9 @@ async def provision_user_shares(
             for url in dict.fromkeys(route.connector_url for route in routes):
                 route = next(r for r in routes if r.connector_url == url)
                 try:
-                    held[url] = await _read_connector(client, route, subject_id=subject_id)
+                    held[url] = await _read_connector(
+                        client, route, subject_id=subject_id, collector_did=collector_did
+                    )
                 except Exception as exc:  # noqa: BLE001 — reported, and nothing written
                     unreadable.append(
                         f"could not read what {route.where} records for this member, so "
@@ -2103,6 +2128,8 @@ async def provision_user_shares(
                 break
 
             writes: list[tuple[ConsentRoute, _Decision]] = []
+            #: (connector, offer) of the writes that re-send a standing grant.
+            resends: set[tuple[str, str]] = set()
             for offer_id in offer_ids:
                 offer_routes = [r for r in routes if r.offer_id == offer_id]
                 here = {r.connector_url: held[r.connector_url].get(offer_id) for r in offer_routes}
@@ -2149,6 +2176,8 @@ async def provision_user_shares(
                         )
                         continue
                     writes.append((route, newest))
+                    if standing and newest.granted:
+                        resends.add((route.connector_url, offer_id))
 
             if not writes:
                 break
@@ -2164,6 +2193,7 @@ async def provision_user_shares(
 
             refused = False
             for route, decision in writes:
+                resend = (route.connector_url, route.offer_id) in resends
                 problem = await _redrive(
                     client,
                     route,
@@ -2171,6 +2201,8 @@ async def provision_user_shares(
                     subject_id=subject_id,
                     rec_slug=submission.rec_slug,
                     keys=keys,
+                    standing=resend,
+                    keys_known=keys_known,
                 )
                 if problem is not None:
                     failures[(route.connector_url, route.offer_id)] = f"{route.offer_id}: {problem}"
@@ -2179,9 +2211,16 @@ async def provision_user_shares(
                 failures.pop((route.connector_url, route.offer_id), None)
                 written.add((route.connector_url, route.offer_id, decision.granted, decision.at))
                 if report is not None:
+                    keyless = resend and route.is_holder and decision.granted and not keys
                     report.append(
                         f"{route.offer_id} {'granted' if decision.granted else 'withdrawn'} "
                         f"at {route.where}, as the member decided at {decision.where}"
+                        + (
+                            " (no supply point recorded: kept, and released for none "
+                            "until one is added)"
+                            if keyless
+                            else ""
+                        )
                     )
             if refused:
                 # Not looped on: a connector refusing will refuse again, and a
@@ -2228,8 +2267,15 @@ async def _redrive(
     subject_id: str,
     rec_slug: str,
     keys: list[str] | None,
+    standing: bool = False,
+    keys_known: bool = True,
 ) -> str | None:
     """Carry one of the member's decisions to a connector that lacks it.
+
+    ``standing`` says the holder already holds this grant and it is being sent
+    again (stale keys, or a forced refresh). ``keys_known`` says the keys are the
+    registry's own answer rather than the declared POD standing in for a registry
+    that could not be read.
 
     Returns why it did not land, or ``None``. Always ``decided_by="subject"``:
     it is the member's decision, relayed. A withdrawal relayed as the
@@ -2249,16 +2295,27 @@ async def _redrive(
         )
         return None if registration.ok else registration.detail
 
+    keyless = False
     if route.is_holder and not keys:
-        # A release decision with no supply points is a consent that can never
-        # yield a row: the holder's data plane finds this member only by the keys
-        # sent with it. Refused, and retryable once the registry knows what they
-        # hold — silence here would read as a working consent for as long as
-        # nobody looked.
-        return (
-            "no supply point is recorded for this member, so "
-            f"{route.where} would have nothing to release"
-        )
+        if standing and keys_known:
+            # R19: the member's grant stands and the registry, asked, holds no
+            # supply point for them any more. The grant is kept and its keys are
+            # emptied, so the holder's row filter (`subject_key_match`) releases
+            # nothing for it until a POD is added and the next run sends it.
+            # Never withdrawn for this: the member decided, and losing a POD is
+            # not a decision.
+            keyless = True
+        else:
+            # A release decision with no supply points is a consent that can never
+            # yield a row: the holder's data plane finds this member only by the
+            # keys sent with it. Refused, and retryable once the registry knows
+            # what they hold — silence here would read as a working consent for as
+            # long as nobody looked. A standing grant whose keys could not be read
+            # is refused too: only the registry's own answer may empty them.
+            return (
+                "no supply point is recorded for this member, so "
+                f"{route.where} would have nothing to release"
+            )
 
     evidence = _relayable(decision.evidence)
     if evidence is None:
@@ -2285,7 +2342,7 @@ async def _redrive(
         enabled=True,
         decided_by="subject",
         legal_basis=evidence,
-        keys=keys if route.is_holder else None,
+        keys=([] if keyless else keys) if route.is_holder else None,
     )
     return None if registration.ok else registration.detail
 

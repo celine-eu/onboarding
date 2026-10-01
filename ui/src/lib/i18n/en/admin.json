@@ -4,7 +4,8 @@
 		"submissions": "Applications",
 		"audit": "Audit log",
 		"exports": "Exports",
-		"areas": "Areas"
+		"areas": "Areas",
+		"shared_pods": "Shared PODs"
 	},
 	"choose_rec": "Choose community...",
 	"profile": "Profile",
@@ -203,6 +204,24 @@
 	"subject_type": {
 		"user": "user",
 		"service": "service"
+	},
+	"shared_pods": {
+		"title": "Shared PODs",
+		"lead": "Supply points (POD) that more than one active member holds, as the REC registry reports them. A POD is one grid connection, so one of the holders has the wrong one — usually a mistyped code. The registry refuses to give such a POD again until it is resolved.",
+		"guidance": "For each one: check it with the member, then correct the wrong POD by revision on their application (Corrections panel).",
+		"community": "Registry community: {{community}}",
+		"none": "No POD is held by more than one active member.",
+		"col_pod": "POD",
+		"col_holders": "Members of this community",
+		"col_elsewhere": "Elsewhere",
+		"elsewhere_none": "—",
+		"elsewhere": "also held in {{count}} other community(ies)",
+		"not_onboarded": "not onboarded here",
+		"open": "open application",
+		"reveal": "Show the PODs (audited)",
+		"hide": "Hide the PODs",
+		"reveal_forbidden": "PODs are masked; showing them needs the reveal permission.",
+		"failed": "The list could not be read: {{message}}"
 	},
 	"areas": {
 		"title": "Areas in the registry",

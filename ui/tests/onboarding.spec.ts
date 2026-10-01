@@ -55,7 +55,7 @@ test.describe('Wizard', () => {
 
 test.describe('Wizard without document processing or SMS', () => {
 	// Needs the live backend `scripts/e2e.sh` starts, which runs with both switches off
-	// (no EXTRACTION_ENABLED or EXTRACTION_API_KEY; a real SMS_PROVIDER without
+	// (no EXTRACTION_ENABLED or LLM_BASE_URL; a real SMS_PROVIDER without
 	// DPA_SMS_SIGNED). Against `pnpm dev` there is no API to submit to.
 	test.skip(!process.env.PLAYWRIGHT_BASE_URL, 'run through scripts/e2e.sh ui');
 

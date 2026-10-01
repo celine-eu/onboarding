@@ -1,8 +1,9 @@
 """Document upload and scanning are a feature switch, not a condition for starting.
 
-Scanning sends a participant's bill and identity document to the extraction
-endpoint. Without the operator switching it on (`EXTRACTION_ENABLED`) and a key to
-call it with (`EXTRACTION_API_KEY`), the feature is off: the service still starts and onboards
+Scanning sends a participant's bill and identity document to the model endpoint.
+Without the operator switching it on (`EXTRACTION_ENABLED`) and naming the endpoint and
+the model (`LLM_BASE_URL`, `LLM_VISION_MODEL`), the feature is off: the service still
+starts and onboards
 people from the fields they type, `/config` tells the wizard so, and the API
 refuses every route that would store a document for scanning or read one.
 """
@@ -21,16 +22,26 @@ from celine.onboarding.api import deps
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
 
+ENDPOINT = "http://models.internal/v1"
+
 
 @pytest.fixture()
 def switch(monkeypatch):
-    """Set the two inputs of the switch; returns a setter."""
+    """Set the inputs of the switch; returns a setter. `endpoint` empty names none."""
 
-    def _set(*, dpa: bool, key: str):
+    def _set(*, dpa: bool, endpoint: str, model: str = "vision-model"):
         monkeypatch.setattr(settings, "extraction_enabled", dpa)
-        monkeypatch.setattr(settings, "extraction_api_key", key)
-        monkeypatch.setattr(settings, "removed_dpa_signed", "")
-        monkeypatch.setattr(settings, "removed_openai_api_key", "")
+        monkeypatch.setattr(settings, "llm_base_url", endpoint)
+        monkeypatch.setattr(settings, "llm_vision_model", model)
+        monkeypatch.setattr(settings, "llm_api_key", "")
+        for removed in (
+            "removed_dpa_signed",
+            "removed_openai_api_key",
+            "removed_extraction_api_key",
+            "removed_extraction_base_url",
+            "removed_extraction_model",
+        ):
+            monkeypatch.setattr(settings, removed, "")
 
     return _set
 
@@ -81,11 +92,11 @@ GATED = [
 
 
 @pytest.mark.parametrize(
-    ("dpa", "key", "enabled"),
-    [(True, "sk-test", True), (False, "sk-test", False), (True, "", False), (False, "", False)],
+    ("dpa", "endpoint", "enabled"),
+    [(True, ENDPOINT, True), (False, ENDPOINT, False), (True, "", False), (False, "", False)],
 )
-def test_it_needs_both_the_agreement_and_a_key(switch, dpa, key, enabled):
-    switch(dpa=dpa, key=key)
+def test_it_needs_both_the_agreement_and_an_endpoint(switch, dpa, endpoint, enabled):
+    switch(dpa=dpa, endpoint=endpoint)
     assert settings.document_processing_enabled is enabled
 
 
@@ -98,7 +109,7 @@ async def test_the_service_starts_with_the_switch_off(
     """A REC collecting personal data used to be enough to refuse to boot."""
     from celine.onboarding.services import template_service
 
-    switch(dpa=False, key="")
+    switch(dpa=False, endpoint="")
     bind_rec("rec-a")["steps"] = ["consents", "utility", "personal", "review"]
 
     async def _nothing():
@@ -120,17 +131,34 @@ async def test_the_service_starts_with_the_switch_off(
 
 
 def test_the_warning_names_what_is_missing(switch, caplog):
-    switch(dpa=False, key="sk-test")
+    switch(dpa=False, endpoint=ENDPOINT)
     with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
         app_main._warn_document_processing()
 
-    assert "EXTRACTION_ENABLED not set" in caplog.text
-    assert "EXTRACTION_API_KEY" not in caplog.text
+    assert "disabled: EXTRACTION_ENABLED not set" in caplog.text
+
+
+def test_a_named_endpoint_needs_a_model_and_no_key(switch):
+    """No vendor default, and a self-hosted server usually has no key."""
+    switch(dpa=True, endpoint=ENDPOINT, model="")
+    assert settings.document_processing_enabled is False
+    switch(dpa=True, endpoint=ENDPOINT)
+    assert settings.document_processing_enabled is True
+
+
+def test_the_endpoint_has_no_vendor_default(monkeypatch):
+    from celine.onboarding.config.settings import Settings
+
+    for name in ("LLM_BASE_URL", "LLM_VISION_MODEL", "LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    fresh = Settings(_env_file=None)
+    assert fresh.llm_base_url == ""
+    assert fresh.llm_vision_model == ""
 
 
 def test_the_old_names_are_reported_and_do_not_switch_it_on(switch, monkeypatch, caplog):
     """Renamed on 2026-09-14, with no alias: a leftover leaves the feature off, and says so."""
-    switch(dpa=False, key="")
+    switch(dpa=False, endpoint="")
     monkeypatch.setattr(settings, "removed_dpa_signed", "yes")
     monkeypatch.setattr(settings, "removed_openai_api_key", "sk-test")
 
@@ -139,7 +167,7 @@ def test_the_old_names_are_reported_and_do_not_switch_it_on(switch, monkeypatch,
 
     assert settings.document_processing_enabled is False
     assert "DPA_SIGNED (now EXTRACTION_ENABLED)" in caplog.text
-    assert "OPENAI_API_KEY (now EXTRACTION_API_KEY)" in caplog.text
+    assert "OPENAI_API_KEY (now LLM_API_KEY)" in caplog.text
     assert "Document upload and scanning are disabled" in caplog.text
 
 
@@ -149,17 +177,44 @@ def test_the_old_names_are_read_from_the_environment_under_their_own_names(monke
     monkeypatch.setenv("DPA_SIGNED", "yes")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("EXTRACTION_ENABLED", raising=False)
-    monkeypatch.delenv("EXTRACTION_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
     fresh = Settings(_env_file=None)
 
     assert fresh.removed_dpa_signed == "yes"
     assert fresh.removed_openai_api_key == "sk-test"
     assert fresh.extraction_enabled is False
-    assert fresh.extraction_api_key == ""
+    assert fresh.llm_api_key == ""
+
+
+def test_the_extraction_endpoint_names_are_reported_too(switch, monkeypatch, caplog):
+    """Renamed on 2026-10-01 to the generic `LLM_*`, which celine-ai-assistant uses too."""
+    switch(dpa=True, endpoint="")
+    monkeypatch.setattr(settings, "removed_extraction_api_key", "sk-test")
+    monkeypatch.setattr(settings, "removed_extraction_base_url", "https://api.openai.com/v1")
+    monkeypatch.setattr(settings, "removed_extraction_model", "gpt-5.4")
+
+    with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
+        app_main._warn_document_processing()
+
+    assert settings.document_processing_enabled is False
+    assert "EXTRACTION_API_KEY (now LLM_API_KEY)" in caplog.text
+    assert "EXTRACTION_BASE_URL (now LLM_BASE_URL)" in caplog.text
+    assert "EXTRACTION_MODEL (now LLM_VISION_MODEL)" in caplog.text
+
+
+def test_the_extraction_endpoint_names_are_read_under_their_own_names(monkeypatch):
+    from celine.onboarding.config.settings import Settings
+
+    monkeypatch.setenv("EXTRACTION_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    fresh = Settings(_env_file=None)
+
+    assert fresh.removed_extraction_base_url == "https://api.openai.com/v1"
+    assert fresh.llm_base_url == ""
 
 
 def test_no_warning_when_the_switch_is_on(switch, caplog):
-    switch(dpa=True, key="sk-test")
+    switch(dpa=True, endpoint=ENDPOINT)
     with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
         app_main._warn_document_processing()
 
@@ -169,9 +224,12 @@ def test_no_warning_when_the_switch_is_on(switch, caplog):
 # ── what the wizard is told ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("dpa", "key", "enabled"), [(True, "sk-test", True), (False, "", False)])
-def test_config_reports_the_switch(switch, client, dpa, key, enabled):
-    switch(dpa=dpa, key=key)
+@pytest.mark.parametrize(
+    ("dpa", "endpoint", "enabled"),
+    [(True, ENDPOINT, True), (False, "", False)],
+)
+def test_config_reports_the_switch(switch, client, dpa, endpoint, enabled):
+    switch(dpa=dpa, endpoint=endpoint)
     features = client.get("/api/rec-a/config").json()["features"]
     assert features["document_upload"] is enabled
     assert features["document_scan"] is enabled
@@ -182,7 +240,7 @@ def test_config_reports_the_switch(switch, client, dpa, key, enabled):
 
 @pytest.mark.parametrize(("method", "url", "kwargs"), GATED)
 def test_off_every_document_route_answers_403(switch, client, method, url, kwargs):
-    switch(dpa=False, key="")
+    switch(dpa=False, endpoint="")
     res = getattr(client, method)(url, **kwargs)
 
     assert res.status_code == 403
@@ -199,7 +257,7 @@ def test_off_nothing_reaches_the_extractor(switch, client, monkeypatch):
         return {}, {}
 
     monkeypatch.setattr(openai_extractor.OpenAIExtractor, "extract_pages", _extract)
-    switch(dpa=False, key="")
+    switch(dpa=False, endpoint="")
 
     client.post("/api/rec-a/extract", files=FILE)
     client.post("/api/rec-a/extract-id", files=FILE)
@@ -215,7 +273,7 @@ def test_on_the_stateless_scans_work(switch, client, monkeypatch, url):
         return {"nome": "TEST"}, {}
 
     monkeypatch.setattr(openai_extractor.OpenAIExtractor, "extract_pages", _extract)
-    switch(dpa=True, key="sk-test")
+    switch(dpa=True, endpoint=ENDPOINT)
 
     res = client.post(url, files=FILE)
 
@@ -236,7 +294,7 @@ def test_on_the_stateful_routes_get_past_the_switch(
     monkeypatch.setattr(document_service, "get_document", _none)
     monkeypatch.setattr(extraction_service, "get_extraction", _none)
     monkeypatch.setattr(submission_service, "get_submission", _none)
-    switch(dpa=True, key="sk-test")
+    switch(dpa=True, endpoint=ENDPOINT)
 
     res = getattr(client, method)(url, **kwargs)
 
@@ -250,7 +308,7 @@ def test_off_an_upload_that_is_not_for_scanning_is_not_refused(switch, client, m
         return None
 
     monkeypatch.setattr(submission_service, "get_submission", _none)
-    switch(dpa=False, key="")
+    switch(dpa=False, endpoint="")
 
     res = client.post(
         f"/api/rec-a/submissions/{uuid.uuid4()}/documents?doc_type=other",
@@ -258,3 +316,39 @@ def test_off_an_upload_that_is_not_for_scanning_is_not_refused(switch, client, m
     )
 
     assert res.status_code == 404
+
+
+
+async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypatch):
+    """No vendor and no model is assumed: both come from `LLM_*`, and no key is required."""
+    import io
+
+    from PIL import Image
+
+    from celine.onboarding.extractors import openai_extractor
+
+    seen: dict = {}
+
+    class _Completions:
+        async def create(self, **kwargs):
+            seen["model"] = kwargs["model"]
+            message = type("M", (), {"content": '{"pod_code": "IT001E00000000"}'})()
+            choice = type("C", (), {"message": message})()
+            return type("R", (), {"choices": [choice], "model_dump": lambda self: {}})()
+
+    class _Client:
+        def __init__(self, *, api_key, base_url):
+            seen["base_url"], seen["api_key"] = base_url, api_key
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    png = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(png, format="PNG")
+
+    switch(dpa=True, endpoint=ENDPOINT, model="vision-model")
+    monkeypatch.setattr(openai_extractor, "AsyncOpenAI", _Client)
+    extracted, _ = await openai_extractor.OpenAIExtractor().extract_pages(
+        [(png.getvalue(), "image/png")]
+    )
+
+    assert extracted == {"pod_code": "IT001E00000000"}
+    assert seen == {"base_url": ENDPOINT, "api_key": "not-used", "model": "vision-model"}

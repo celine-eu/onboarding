@@ -50,7 +50,7 @@ dependencies = [
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
-    "celine-sdk>=1.21.0",
+    "celine-sdk>=1.24.0",
     "phonenumbers>=8.13",
 ]
 

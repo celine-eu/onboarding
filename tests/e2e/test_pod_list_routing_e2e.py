@@ -317,7 +317,7 @@ def routed_api(idp, database, dataspace) -> str:
         "OIDC_JWKS_URI": idp.jwks_uri,
         "REQUIRE_ENCRYPTION": "false",
         "EXTRACTION_ENABLED": "false",
-        "EXTRACTION_API_KEY": "",
+        "LLM_BASE_URL": "",
         "DPA_SIGNED": "",
         "OPENAI_API_KEY": "",
         "DPA_SMS_SIGNED": "yes",

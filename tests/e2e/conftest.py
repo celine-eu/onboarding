@@ -127,7 +127,7 @@ def api(idp: TestIdp, _seeded) -> str:
         # Document upload and scanning off, whatever a local `.env` says: the
         # suite must never send anything to the extraction provider.
         "EXTRACTION_ENABLED": "false",
-        "EXTRACTION_API_KEY": "",
+        "LLM_BASE_URL": "",
         "DPA_SIGNED": "",
         "OPENAI_API_KEY": "",
         "DPA_SMS_SIGNED": "yes",

@@ -4,7 +4,8 @@
 		"submissions": "Solicitudes",
 		"audit": "Registro",
 		"exports": "Exportaciones",
-		"areas": "Áreas"
+		"areas": "Áreas",
+		"shared_pods": "POD compartidos"
 	},
 	"choose_rec": "Elige comunidad...",
 	"profile": "Perfil",
@@ -203,6 +204,24 @@
 	"subject_type": {
 		"user": "usuario",
 		"service": "servicio"
+	},
+	"shared_pods": {
+		"title": "POD compartidos",
+		"lead": "Puntos de suministro (POD) que más de un socio activo tiene, según el registro de la REC. Un POD es una sola conexión a la red, así que uno de los titulares tiene el equivocado — normalmente un código mal escrito. El registro no vuelve a asignar un POD así hasta que se resuelve.",
+		"guidance": "Para cada uno: compruébalo con el socio y corrige el POD equivocado con una revisión en su solicitud (panel Correcciones).",
+		"community": "Comunidad en el registro: {{community}}",
+		"none": "Ningún POD lo tiene más de un socio activo.",
+		"col_pod": "POD",
+		"col_holders": "Socios de esta comunidad",
+		"col_elsewhere": "En otras",
+		"elsewhere_none": "—",
+		"elsewhere": "también en {{count}} otra(s) comunidad(es)",
+		"not_onboarded": "no se inscribió aquí",
+		"open": "abrir la solicitud",
+		"reveal": "Mostrar los POD (queda registrado)",
+		"hide": "Ocultar los POD",
+		"reveal_forbidden": "Los POD están ocultos; mostrarlos requiere el permiso de visualización.",
+		"failed": "No se pudo leer la lista: {{message}}"
 	},
 	"areas": {
 		"title": "Áreas en el registro",

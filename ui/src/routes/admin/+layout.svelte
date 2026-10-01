@@ -59,6 +59,16 @@
 				>
 					{$t('admin.nav.exports')}
 				</a>
+				{#if currentAccess?.capabilities.includes('submissions.revise')}
+					<!-- Shared PODs are corrected by revision, so the page is for those
+					     who may revise (`managers`, `admins`); the API refuses anyone else. -->
+					<a
+						href="/admin/{currentRec}/shared-pods"
+						class:active={page.url.pathname.endsWith('/shared-pods')}
+					>
+						{$t('admin.nav.shared_pods')}
+					</a>
+				{/if}
 				{#if currentAccess?.capabilities.includes('recs.drift')}
 					<!-- The drift check is for realm admins and the REC's own managers
 					     and admins (`recs.drift`); the API refuses anyone else. -->

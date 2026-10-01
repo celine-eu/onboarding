@@ -12,6 +12,7 @@ from fastapi import APIRouter
 
 from celine.onboarding.api.admin import (
     audit,
+    delivery_points,
     documents,
     enablement,
     exports,
@@ -39,6 +40,7 @@ def create_admin_router() -> APIRouter:
     router.include_router(submissions.router)
     router.include_router(verifications.router)
     router.include_router(revisions.router)
+    router.include_router(delivery_points.router)
     router.include_router(enablement.router)
     router.include_router(documents.router)
     router.include_router(exports.router)

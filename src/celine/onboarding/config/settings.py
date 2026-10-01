@@ -34,9 +34,14 @@ class Settings(BaseSettings):
     database_url: str = (
         f"postgresql+asyncpg://postgres:securepassword123@{DEV_HOST}:15432/rec_onboarding"
     )
-    extraction_api_key: str = ""
-    extraction_base_url: str = "https://api.openai.com/v1"
-    extraction_model: str = "gpt-5.4"
+    # The OpenAI-compatible endpoint that reads bills and ID cards (vLLM, Ollama,
+    # llama.cpp…), named the same way as celine-ai-assistant's. No default: identity
+    # documents go wherever this points, so an unset value must not mean a vendor. To
+    # use OpenAI itself, say `https://api.openai.com/v1`. A self-hosted server usually
+    # needs no key.
+    llm_base_url: str = Field(default="", validation_alias="LLM_BASE_URL")
+    llm_api_key: str = Field(default="", validation_alias="LLM_API_KEY")
+    llm_vision_model: str = Field(default="", validation_alias="LLM_VISION_MODEL")
 
     data_dir: str = str(REPO_ROOT / "data")
     templates_dir: str = str(REPO_ROOT / "templates")
@@ -44,7 +49,7 @@ class Settings(BaseSettings):
 
     encryption_key: str = ""
     require_encryption: bool = True
-    # Set only once the endpoint at `extraction_base_url` is operated by this
+    # Set only once the endpoint at `llm_base_url` is operated by this
     # deployment's own operator, or covered by a processing agreement (GDPR Art. 28)
     # that keeps processing in the EU. See `document_processing_enabled`.
     extraction_enabled: bool = False
@@ -55,6 +60,11 @@ class Settings(BaseSettings):
     # named a vendor the endpoint need not be. Nothing reads them.
     removed_dpa_signed: str = Field(default="", validation_alias="DPA_SIGNED")
     removed_openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    # The endpoint's names until 2026-10-01, when they became the generic `LLM_*`.
+    # Declared for the same reason; nothing reads them.
+    removed_extraction_api_key: str = Field(default="", validation_alias="EXTRACTION_API_KEY")
+    removed_extraction_base_url: str = Field(default="", validation_alias="EXTRACTION_BASE_URL")
+    removed_extraction_model: str = Field(default="", validation_alias="EXTRACTION_MODEL")
 
     # Declared only so that startup can refuse to run with it set — nothing reads
     # it. The shared admin token was replaced by Keycloak identities and OPA
@@ -326,15 +336,16 @@ class Settings(BaseSettings):
     def document_processing_enabled(self) -> bool:
         """Whether participants may upload a bill or ID card and have it read.
 
-        Scanning sends identity documents to the extraction endpoint, so it needs
-        the operator to have switched it on (`EXTRACTION_ENABLED`, which asserts the
-        endpoint is in-house or under an EU processing agreement) and a key to call
-        it with (`EXTRACTION_API_KEY`). Either missing means the feature is off — not a refusal to
-        start: the wizard still onboards a participant from the fields they type.
+        Scanning sends identity documents to the model endpoint, so it needs the
+        operator to have switched it on (`EXTRACTION_ENABLED`, which asserts the
+        endpoint is in-house or under an EU processing agreement) and to have named
+        the endpoint and the model (`LLM_BASE_URL`, `LLM_VISION_MODEL`). Any of them
+        missing means the feature is off — not a refusal to start: the wizard still
+        onboards a participant from the fields they type.
         Upload follows the same switch, because a stored document exists only to
         be scanned or reviewed alongside a scan.
         """
-        return self.extraction_enabled and bool(self.extraction_api_key)
+        return self.extraction_enabled and bool(self.llm_base_url) and bool(self.llm_vision_model)
 
     @property
     def phone_verification_enabled(self) -> bool:

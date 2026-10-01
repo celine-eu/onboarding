@@ -317,6 +317,27 @@ rows written before the trail recorded a community, and not recoverable by the
 for one offer (who stood authorised, who withdrew). Both stream and leave nothing on
 disk.
 
+**`/admin/{rec}/shared-pods`** — the PODs that more than one active member holds, as the
+REC registry reports them for this community (`GET /api/admin/{rec}/delivery-points/shared`,
+from the registry's `…/delivery-points/duplicates`). A POD is one grid connection, so one
+of the holders has the wrong one, usually a mistyped code; the registry refuses to give such
+a POD again (`delivery_point_held`) until it is resolved. Per POD: this community's
+holders by member key, each linked to the application it came from when it came through
+this service ("not onboarded here" otherwise), and how many **other** communities hold
+it, as a count only ("also held in N other community(ies)"; the registry never names
+them). The guidance on the page: check it with the member, then correct the wrong POD by
+revision on their application ([Corrections](#correcting-declared-data-revisions)).
+
+- **Who:** `submissions.revise` (`managers`, `admins`): the list exists to be acted on,
+  and the act is a revision. The navigation offers the page only to them.
+- **Masking:** the PODs are masked as on a submission; *Show the PODs* asks again with
+  `?reveal=true`, which needs `submissions.reveal`. Every read is in the trail
+  (`entity_type` `shared_delivery_points`, action `view` or `reveal`, with the number of
+  points and never a POD).
+- **Errors:** no registry configured or no `rec_registry` block → 409; the registry holds
+  no community for this REC → 404; another registry refusal → 502 (its text is not
+  passed on); the registry unreachable → 503.
+
 **`/admin/{rec}/areas`** — whether the REC registry's areas match this community's
 template (the drift check, [REQ-0015](specifications/registry-sync.md)). Each template area
 with its primary substation is shown as *matches*, *missing from the registry* or
@@ -424,6 +445,9 @@ supply point and consumption history; listing filenames is not.
 
 An attempted approval that a blocking step refused is recorded as
 `transition_failed`. The step rows say what broke; only the trail says who tried.
+
+Reading the shared PODs is recorded as `view` or `reveal` with `entity_type`
+`shared_delivery_points` and the number of points.
 
 A correction is recorded as `revise`, with the field, the revision id, the method
 and the document, and the revision it supersedes; a retry of its propagation as

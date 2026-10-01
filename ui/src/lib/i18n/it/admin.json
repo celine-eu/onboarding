@@ -4,7 +4,8 @@
 		"submissions": "Pratiche",
 		"audit": "Registro",
 		"exports": "Esportazioni",
-		"areas": "Aree"
+		"areas": "Aree",
+		"shared_pods": "POD condivisi"
 	},
 	"choose_rec": "Scegli comunità...",
 	"profile": "Profilo",
@@ -203,6 +204,24 @@
 	"subject_type": {
 		"user": "utente",
 		"service": "servizio"
+	},
+	"shared_pods": {
+		"title": "POD condivisi",
+		"lead": "Punti di prelievo (POD) che più di un socio attivo detiene, secondo il registro della REC. Un POD è una sola connessione alla rete, quindi uno dei titolari ha quello sbagliato — di solito un codice digitato male. Il registro non assegna di nuovo un POD così finché non è risolto.",
+		"guidance": "Per ciascuno: verificalo con il socio, poi correggi il POD sbagliato con una revisione nella sua domanda (pannello Correzioni).",
+		"community": "Comunità nel registro: {{community}}",
+		"none": "Nessun POD è detenuto da più di un socio attivo.",
+		"col_pod": "POD",
+		"col_holders": "Soci di questa comunità",
+		"col_elsewhere": "Altrove",
+		"elsewhere_none": "—",
+		"elsewhere": "detenuto anche in {{count}} altra/e comunità",
+		"not_onboarded": "non iscritto qui",
+		"open": "apri la domanda",
+		"reveal": "Mostra i POD (registrato)",
+		"hide": "Nascondi i POD",
+		"reveal_forbidden": "I POD sono mascherati; per mostrarli serve il permesso di visualizzazione.",
+		"failed": "Impossibile leggere l'elenco: {{message}}"
 	},
 	"areas": {
 		"title": "Aree nel registro",

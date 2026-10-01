@@ -582,8 +582,35 @@ export function createRecAdminApi(recSlug: string) {
 
 		// Whether the registry's areas match this community's template. A read:
 		// the sync itself is a realm admin's, from the CLI or the API.
-		registryDrift: () => adminRequest<RegistryDrift>(`/api/admin/recs/${recSlug}/registry-drift`)
+		registryDrift: () => adminRequest<RegistryDrift>(`/api/admin/recs/${recSlug}/registry-drift`),
+
+		// PODs more than one active member holds, from the registry's report.
+		// Masked unless `reveal`, which needs submissions.reveal and is audited.
+		sharedDeliveryPoints: (reveal = false) =>
+			adminRequest<SharedDeliveryPoints>(`${base}/delivery-points/shared?reveal=${reveal}`)
 	};
+}
+
+/** One POD more than one active member holds (registry plan F8). */
+export interface SharedDeliveryPoint {
+	/** The registry's compared form (trimmed, lower-case); masked unless revealed. */
+	delivery_point: string;
+	/** This community's active holders. `submission_id` links one onboarded here. */
+	holders: Array<{
+		member_key: string;
+		id: string;
+		submission_id: string | null;
+		submission_ref: string | null;
+	}>;
+	/** Active members of other communities holding it: a count only. */
+	held_elsewhere: number;
+	active_holders: number;
+}
+
+export interface SharedDeliveryPoints {
+	community_key: string;
+	revealed: boolean;
+	items: SharedDeliveryPoint[];
 }
 
 export interface RegistryDriftArea {
