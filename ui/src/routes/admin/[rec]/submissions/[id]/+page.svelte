@@ -4,6 +4,7 @@
 	import {
 		AdminDeniedError,
 		type AdminDocument,
+		type AdminRevision,
 		type AdminSubmission,
 		type AdminVerification,
 		type AuditEntry,
@@ -52,6 +53,29 @@
 	let verifyMethod = $state<AdminVerification['method']>('offline');
 	let verifyDocument = $state('');
 	let verifyNote = $state('');
+	let revisions = $state<AdminRevision[]>([]);
+	let reviseField = $state<AdminRevision['field']>('pod_code');
+	let reviseValue = $state('');
+	let reviseMethod = $state<AdminVerification['method']>('offline');
+	let reviseDocument = $state('');
+	let reviseNote = $state('');
+
+	// Mirrors services/revision.REVISED_FIELDS and REVISABLE. From `submitted` on
+	// these change only by revision; the API refuses a draft or a rejected one.
+	const REVISED_FIELDS: AdminRevision['field'][] = ['first_name', 'last_name', 'email', 'pod_code'];
+	const revisable = $derived(
+		submission?.status === 'submitted' ||
+			submission?.status === 'under_review' ||
+			submission?.status === 'approved'
+	);
+
+	// Per field, oldest first, as the API returns them; only fields with a revision.
+	const revisionsByField = $derived(
+		REVISED_FIELDS.map((field) => ({
+			field,
+			rows: revisions.filter((r) => r.field === field)
+		})).filter((group) => group.rows.length > 0)
+	);
 
 	// A verification is evidence for a pending decision; the API refuses one after.
 	const verifiable = $derived(
@@ -70,6 +94,11 @@
 			verifications = await api.verifications(id);
 		} catch {
 			verifications = [];
+		}
+		try {
+			revisions = await api.revisions(id, revealed);
+		} catch {
+			revisions = [];
 		}
 	}
 
@@ -147,6 +176,27 @@
 			await refresh();
 			verifyNote = '';
 			successMsg = $t('admin.detail.verification_recorded');
+		});
+
+	const recordRevision = () =>
+		act('revise', async () => {
+			await api.recordRevision(id, {
+				field: reviseField,
+				value: reviseValue.trim(),
+				method: reviseMethod,
+				...(reviseMethod === 'uploaded-document' ? { document_id: reviseDocument } : {}),
+				note: reviseNote.trim()
+			});
+			await refresh();
+			reviseValue = '';
+			reviseNote = '';
+			successMsg = $t('admin.detail.revision_recorded');
+		});
+
+	const retryRevision = (revisionId: string, step?: string) =>
+		act('revise-retry', async () => {
+			await api.retryRevision(id, revisionId, step);
+			await refresh();
 		});
 
 	function documentName(documentId: string | null): string {
@@ -416,6 +466,145 @@
 								: submission.verification
 									? $t('admin.detail.verification_record_new')
 									: $t('admin.detail.verification_record')}
+						</button>
+					</form>
+				{/if}
+			</section>
+
+			<section class="panel revisions">
+				<h2>{$t('admin.detail.revisions')}</h2>
+				<p class="hint">{$t('admin.detail.revisions_hint')}</p>
+
+				{#if revisionsByField.length === 0}
+					<p class="muted">{$t('admin.detail.revisions_none')}</p>
+				{:else}
+					{#each revisionsByField as group (group.field)}
+						<h3>{$t(`admin.detail.revision_field_${group.field}`)}</h3>
+						<ol class="verifications">
+							{#each [...group.rows].reverse() as r, i (r.id)}
+								<li data-current={i === 0}>
+									<strong class:mono={r.field === 'pod_code'}>{r.new_value}</strong>
+									{#if i === 0}<span class="muted small">{$t('admin.detail.revision_in_force')}</span>{/if}
+									<span class="small" class:mono={r.field === 'pod_code'}>
+										← {r.previous_value ?? '—'}
+										{#if i === group.rows.length - 1}<span class="muted">({$t('admin.detail.revision_declared')})</span>{/if}
+									</span>
+									<span class="muted small">
+										{r.method === 'member-session'
+											? r.method
+											: $t(`admin.detail.verification_${r.method.replace('-', '_')}`)}
+										{#if r.document_id}· {documentName(r.document_id)}{/if}
+									</span>
+									<span class="muted small">
+										{r.actor_email ?? r.actor_sub ?? r.actor_type} · {formatDate(r.created_at)}
+									</span>
+									{#if r.note}<span class="small">{r.note}</span>{/if}
+									{#if r.steps.length > 0}
+										<!-- Where the corrected value went after approval, step by step. -->
+										<ul class="revision-steps">
+											{#each r.steps as st (st.step)}
+												<li data-status={st.status}>
+													<span>{$t(`admin.detail.revision_step_${st.step}`, { default: st.step })}</span>
+													<span class="badge" data-status={st.status === 'done' ? 'succeeded' : st.status}>
+														{$t(`admin.detail.revision_step_status_${st.status}`, { default: st.status })}
+													</span>
+													{#if st.attempts > 1}<span class="muted small">{$t('admin.detail.attempts', { count: st.attempts })}</span>{/if}
+													{#if st.reason}<span class="muted small" data-error={st.error_code}>{st.reason}</span>{/if}
+													{#if st.status === 'failed' && can('submissions.revise')}
+														<button
+															class="secondary small"
+															disabled={busy !== null}
+															onclick={() => retryRevision(r.id, st.step)}
+														>
+															{$t('admin.detail.retry_step')}
+														</button>
+													{/if}
+												</li>
+											{/each}
+										</ul>
+									{/if}
+								</li>
+							{/each}
+						</ol>
+					{/each}
+				{/if}
+
+				{#if can('submissions.revise') && revisable}
+					{#if submission.status === 'approved'}
+						<p class="hint">{$t('admin.detail.revision_propagates')}</p>
+					{/if}
+					<form
+						class="verify"
+						onsubmit={(e) => {
+							e.preventDefault();
+							void recordRevision();
+						}}
+					>
+						<label>
+							<span>{$t('admin.detail.revision_field')}</span>
+							<select bind:value={reviseField}>
+								{#each REVISED_FIELDS as field (field)}
+									<option value={field}>{$t(`admin.detail.revision_field_${field}`)}</option>
+								{/each}
+							</select>
+						</label>
+						<label>
+							<span>{$t('admin.detail.revision_value')}</span>
+							<input
+								bind:value={reviseValue}
+								required
+								maxlength={reviseField === 'pod_code' ? 20 : reviseField === 'email' ? 255 : 100}
+								type={reviseField === 'email' ? 'email' : 'text'}
+								class:mono={reviseField === 'pod_code'}
+							/>
+						</label>
+						<fieldset>
+							<legend>{$t('admin.detail.revision_method')}</legend>
+							<label>
+								<input type="radio" bind:group={reviseMethod} value="offline" />
+								{$t('admin.detail.verification_offline')}
+							</label>
+							<label>
+								<input
+									type="radio"
+									bind:group={reviseMethod}
+									value="uploaded-document"
+									disabled={documents.length === 0}
+								/>
+								{$t('admin.detail.verification_uploaded_document')}
+							</label>
+						</fieldset>
+						{#if reviseMethod === 'uploaded-document'}
+							<label>
+								<span>{$t('admin.detail.verification_document')}</span>
+								<select bind:value={reviseDocument} required>
+									<option value="">—</option>
+									{#each documents as doc (doc.id)}
+										<option value={doc.id}>{doc.original_filename}</option>
+									{/each}
+								</select>
+							</label>
+						{/if}
+						<label>
+							<span>{$t('admin.detail.revision_note')}</span>
+							<!-- Required by the API: how the new value was checked. -->
+							<textarea
+								bind:value={reviseNote}
+								rows="2"
+								maxlength="1000"
+								required
+								placeholder={$t('admin.detail.revision_note_placeholder')}
+							></textarea>
+						</label>
+						<button
+							type="submit"
+							class="secondary small"
+							disabled={busy !== null ||
+								!reviseValue.trim() ||
+								!reviseNote.trim() ||
+								(reviseMethod === 'uploaded-document' && !reviseDocument)}
+						>
+							{busy === 'revise' ? '…' : $t('admin.detail.revision_record')}
 						</button>
 					</form>
 				{/if}
@@ -825,6 +1014,33 @@
 		width: auto;
 		min-height: 0;
 		margin-right: 0.375rem;
+	}
+
+	.revision-steps {
+		list-style: none;
+		margin: 0.375rem 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.revision-steps li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.375rem;
+		font-size: 0.8125rem;
+	}
+
+	.revision-steps li > .muted {
+		flex-basis: 100%;
+	}
+
+	.revisions h3 {
+		font-size: 0.8125rem;
+		margin: 0.75rem 0 0.375rem;
+		color: var(--celine-text-secondary);
 	}
 
 	.verify select {

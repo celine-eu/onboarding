@@ -9,6 +9,7 @@ from celine.onboarding.models.enablement import (
 from celine.onboarding.models.extraction import Extraction
 from celine.onboarding.models.phone_otp import PhoneOtp
 from celine.onboarding.models.rec import Rec
+from celine.onboarding.models.revision import SubmissionRevision, SubmissionRevisionStep
 from celine.onboarding.models.sharing_intent import MemberSharingIntent
 from celine.onboarding.models.submission import Submission, SubmissionStatus
 from celine.onboarding.models.verification import SubmissionVerification, VerificationMethod
@@ -26,6 +27,8 @@ __all__ = [
     "Rec",
     "Submission",
     "SubmissionEnablementStep",
+    "SubmissionRevision",
+    "SubmissionRevisionStep",
     "SubmissionStatus",
     "SubmissionVerification",
     "VerificationMethod",

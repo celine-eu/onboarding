@@ -749,7 +749,7 @@ class TestTheMigration:
 
         config = Config()
         config.set_main_option("script_location", str(Path(__file__).parents[1] / "alembic"))
-        assert ScriptDirectory.from_config(config).get_heads() == ["0016"]
+        assert ScriptDirectory.from_config(config).get_heads() == ["0018"]
 
     def test_the_model_matches(self):
         columns = {c.name: c for c in Submission.__table__.columns}

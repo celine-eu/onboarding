@@ -15,7 +15,7 @@ from celine.onboarding.models.schemas import (
     SubmissionRead,
     SubmissionUpdate,
 )
-from celine.onboarding.models.submission import Submission
+from celine.onboarding.models.submission import Submission, SubmissionStatus
 from celine.onboarding.services import submission_service, template_service
 from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.workflows.engine import InvalidTransitionError
@@ -96,6 +96,12 @@ async def update_submission(
     db: AsyncSession = Depends(get_db),
 ):
     submission = await _get_live_submission(submission_id, request, rec_slug=rec_slug, db=db)
+    # The wizard edits a draft and submits it; after that the application is the
+    # REC's to review, and a correction is an operator's revision with evidence.
+    if submission.status != SubmissionStatus.DRAFT:
+        raise HTTPException(
+            409, "This application has been submitted and can no longer be changed."
+        )
     try:
         return await submission_service.update_submission(
             db, submission, data, background_tasks=background_tasks

@@ -18,6 +18,7 @@ from celine.onboarding.api.admin import (
     me,
     members,
     recs,
+    revisions,
     stats,
     submissions,
     verifications,
@@ -37,6 +38,7 @@ def create_admin_router() -> APIRouter:
 
     router.include_router(submissions.router)
     router.include_router(verifications.router)
+    router.include_router(revisions.router)
     router.include_router(enablement.router)
     router.include_router(documents.router)
     router.include_router(exports.router)

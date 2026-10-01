@@ -588,6 +588,20 @@ def state_of(rows: dict[str, SubmissionEnablementStep]) -> str:
     return "partial"
 
 
+def revoked(rows: dict[str, SubmissionEnablementStep]) -> bool:
+    """Whether enablement was reversed and not run again since.
+
+    `revoke` leaves each step it undid `pending` with `completed_at` set; a run
+    never does (it moves a step to `running`, then to an outcome), and a step
+    that never ran has no `completed_at`. A re-approval or a retry moves the row
+    on, so this answers for the latest state, not for history.
+    """
+    return any(
+        row.status == EnablementStatus.PENDING and row.completed_at is not None
+        for row in rows.values()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------

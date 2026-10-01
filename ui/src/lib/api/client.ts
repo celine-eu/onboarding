@@ -350,6 +350,36 @@ export interface AdminVerification {
 	created_at: string;
 }
 
+/** One correction of a declared field. Per field, the newest is in force; the
+ *  oldest one's `previous_value` is what the person declared. The POD values are
+ *  masked unless the read asked to reveal them. */
+export interface AdminRevision {
+	id: string;
+	field: 'first_name' | 'last_name' | 'email' | 'pod_code';
+	previous_value: string | null;
+	new_value: string;
+	method: 'offline' | 'uploaded-document' | 'member-session';
+	document_id: string | null;
+	note: string | null;
+	actor_type: 'operator' | 'member';
+	actor_sub: string | null;
+	actor_email: string | null;
+	created_at: string;
+	/** Propagation after approval, in order; empty for a revision before it. */
+	steps: AdminRevisionStep[];
+}
+
+/** One system a corrected value is carried to. Codes and fixed sentences only. */
+export interface AdminRevisionStep {
+	step: string;
+	status: 'pending' | 'done' | 'failed' | 'skipped';
+	attempts: number;
+	outcome: string | null;
+	error_code: string | null;
+	reason: string | null;
+	completed_at: string | null;
+}
+
 export interface AdminDocument {
 	id: string;
 	doc_type: string;
@@ -494,6 +524,30 @@ export function createRecAdminApi(recSlug: string) {
 			adminRequest<AdminVerification>(`${base}/submissions/${id}/verifications`, {
 				method: 'POST',
 				body: JSON.stringify(body)
+			}),
+
+		revisions: (id: string, reveal = false) =>
+			adminRequest<AdminRevision[]>(`${base}/submissions/${id}/revisions?reveal=${reveal}`),
+
+		recordRevision: (
+			id: string,
+			body: {
+				field: AdminRevision['field'];
+				value: string;
+				method: AdminVerification['method'];
+				document_id?: string;
+				note: string;
+			}
+		) =>
+			adminRequest<AdminRevision>(`${base}/submissions/${id}/revisions`, {
+				method: 'POST',
+				body: JSON.stringify(body)
+			}),
+
+		retryRevision: (id: string, revisionId: string, step?: string) =>
+			adminRequest<AdminRevision>(`${base}/submissions/${id}/revisions/${revisionId}/retry`, {
+				method: 'POST',
+				body: JSON.stringify({ step: step ?? null })
 			}),
 
 		documentUrl: (id: string, documentId: string) =>

@@ -66,6 +66,9 @@ required_groups := {
 	"submissions.reveal": {"admins", "managers", "editors"},
 	"submissions.write": {"admins", "managers", "editors"},
 	"submissions.review": {"admins", "managers"},
+	# Correcting a POD, name or email by revision: the operator vouches for the
+	# new value, so it is granted where review is.
+	"submissions.revise": {"admins", "managers"},
 	"enablement.retry": {"admins", "managers"},
 	"export": {"admins", "managers"},
 	# Erasing somebody and revoking their credential are not recoverable. They
@@ -127,6 +130,7 @@ required_scopes := {
 	"submissions.reveal": {"onboarding.submissions.reveal"},
 	"submissions.write": {"onboarding.submissions.write"},
 	"submissions.review": {"onboarding.submissions.review"},
+	"submissions.revise": {"onboarding.submissions.revise"},
 	"submissions.purge": {"onboarding.submissions.purge"},
 	"enablement.retry": {"onboarding.enablement.retry"},
 	"enablement.revoke": {"onboarding.enablement.revoke"},

@@ -35,6 +35,7 @@ from celine.onboarding.security.policy import Capability, get_policy
 from celine.onboarding.services import (
     audit_service,
     review,
+    revision,
     submission_service,
     supply_boundary,
 )
@@ -196,6 +197,9 @@ async def update_submission(
 ):
     """Edit fields, and — for now — drive the state machine.
 
+    409 for the POD, first name, last name or email once the submission is
+    submitted: those are corrected by revision.
+
     A payload carrying `status` additionally requires `submissions.review`: an
     editor may correct a misread fiscal code, but approving somebody provisions a
     login, a registry member and a dataspace identity, which is a different
@@ -215,6 +219,17 @@ async def update_submission(
             )
 
     submission = await _owned_submission(db, submission_id, rec_slug)
+    # From `submitted` on, the POD, names and email change only by revision, with
+    # evidence, a note and the value replaced (`services/revision.py`). Refused on
+    # the field being sent, not on it changing: the trail must not depend on
+    # whether a client happened to resend the same value.
+    revised = sorted(data.model_fields_set & revision.REVISED_FIELDS)
+    if revised and submission.status != SubmissionStatus.DRAFT:
+        raise HTTPException(
+            409,
+            f"{', '.join(revised)} can be corrected only by revision once a submission "
+            f"is submitted (POST .../revisions)",
+        )
     fields = ", ".join(sorted(data.model_dump(exclude_unset=True).keys()))
     try:
         result = await submission_service.update_submission(

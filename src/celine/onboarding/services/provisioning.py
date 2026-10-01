@@ -327,6 +327,39 @@ async def provision_participant(submission: Submission) -> ParticipantProvisionR
     )
 
 
+async def update_account(
+    submission: Submission,
+    *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    email: str | None = None,
+):
+    """Correct the names or address on this participant's existing account.
+
+    ``None`` leaves a field alone. Never creates an account and never renames
+    one: the provisioning service finds it by the registry member's ``user_id``,
+    the Keycloak username, and an address change resets ``emailVerified`` and
+    sends a verification link to the new address only.
+
+    Returns the SDK's ``ParticipantUpdateResponseSchema``, or ``None`` when this
+    participant has no login to correct (no provisioning service, or a REC with
+    no registry binding — the same two reasons approval gives none). Refusals
+    propagate as ``ProvisioningApiError``; the caller reads ``code``.
+    """
+    if not provisioning_enabled():
+        return None
+    community = await participant_community(submission.rec_slug)
+    if community is None:
+        return None
+    return await _get_client().update_participant(
+        community,
+        submission.ref,
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+    )
+
+
 #: The refusals of ``POST …/invitation`` that are an invitation outcome rather than a
 #: fault. Each is also a code the upsert answers with, so the step row and the
 #: console already know them.

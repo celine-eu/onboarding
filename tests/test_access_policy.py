@@ -26,7 +26,10 @@ EDITOR = VIEWER | {"submissions.reveal", "submissions.write"}
 # The drift check (`recs.drift`, REQ-0015, D55): the REC's own managers and
 # admins, and realm admins; not a realm manager, and no scope.
 DRIFT = {"recs.drift"}
-MANAGER = EDITOR | {"submissions.review", "enablement.retry", "export"} | DRIFT
+# `submissions.revise` (a correction by revision) is granted where review is.
+MANAGER = (
+    EDITOR | {"submissions.review", "submissions.revise", "enablement.retry", "export"} | DRIFT
+)
 ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 
 # Reachable only by a service acting for an operator, so no caller holds it alone
@@ -268,6 +271,7 @@ def test_service_with_no_scope_gets_nothing(policy):
         ("onboarding.submissions.reveal", Capability.SUBMISSIONS_REVEAL),
         ("onboarding.submissions.write", Capability.SUBMISSIONS_WRITE),
         ("onboarding.submissions.review", Capability.SUBMISSIONS_REVIEW),
+        ("onboarding.submissions.revise", Capability.SUBMISSIONS_REVISE),
         ("onboarding.submissions.purge", Capability.SUBMISSIONS_PURGE),
         ("onboarding.enablement.retry", Capability.ENABLEMENT_RETRY),
         ("onboarding.enablement.revoke", Capability.ENABLEMENT_REVOKE),

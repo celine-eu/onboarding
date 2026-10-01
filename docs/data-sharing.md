@@ -58,6 +58,8 @@ task export-csv -- --rec my-rec   # → data/exports/my-rec/submissions-<timesta
 The CSV includes (see `src/celine/onboarding/outputs/csv_export.py`):
 
 - identity: `ref`, `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`
+  — the values in force, a correction's included. The corrections themselves, and the
+  values they replaced, are not exported; they are on the submission in the console.
 - phone verification: `phone_verified`, `phone_verified_at`
 - **consent status with timestamps and versions**: `gdpr_consent[_at][_version]`,
   `policy_consent[_at][_version]`, `statute_consent[_at][_version]`
@@ -174,8 +176,10 @@ afterwards **in**. The second is a disclosure of personal data against a
 withdrawn consent, and no re-export cadence fixes it, because the staleness is in
 the source rather than in the snapshot.
 
-*What they hold* — `Member.delivery_points` is what the community records now, so
-a POD an operator corrected or retired in the registry never reached
+*What they hold* — `Member.delivery_points` is what the community records now. A
+POD corrected through this service is written to both, the submission and the
+registry ([ADR-0015](decisions/ADR-0015-a-correction-is-a-revision.md)), but one
+corrected or retired directly in the registry never reaches
 `submissions.pod_code`. Reading the registry also answers for a participant this
 service never registered: a member the REC manager imported consents through the
 same offer and was silently absent from every export. (On a deployed realm every
@@ -438,6 +442,20 @@ than a visible failure. They are not sent to the community's own connector, whic
 resolves its members without them, and the connector refuses them on a withdrawal
 (a withdrawal drops the keys it had).
 
+**A corrected POD refreshes the keys.** A standing grant is otherwise never sent
+again, so a holder would keep finding the member's rows under the POD they first
+declared. When an operator corrects the POD of an approved member ([admin
+console](admin-console.md#propagation)), the registry is written first (the new
+POD replaces the old one and the member's meters are relinked, in one write), then
+the `consent_keys` step re-sends **every grant the member holds at a holder** with
+the keys read from the registry now — the same relay, the same evidence (the
+newest decision's) and `decided_by: subject`, one write per grant. The holder
+updates the row's keys in place and records the change in its key ledger (ds
+ADR-0022). A grant the holder refused earlier because no supply point was recorded
+is granted by the same run. A withdrawal stays a withdrawal: only a grant is
+re-sent, and the community's own connector, which needs no keys, is not written
+to.
+
 ### Provisioning on approval
 
 When a submission is approved with `DS_CONNECTOR_URL` set and
@@ -478,6 +496,11 @@ Three things about it are load-bearing:
   never returns one, never caches one across requests, and holds no capability
   that would let an operator decide on somebody's behalf. That last part is the
   point: a consent an administrator could give is not a consent.
+  *Which* credential is found by the email on the member's session, at the
+  identity registry. An operator's correction of the member's email therefore
+  moves the registry's mapping to the new address, same DID, once the account has
+  it ([admin console](admin-console.md#propagation)), and the member keeps reaching
+  this page.
 - **Offers come through the same allow-list the wizard uses.** Resolved with
   `template_service.get_sharing_offers`, so a member is shown exactly what their
   community publishes. `../celine-webapp` previously read

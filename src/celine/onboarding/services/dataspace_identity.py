@@ -1857,6 +1857,7 @@ async def provision_user_shares(
     *,
     raise_on_error: bool = False,
     report: list[str] | None = None,
+    force_key_refresh: bool = False,
 ) -> bool:
     """Bring every connector holding the member's offers to the member's newest decision.
 
@@ -1905,6 +1906,12 @@ async def provision_user_shares(
     examined too: a member may have granted one since, and it can split like any
     other. A member who declined everything on the form is examined the same
     way, with no form decision in the ranking.
+
+    **A standing grant is left alone, keys included** — unless
+    ``force_key_refresh``: then, on the first pass, every grant the member holds at
+    another participant is sent again with the keys read now, which is how a
+    corrected POD reaches the holder (:func:`refresh_keys`). The holder updates the
+    row's keys in place and records the change (ds ADR-0022).
 
     ``raise_on_error`` is False on the approval path (a failure must not fail
     approval) and True on explicit retry (the operator wants to see it fail).
@@ -2051,7 +2058,12 @@ async def provision_user_shares(
                     standing = here[route.connector_url] is not None and bool(
                         here[route.connector_url].granted  # type: ignore[union-attr]
                     )
-                    if newest.granted == standing:
+                    # A key refresh re-sends a standing grant at a holder once, on
+                    # the first pass; after it, agreement is agreement again.
+                    refresh = (
+                        force_key_refresh and attempt == 0 and route.is_holder and newest.granted
+                    )
+                    if newest.granted == standing and not refresh:
                         continue
                     if (route.connector_url, offer_id, newest.granted, newest.at) in written:
                         # Written once already, answered 2xx, and still not
@@ -2111,6 +2123,27 @@ async def provision_user_shares(
     if failures and raise_on_error:
         raise ValueError("Share provisioning failed: " + "; ".join(failures.values()))
     return ok
+
+
+async def refresh_keys(submission: Submission, *, report: list[str]) -> bool:
+    """Re-send the member's grants at every holder with the supply points read now.
+
+    After a corrected POD reached the registry, the holders still key the
+    member's rows by the old one: a standing grant is never re-sent
+    (:func:`provision_user_shares` leaves agreement alone). This is that same run
+    — the same reads, the same newest-decision ranking, the same
+    :func:`register_share` — with a standing grant at a holder sent once more
+    with the new keys. A grant the holder refused because no supply point was
+    recorded is not standing, so the same run grants it now that one is.
+
+    ``report`` gets one line per grant written (offer and holder, never a key).
+    Raises ``ValueError`` when a holder did not take one, as an operator's retry
+    does; the reason names offers and connectors, and may quote a connector's
+    answer, so the caller logs it rather than showing it.
+    """
+    return await provision_user_shares(
+        submission, raise_on_error=True, report=report, force_key_refresh=True
+    )
 
 
 async def _redrive(
@@ -2454,6 +2487,78 @@ def _warn_if_partial_sync(resp: httpx.Response, did: str) -> None:
         )
 
 
+class KeycloakSyncError(ValueError):
+    """The identity registry would not write the DID <-> Keycloak mapping.
+
+    ``status_code`` is the registry's last answer, or ``None`` when it could not
+    be reached. A ``409`` is another DID already bound to the Keycloak user.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def sync_keycloak_mapping(
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    did: str,
+    keycloak_user_id: str,
+    keycloak_realm: str,
+    email: str | None,
+    username: str | None = None,
+) -> None:
+    """Write the registry's mapping from a DID to its Keycloak user, with retries.
+
+    The call alone, with nothing undone on failure: approval wraps it in
+    :func:`_sync_keycloak`, which rolls the credential back, and a correction of
+    the member's email (``services/propagation.py``) re-syncs the same DID with
+    the new address, where there is nothing to roll back. The registry keeps the
+    DID on an email change and overwrites ``username`` only when one is sent.
+
+    Raises :class:`KeycloakSyncError` after ``_KC_SYNC_MAX_RETRIES`` attempts.
+    """
+    sync_body = {
+        "did": did,
+        "keycloak_realm": keycloak_realm,
+        "keycloak_user_id": keycloak_user_id,
+    }
+    if email:
+        sync_body["email"] = email
+    if username:
+        sync_body["username"] = username
+
+    last_error: Exception | None = None
+    last_status: int | None = None
+    for attempt in range(1, _KC_SYNC_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{base_url}/admin/keycloak/sync",
+                    json=sync_body,
+                    headers=headers,
+                )
+                if resp.status_code < 400:
+                    # A 2xx with status "partial" means the DID mapping was
+                    # stored but the dataspace_did attribute push to Keycloak
+                    # failed. That is retriable and does not orphan the
+                    # credential, so we accept it but surface it for operators.
+                    _warn_if_partial_sync(resp, did)
+                    return
+                last_status = resp.status_code
+                last_error = ValueError(f"KC sync failed ({resp.status_code}): {resp.text}")
+        except httpx.HTTPError as exc:
+            last_error = exc
+
+        if attempt < _KC_SYNC_MAX_RETRIES:
+            logger.warning("KC sync attempt %d/%d failed, retrying", attempt, _KC_SYNC_MAX_RETRIES)
+
+    raise KeycloakSyncError(
+        f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts", status_code=last_status
+    ) from last_error
+
+
 async def _sync_keycloak(
     base_url: str,
     headers: dict[str, str],
@@ -2487,38 +2592,19 @@ async def _sync_keycloak(
     the row filter resolves nobody, the handler denies, and a person who
     consented silently gets no rows.
     """
-    sync_body = {
-        "did": did,
-        "keycloak_realm": keycloak_realm,
-        "keycloak_user_id": keycloak_user_id,
-    }
-    if email:
-        sync_body["email"] = email
-    if username:
-        sync_body["username"] = username
-
-    last_error: Exception | None = None
-    for attempt in range(1, _KC_SYNC_MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    f"{base_url}/admin/keycloak/sync",
-                    json=sync_body,
-                    headers=headers,
-                )
-                if resp.status_code < 400:
-                    # A 2xx with status "partial" means the DID mapping was
-                    # stored but the dataspace_did attribute push to Keycloak
-                    # failed. That is retriable and does not orphan the
-                    # credential, so we accept it but surface it for operators.
-                    _warn_if_partial_sync(resp, did)
-                    return
-                last_error = ValueError(f"KC sync failed ({resp.status_code}): {resp.text}")
-        except httpx.HTTPError as exc:
-            last_error = exc
-
-        if attempt < _KC_SYNC_MAX_RETRIES:
-            logger.warning("KC sync attempt %d/%d failed, retrying", attempt, _KC_SYNC_MAX_RETRIES)
+    try:
+        await sync_keycloak_mapping(
+            base_url,
+            headers,
+            did=did,
+            keycloak_user_id=keycloak_user_id,
+            keycloak_realm=keycloak_realm,
+            email=email,
+            username=username,
+        )
+        return
+    except KeycloakSyncError as exc:
+        failure = exc
 
     logger.error(
         "KC sync failed after %d attempts, revoking credential %s",
@@ -2539,7 +2625,7 @@ async def _sync_keycloak(
     raise ValueError(
         f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts; "
         f"credential {credential_id} has been revoked"
-    ) from last_error
+    ) from (failure.__cause__ or failure)
 
 
 async def revoke_user_identity(submission: Submission) -> str:

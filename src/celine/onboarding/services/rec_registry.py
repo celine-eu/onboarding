@@ -144,6 +144,26 @@ def member_user_id(submission: Submission, keycloak_username: str | None = None)
     return submission.ref
 
 
+def member_name(submission: Submission) -> str:
+    """The registry member's ``name``: first and last name, or the ref with neither.
+
+    One function for approval and for a correction of either name
+    (``services/propagation.py``), so a corrected member reads as a new one would.
+    """
+    name = " ".join(part for part in (submission.first_name, submission.last_name) if part)
+    return name.strip() or submission.ref
+
+
+def delivery_point_body(pod: str) -> dict[str, Any]:
+    """A member's supply point as approval registers it, and a correction re-registers it."""
+    return {
+        "id": pod,
+        "type": "pod",
+        "description": "Supply point declared at onboarding",
+        "active": True,
+    }
+
+
 def build_member_payload(
     submission: Submission,
     binding: template_service.RecRegistryBinding,
@@ -172,12 +192,11 @@ def build_member_payload(
         area = binding.area_for(supply_municipality(submission))
 
     extra = submission.extra_data or {}
-    name = " ".join(part for part in (submission.first_name, submission.last_name) if part).strip()
 
     payload: dict[str, Any] = {
         "key": submission.ref,
         "user_id": member_user_id(submission, keycloak_username),
-        "name": name or submission.ref,
+        "name": member_name(submission),
         "type": "schema:Person",
         "role": member_role(submission),
         "area": area,
@@ -198,14 +217,7 @@ def build_member_payload(
     # the supply-point export hands over — and unlike a meter it is known before
     # any device is installed.
     if submission.pod_code:
-        payload["delivery_points"] = [
-            {
-                "id": submission.pod_code,
-                "type": "pod",
-                "description": "Supply point declared at onboarding",
-                "active": True,
-            }
-        ]
+        payload["delivery_points"] = [delivery_point_body(submission.pod_code)]
 
     # The energy answers, kept as declarations rather than assets. They are what
     # a REC manager works from when deciding what to survey and commission, so
@@ -507,6 +519,97 @@ async def set_member_did(rec_slug: str, *, member_key: str, did: str) -> str:
         did,
     )
     return f"registry member {member_key} holds the dataspace DID"
+
+
+async def set_member_name(rec_slug: str, *, member_key: str, name: str) -> str:
+    """Write a corrected name onto the registry member.
+
+    The general member ``PATCH`` with ``name`` alone; absent fields are left
+    alone, as for :func:`set_member_did`. Re-sending the name the member already
+    has is a no-op success, so a retry is safe.
+
+    Raises ``RegistryRefusalError`` with the status only: the registry's body may
+    quote the name, and the caller records the error on a step row that holds no
+    values.
+    """
+    if not settings.rec_registry_url:
+        return "no registry configured"
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(rec_slug)
+    if not binding.enabled:
+        return "this community declares no rec_registry binding"
+
+    from celine.sdk.openapi.rec_registry.models import MemberPatch
+
+    response = await _registry_response(
+        _get_client().patch_member(binding.community, member_key, MemberPatch(name=name))
+    )
+    status = getattr(response, "status_code", None)
+    status_value = int(status) if status is not None else 0
+    if status_value >= 400:
+        logger.warning(
+            "REC registry refused the name of member %s in community %s (%s)",
+            member_key,
+            binding.community,
+            status_value,
+        )
+        raise RegistryRefusalError(
+            f"REC registry refused the name for member {member_key!r} in community "
+            f"{binding.community!r} ({status_value})",
+            status_code=status_value,
+        )
+
+    logger.info("Member %s in community %s has the corrected name", member_key, binding.community)
+    return f"registry member {member_key} holds the corrected name"
+
+
+async def replace_delivery_point(
+    rec_slug: str, *, member_key: str, pod: str, replaces: str | None
+) -> str:
+    """Put a corrected POD on the registry member, replacing the one it held.
+
+    One write (registry 1.7.0+, R15): with ``replaces`` the registry adds ``pod``,
+    removes ``replaces`` and relinks the member's meters whose ``pod`` named it,
+    in one transaction; a failure changes nothing. Without ``replaces`` — the
+    member held no POD — it only adds. The body is approval's
+    (:func:`delivery_point_body`).
+
+    Raises ``RecRegistryApiError`` unchanged: the caller branches on ``code``
+    (``delivery_point_held``) and on a ``404`` with no code (``replaces`` is not
+    this member's). Its text may name another member or the POD, so the caller
+    records the code, never the text.
+    """
+    if not settings.rec_registry_url:
+        return "no registry configured"
+
+    await template_service.ensure_fresh()
+    binding = template_service.rec_registry_binding(rec_slug)
+    if not binding.enabled:
+        return "this community declares no rec_registry binding"
+
+    await _get_client().put_delivery_point(
+        binding.community,
+        member_key,
+        pod,
+        delivery_point_body(pod),
+        replaces=replaces,
+    )
+    logger.info(
+        "Member %s in community %s holds the corrected supply point%s",
+        member_key,
+        binding.community,
+        " (replacing the previous one)" if replaces else "",
+    )
+    return f"registry member {member_key} holds the corrected supply point"
+
+
+class RegistryRefusalError(ValueError):
+    """The registry answered an error status; ``status_code`` is it."""
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 async def ensure_member_did(rec_slug: str, *, user_id: str, did: str) -> str:

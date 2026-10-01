@@ -177,6 +177,19 @@ class Submission(Base):
         passive_deletes=True,
     )
 
+    # Corrections of the POD, names and email from `submitted` on, oldest first;
+    # per field, the last is in force. Loaded with every submission like the
+    # verifications, because the console shows them beside the fields and an async
+    # session cannot lazy-load. Cascade-deleted with the submission: they hold the
+    # values the person declared.
+    revisions: Mapped[list["SubmissionRevision"]] = relationship(  # noqa: F821
+        back_populates="submission",
+        order_by="SubmissionRevision.created_at",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     # What approval did, step by step. Cascade-deleted with the submission so a
     # GDPR erasure leaves no trace of the person's provisioning either.
     enablement_steps: Mapped[list["SubmissionEnablementStep"]] = relationship(  # noqa: F821

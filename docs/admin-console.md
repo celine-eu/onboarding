@@ -41,6 +41,84 @@ disabled until one is recorded. The API is
 `GET|POST /api/admin/{rec}/submissions/{id}/verifications`, and the submission's
 `verification` field carries the one in force.
 
+## Correcting declared data: revisions
+
+From `submitted` on, a participant's **POD, first name, last name and email** are
+corrected by **revision**, never edited: the admin `PATCH` answers 409 for them
+(sending one of them is enough, whether or not it changes), and the wizard's
+`PATCH` answers 409 for every field once the application is submitted. People may
+not know their POD and enter it wrong; the operator checks it and fixes it here.
+The fiscal code is not revisable, and the Keycloak username never changes. Why:
+[ADR-0015](decisions/ADR-0015-a-correction-is-a-revision.md).
+
+- **Who:** `submissions.revise`, granted where `submissions.review` is (`managers`,
+  `admins`). The operator vouches for the new value. A service account would need
+  `onboarding.submissions.revise`, which `celine-policies` declares and grants to no
+  client.
+- **Evidence:** the method, as for a verification (`offline`, or `uploaded-document`
+  naming a document on this submission), and a **required** note saying how the new
+  value was checked. The POD is format-checked and upper-cased; a value cannot be
+  emptied, and the value already held is refused.
+- **When:** `submitted`, `under_review` or `approved` (otherwise 409). A `rejected`
+  submission is reopened first; a draft is still the participant's.
+- **What is kept:** one row per correction (`submission_revisions`), never edited:
+  the value replaced and the new one, the method, the note (the two values and the
+  note encrypted) and who (`actor_type` `operator`, the subject, email and client).
+  Erased with the submission.
+  The submission's column changes in the same transaction. Per field the newest is
+  in force, and the oldest one's previous value is what the person declared. The
+  trail records `revise` with the field and the revision id, never the values.
+- **What reads it:** everything that reads the submission, approval included, so a
+  correction before approval is what the login, the registry member and the
+  dataspace identity are created with.
+- **After approval:** the correction is then **propagated** to every system that
+  holds a copy, one step per target, each recorded on the revision with its state
+  (`pending`, `done`, `failed`, `skipped`), its attempts, an error code and a
+  sentence. Never a value. A failed step is retried from the console.
+
+### Propagation
+
+| Field | Steps, in order | What each does |
+|---|---|---|
+| first / last name | `account_profile` | the Keycloak account's name, through the provisioning service (`PATCH /participants/{community}/{key}`) |
+| | `registry_name` | the REC registry member's `name`, built as approval builds it (first and last name) |
+| email | `account_profile` | the account's address. The **username never changes**; `emailVerified` is reset and a verification link goes to the new address only |
+| | `invitation` | for a member who never set a password, the invitation to set one, again, now to the new address. The provisioning service checks: an account with a password answers `has_password` and the step is `skipped` |
+| | `identity_mapping` | the identity registry's Keycloak mapping: **the same DID**, the new address, the username kept. What keeps the member reaching their Data sharing page, which finds them by their token's email |
+| POD | `registry_delivery_point` | one registry write, `PUT …/delivery-points/{new}?replaces={old}`: the new POD added, the old one removed and the member's meters relinked to it, in one transaction. `{old}` is the POD the registry holds, so a correction that never reached it is not assumed; with none, a plain `PUT`. Body as approval's |
+| | `consent_keys` | waits for the registry, then re-sends every grant the member holds at a holder with the new POD as keys, and grants one refused earlier for lack of a POD ([data sharing](data-sharing.md)). The holder records the key change (ds ADR-0022). The outcome is the count of grants re-sent and the reason names offers and holders, never keys |
+
+- **A step sends what the submission holds now**, so a retry after a later
+  correction never puts an older value back. A later correction of the same field
+  marks the earlier one's unfinished steps `skipped` (superseded).
+- `invitation` and `identity_mapping` wait for `account_profile`. Until the
+  account has the new address the member still signs in with the old one, and a
+  mapping moved ahead of it would lose them their Data sharing page.
+- **Refusals the operator acts on:** `email_taken` (another account uses the
+  address: check it with the member; nothing was changed), `account_disabled` (the
+  login is revoked), `mapping_conflict` (the identity registry binds the account
+  to another DID; an operator resolves it there), `delivery_point_held` ("this
+  POD is already recorded for another member — check it with the member"; the
+  registry's own sentence, which may name that member, is not shown),
+  `previous_pod_not_found` (the registry no longer holds the POD being replaced:
+  check the member there), `consent_refused` (a holder did not take every grant;
+  details in the server log). `send_failed`,
+  `registry_unavailable`, `provisioning_failed` and an unreachable service are
+  worth a retry. `http_405` means a provisioning service older than API 1.4.0.
+- **A member whose enablement was revoked:** the correction is recorded and
+  every step is `skipped` ("enablement revoked"), at recording and at any later
+  retry.
+- **Retry:** `POST .../revisions/{revision}/retry` with `{"step"}` or nothing
+  (every unfinished step). A named step runs whatever its state, then the steps
+  that wait for it. Needs `submissions.revise`, and is audited (`revision_retry`).
+
+The console's *Corrections* panel shows the history per field, newest first, with
+the declared value marked (POD masked unless the identifiers are revealed), each
+revision's steps with a retry on a failed one, and, for an operator holding the
+capability, the form: field, correct value, method, document, note. The API is
+`GET|POST /api/admin/{rec}/submissions/{id}/revisions` and
+`POST …/revisions/{revision}/retry`. There is no CLI command for revisions yet.
+
 ## What approval actually does
 
 Approving somebody **enables** them, which means four things landing in this
@@ -199,6 +277,9 @@ that step fails, the dataspace identity is left in place, because the withdrawal
 needs it: press `Revoca abilitazione` again once the connector is back, and it
 withdraws and then revokes the identity.
 
+A correction recorded on a revoked member stays on the submission, and propagates
+nothing: every step is `skipped` ("enablement revoked").
+
 ## Screens
 
 **`/admin`** — the communities you may administer, with the number of submissions
@@ -217,7 +298,8 @@ in every email.
 
 **`/admin/{rec}/submissions/{id}`** — everything about one submission: identity,
 all four consents with version and timestamp, the uploaded documents, the REC's
-verification and its history, the geocoded municipality, the energy answers, phone
+verification and its history, the corrections of the POD, names and email with
+each one's propagation steps, the geocoded municipality, the energy answers, phone
 verification, operator notes, the transition buttons, the enablement panel, and this
 submission's own history. For a community whose areas are primary-substation
 boundaries it also shows **"Primary substation `<id>`, area `<name>`"**: the boundary
@@ -266,7 +348,8 @@ code still looks malformed — which is exactly the kind of thing review exists 
 catch.
 
 Unmasking needs `submissions.reveal` and is written to the audit trail as its own
-action. The point is not that an operator must never see a fiscal code — sometimes
+action. The POD values of the corrections are masked the same way, and revealed by
+`GET …/revisions?reveal=true` under the same capability, audited as `reveal`. The point is not that an operator must never see a fiscal code — sometimes
 they must — but that doing so is a deliberate act with their name on it. Reveal is
 per record; a list-wide one would be a single audit row covering a hundred
 identifiers, which records nothing.
@@ -341,6 +424,11 @@ supply point and consumption history; listing filenames is not.
 
 An attempted approval that a blocking step refused is recorded as
 `transition_failed`. The step rows say what broke; only the trail says who tried.
+
+A correction is recorded as `revise`, with the field, the revision id, the method
+and the document, and the revision it supersedes; a retry of its propagation as
+`revision_retry`, with the revision and the step. Neither carries a value or the
+note.
 
 A manager's send from the `celine-community` dashboard appears in this REC's trail too, as
 `member_invitation` or `member_password_reset`:

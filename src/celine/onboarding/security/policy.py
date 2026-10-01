@@ -50,6 +50,10 @@ class Capability(enum.StrEnum):
     SUBMISSIONS_REVEAL = "submissions.reveal"
     SUBMISSIONS_WRITE = "submissions.write"
     SUBMISSIONS_REVIEW = "submissions.review"
+    #: Correcting a POD, name or email from `submitted` on, as a tracked revision
+    #: (`services/revision.py`). Granted where `submissions.review` is: the
+    #: operator vouches for the new value, which is part of the decision.
+    SUBMISSIONS_REVISE = "submissions.revise"
     SUBMISSIONS_PURGE = "submissions.purge"
     ENABLEMENT_RETRY = "enablement.retry"
     ENABLEMENT_REVOKE = "enablement.revoke"

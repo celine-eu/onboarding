@@ -398,7 +398,11 @@ community, and its area from the template's boundaries or municipality lists —
 [templates.md](templates.md#rec-registry-binding-optional-per-community); its role is
 `prosumer` when the wizard's `has_pv` answer is yes and `consumer` otherwise. No meter is
 registered: a meter's id is known only once it is installed, and a REC manager attaches it,
-and corrects the role or area, afterwards on the `celine-community` dashboard.
+and corrects the role or area, afterwards on the `celine-community` dashboard. The POD,
+names and email are corrected here instead, by revision, and carried to the registry
+member, the Keycloak account, the identity registry and the holders' consent keys
+([admin console](admin-console.md#propagation),
+[ADR-0015](decisions/ADR-0015-a-correction-is-a-revision.md)).
 
 A `409` on the member create is read by its reason, not its status. A taken member
 key is this submission's own earlier attempt and counts as registered. Onboarding checks

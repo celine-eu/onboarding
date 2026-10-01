@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -209,6 +210,55 @@ class VerificationRead(BaseModel):
     actor_sub: str | None
     actor_email: str | None
     created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class RevisionCreate(BaseModel):
+    """An operator's correction of one declared field, from `submitted` on.
+
+    `value` is checked per field by `services.revision.normalise`; the fiscal code
+    is not revisable.
+    """
+
+    field: Literal["first_name", "last_name", "email", "pod_code"]
+    value: str = Field(..., min_length=1, max_length=255)
+    method: VerificationMethod
+    # Required for `uploaded-document`, refused for `offline`.
+    document_id: uuid.UUID | None = None
+    # Required: how the new value was checked, in the operator's words.
+    note: str = Field(..., min_length=1, max_length=1000)
+
+
+class RevisionStepRead(BaseModel):
+    """One propagation target of a revision. Codes and fixed sentences, no values."""
+
+    step: str
+    status: str
+    attempts: int
+    outcome: str | None
+    error_code: str | None
+    reason: str | None
+    completed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class RevisionRead(BaseModel):
+    id: uuid.UUID
+    field: str
+    # The POD in both is masked unless the reader asked to reveal it.
+    previous_value: str | None
+    new_value: str
+    method: str
+    document_id: uuid.UUID | None
+    note: str | None
+    actor_type: str
+    actor_sub: str | None
+    actor_email: str | None
+    created_at: datetime
+    # Empty for a revision recorded before approval: nothing else held a copy.
+    steps: list[RevisionStepRead] = []
 
     model_config = {"from_attributes": True}
 

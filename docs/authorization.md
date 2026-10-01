@@ -43,7 +43,7 @@ authorise an action on community B.
 |---|---|
 | `viewers` | read submissions (fiscal code and POD masked), read the audit trail |
 | `editors` | + take in charge, edit fields and notes, unmask identifiers |
-| `managers` | + approve, reject, reopen, retry a failed enablement step, export, see whether the registry's areas match the template (organization level only; see below) |
+| `managers` | + approve, reject, reopen, correct a POD, name or email by revision, retry a failed enablement step, export, see whether the registry's areas match the template (organization level only; see below) |
 | `admins` | + GDPR erasure, reverse enablement |
 
 An **organization**-level group grants those for that community's RECs. A
@@ -174,8 +174,12 @@ onboarding.submissions.read     onboarding.enablement.revoke
 onboarding.submissions.reveal   onboarding.audit.read
 onboarding.submissions.write    onboarding.export
 onboarding.submissions.review   onboarding.submissions.purge
-onboarding.members.invite
+onboarding.submissions.revise   onboarding.members.invite
 ```
+
+`onboarding.submissions.revise` (correcting a POD, name or email by revision,
+[ADR-0015](decisions/ADR-0015-a-correction-is-a-revision.md)) is declared and granted to no
+client: no service holds `onboarding.submissions.review` either.
 
 `onboarding.members.invite` is for `celine-community` alone, and it is useless without a
 manager's token. See [Delegated actions](#delegated-actions).
