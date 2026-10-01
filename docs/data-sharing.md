@@ -378,7 +378,9 @@ member's toggle got to only one connector leaves the step `succeeded` — nothin
 about approval failed — so the retry has to **name the step** to reach it:
 `--step dataspace_share`, `{"step": "dataspace_share"}`, or the console's
 *Re-check every connector* on a succeeded consent step. A named retry of a
-succeeded step writes nothing where every connector already agrees. Until
+succeeded step writes nothing where every connector already agrees, keys
+included (a holder's grant carrying other keys than the registry's is re-sent;
+see the supply points below). Until
 someone runs it, the member's page shows the offer `pending`, and the member
 withdrawing again converges it too. A member who declined everything on the
 form has the step `skipped` — nothing to write at approval — and a named retry
@@ -442,15 +444,30 @@ than a visible failure. They are not sent to the community's own connector, whic
 resolves its members without them, and the connector refuses them on a withdrawal
 (a withdrawal drops the keys it had).
 
-**A corrected POD refreshes the keys.** A standing grant is otherwise never sent
-again, so a holder would keep finding the member's rows under the POD they first
-declared. When an operator corrects the POD of an approved member ([admin
-console](admin-console.md#propagation)), the registry is written first (the new
-POD replaces the old one and the member's meters are relinked, in one write), then
-the `consent_keys` step re-sends **every grant the member holds at a holder** with
-the keys read from the registry now — the same relay, the same evidence (the
-newest decision's) and `decided_by: subject`, one write per grant. The holder
-updates the row's keys in place and records the change in its key ledger (ds
+**Every provisioning run refreshes stale keys.** Agreement on the decision is not
+enough at a holder: the holder returns the keys of each grant to the community
+that registered them (`keys` on `GET /consent/admin/subject-shares`, ds
+ADR-0021/ADR-0022), and a standing grant whose keys differ, **as a set**, from the
+member's supply points read from the registry now is sent again with the current
+keys — on approval, and on any retry of the `dataspace_share` step. So a POD
+changed directly in the registry, outside onboarding's revisions, reaches the
+holder the next time the step runs; equal keys are agreement, and nothing is
+written. Only a grant at a holder is compared: a withdrawal is never re-sent, the
+community's own connector is never sent keys, and a grant whose keys the holder
+does not return (another party registered it) is left as it is. While the
+registry cannot be read the keys are not compared: the declared POD that stands
+in for it may be the very value a correction replaced. A member the registry now
+knows no supply point for gets the run's usual refusal ("no supply point is
+recorded"), and the holder's grant is left as it is until someone looks.
+
+**A corrected POD refreshes the keys at once.** When an operator corrects the POD
+of an approved member ([admin console](admin-console.md#propagation)), the
+registry is written first (the new POD replaces the old one and the member's
+meters are relinked, in one write), then the `consent_keys` step re-sends
+**every grant the member holds at a holder** with the keys read from the registry
+now — the same relay, the same evidence (the newest decision's) and
+`decided_by: subject`, one write per grant, whether or not its keys could be
+compared. The holder updates the row's keys in place and records the change in its key ledger (ds
 ADR-0022). A grant the holder refused earlier because no supply point was recorded
 is granted by the same run. A withdrawal stays a withdrawal: only a grant is
 re-sent, and the community's own connector, which needs no keys, is not written

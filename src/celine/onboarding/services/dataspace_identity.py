@@ -1462,6 +1462,11 @@ class _Held:
     granted: bool
     #: The member's own newest decision there, if it records one.
     member: _Decision | None
+    #: The data keys of each standing grant whose keys the connector returned,
+    #: one set per row. ds returns a row's keys only to the organisation that
+    #: registered them (``_keys_for``, ADR-0022), so these are the keys this
+    #: community sent; a grant another party wrote shows none and is not here.
+    keys: tuple[frozenset[str], ...] = ()
 
 
 async def _subject_rows(
@@ -1539,7 +1544,16 @@ async def _read_connector(
                 evidence=newest.get("legal_basis") if granted else None,
             )
         held[offer_id] = _Held(
-            granted=any(r.get("status") == "granted" for r in offer_rows), member=member
+            granted=any(r.get("status") == "granted" for r in offer_rows),
+            member=member,
+            keys=tuple(
+                frozenset(str(k) for k in r["keys"])
+                for r in offer_rows
+                if r.get("status") == "granted"
+                and str(r.get("consumer_id") or _ANY_CONSUMER) == _ANY_CONSUMER
+                and isinstance(r.get("keys"), list)
+                and r["keys"]
+            ),
         )
     return held
 
@@ -1581,25 +1595,44 @@ async def subject_supply_keys(
     in the row filter beside the principals, and the dataset-api matches them.
 
     **The registry is the source, and the intake form only when there is no
-    registry.** A POD an operator corrected or retired never reaches
-    ``submissions.pod_code``, and the export learned the same lesson: two records
-    of one fact disagree, and the running system is the one that is right. A
-    community with no ``REC_REGISTRY_URL`` (or no ``rec_registry`` block) has
-    only the declared value, which is better than nothing and is why the fallback
-    exists at all.
+    registry.** An operator's correction through onboarding (a revision) reaches
+    both ``submissions.pod_code`` and the registry; a POD corrected or retired
+    directly in the registry never reaches ``submissions.pod_code``, and the
+    export learned the same lesson: two records of one fact disagree, and the
+    running system is the one that is right. A community with no
+    ``REC_REGISTRY_URL`` (or no ``rec_registry`` block) has only the declared
+    value, which is better than nothing and is why the fallback exists at all.
+    A registry that cannot be read falls back to the declared value too
+    (:func:`_supply_keys` says when it did).
 
     An empty answer is an answer: the member holds nothing the registry knows of,
     and the caller refuses the registration rather than recording a consent that
     can never yield a row.
     """
+    keys, _ = await _supply_keys(rec_slug, did, declared_pod=declared_pod)
+    return keys
+
+
+async def _supply_keys(
+    rec_slug: str, did: str, *, declared_pod: str | None = None
+) -> tuple[list[str], bool]:
+    """:func:`subject_supply_keys`, and whether they are the system's own answer.
+
+    The flag is ``False`` only when a registry is configured and could not be
+    read, so the keys are the declared value standing in for it. Good enough to
+    grant with — the existing behaviour — and not good enough to *replace* keys a
+    holder already holds: those may be a correction the declared value predates.
+    """
     from celine.onboarding.services import rec_registry
 
     pods: list[str] | None = None
+    authoritative = True
     try:
         found = await rec_registry.supply_points_by_did([did], rec_slug=rec_slug)
     except Exception as exc:  # noqa: BLE001 — reported by the caller as a refusal
         logger.warning("Could not read supply points for %s from the registry: %s", did, exc)
         found = None
+        authoritative = False
     else:
         if found is not None:
             pods = found.get(did, [])
@@ -1609,7 +1642,7 @@ async def subject_supply_keys(
         # is `[]` and stands.
         pods = [declared_pod.strip()] if declared_pod and declared_pod.strip() else []
 
-    return [f"pod:{pod}" for pod in dict.fromkeys(pods) if pod]
+    return [f"pod:{pod}" for pod in dict.fromkeys(pods) if pod], authoritative
 
 
 async def register_share(
@@ -1907,11 +1940,17 @@ async def provision_user_shares(
     other. A member who declined everything on the form is examined the same
     way, with no form decision in the ranking.
 
-    **A standing grant is left alone, keys included** — unless
-    ``force_key_refresh``: then, on the first pass, every grant the member holds at
-    another participant is sent again with the keys read now, which is how a
-    corrected POD reaches the holder (:func:`refresh_keys`). The holder updates the
-    row's keys in place and records the change (ds ADR-0022).
+    **A standing grant is left alone — unless its keys are stale.** At another
+    participant's connector, a grant whose data keys (as the holder returns them to
+    the community that registered them) differ, as a set, from the member's supply
+    points now (:func:`subject_supply_keys`) is sent again with the current keys:
+    a POD changed in the registry, outside onboarding's revisions, reaches the
+    holder on the next retry. Equal keys are agreement and nothing is written.
+    Keys are compared only against the registry's own answer, never against the
+    declared POD standing in for a registry that cannot be read. With
+    ``force_key_refresh``, every grant the member holds at another participant is
+    sent again on the first pass whatever it carries (:func:`refresh_keys`). The
+    holder updates the row's keys in place and records the change (ds ADR-0022).
 
     ``raise_on_error`` is False on the approval path (a failure must not fail
     approval) and True on explicit retry (the operator wants to see it fail).
@@ -1996,10 +2035,39 @@ async def provision_user_shares(
         evidence=legal_basis,
     )
 
-    # Read once, and only when a grant is about to go to another participant.
-    # They are the member's supply points, so asking the registry per offer would
-    # only be a way for two offers to disagree about the same person.
+    # Read once, and only when a grant is about to go to another participant or
+    # a standing one there is to be compared with them. They are the member's
+    # supply points, so asking the registry per offer would only be a way for two
+    # offers to disagree about the same person.
     keys: list[str] | None = None
+    keys_known = False
+
+    async def supply_keys() -> list[str]:
+        nonlocal keys, keys_known
+        if keys is None:
+            keys, keys_known = await _supply_keys(
+                submission.rec_slug, subject_id, declared_pod=submission.pod_code
+            )
+        return keys
+
+    async def keys_changed(standing: _Held) -> bool:
+        """Whether a standing grant carries other keys than the member holds now.
+
+        Compared as sets, per row. Only rows whose keys the holder returned —
+        the ones this community registered — and only against keys the registry
+        answered: a declared POD standing in for a registry that cannot be read
+        may be the very value a correction replaced, so it never replaces keys.
+        """
+        if not standing.keys:
+            return False
+        current = frozenset(await supply_keys())
+        if not keys_known:
+            logger.warning(
+                "Not comparing the keys of %s's standing grants: the registry could not be read",
+                submission.ref,
+            )
+            return False
+        return any(held_keys != current for held_keys in standing.keys)
 
     failures: dict[tuple[str, str], str] = {}
     #: Every decision written, so a read that still disagrees after it can be
@@ -2055,13 +2123,20 @@ async def provision_user_shares(
                     continue
                 newest = _newest(decisions)
                 for route in offer_routes:
-                    standing = here[route.connector_url] is not None and bool(
-                        here[route.connector_url].granted  # type: ignore[union-attr]
-                    )
-                    # A key refresh re-sends a standing grant at a holder once, on
-                    # the first pass; after it, agreement is agreement again.
+                    there = here[route.connector_url]
+                    standing = there is not None and there.granted
+                    # A standing grant at a holder is sent again when the keys it
+                    # carries are not the member's supply points now (a POD
+                    # changed in the registry), or once, on the first pass, when
+                    # a key refresh is forced. Only a grant: a withdrawal carries
+                    # no keys and is never re-sent. Only at a holder: the
+                    # community's own connector is never sent keys.
                     refresh = (
-                        force_key_refresh and attempt == 0 and route.is_holder and newest.granted
+                        there is not None
+                        and there.granted
+                        and newest.granted
+                        and route.is_holder
+                        and ((force_key_refresh and attempt == 0) or await keys_changed(there))
                     )
                     if newest.granted == standing and not refresh:
                         continue
@@ -2084,10 +2159,8 @@ async def provision_user_shares(
                 )
                 break
 
-            if keys is None and any(r.is_holder and d.granted for r, d in writes):
-                keys = await subject_supply_keys(
-                    submission.rec_slug, submission.dataspace_did, declared_pod=submission.pod_code
-                )
+            if any(r.is_holder and d.granted for r, d in writes):
+                await supply_keys()
 
             refused = False
             for route, decision in writes:
@@ -2129,12 +2202,13 @@ async def refresh_keys(submission: Submission, *, report: list[str]) -> bool:
     """Re-send the member's grants at every holder with the supply points read now.
 
     After a corrected POD reached the registry, the holders still key the
-    member's rows by the old one: a standing grant is never re-sent
-    (:func:`provision_user_shares` leaves agreement alone). This is that same run
-    — the same reads, the same newest-decision ranking, the same
-    :func:`register_share` — with a standing grant at a holder sent once more
-    with the new keys. A grant the holder refused because no supply point was
-    recorded is not standing, so the same run grants it now that one is.
+    member's rows by the old one. :func:`provision_user_shares` re-sends a
+    standing grant whose keys it can read and compare; this is that same run —
+    the same reads, the same newest-decision ranking, the same
+    :func:`register_share` — with every standing grant at a holder sent once
+    more with the new keys, whether or not its keys could be compared. A grant
+    the holder refused because no supply point was recorded is not standing, so
+    the same run grants it now that one is.
 
     ``report`` gets one line per grant written (offer and holder, never a key).
     Raises ``ValueError`` when a holder did not take one, as an operator's retry

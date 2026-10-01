@@ -338,10 +338,6 @@ async def test_a_standing_grant_is_re_sent_with_the_new_keys(submission, holder)
     holder.state["pods"] = [CORRECT]
     holder.requests.clear()
 
-    # Without the refresh a standing grant is left alone: the gap this closes.
-    assert await di.provision_user_shares(submission) is True
-    assert _holder_posts(holder) == []
-
     report: list[str] = []
     assert await di.refresh_keys(submission, report=report) is True
 
@@ -392,3 +388,100 @@ async def test_a_holder_refusing_the_refresh_raises(submission, holder):
 
     with pytest.raises(ValueError, match="Share provisioning failed"):
         await di.refresh_keys(submission, report=[])
+
+
+# ── the ordinary retry: stale keys are refreshed, equal keys are left alone ──
+#
+# A POD changed in the registry outside onboarding's revisions reaches the holder
+# on the next retry of the enablement step: `provision_user_shares` compares the
+# keys the holder returns for the grant this community registered with
+# `subject_supply_keys`, as sets.
+
+
+async def test_a_retry_re_sends_a_standing_grant_whose_keys_changed(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = [CORRECT]
+    holder.requests.clear()
+
+    report: list[str] = []
+    assert await di.provision_user_shares(submission, report=report) is True
+
+    posts = _holder_posts(holder)
+    assert [(p["offer_id"], p["enabled"], p["keys"], p["decided_by"]) for p in posts] == [
+        (RELEASE, True, [f"pod:{CORRECT}"], "subject")
+    ]
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{CORRECT}"]
+    # Never keys, nor any write, at the community's own connector.
+    assert [b for base, b in holder.posts() if base != HOLDER_URL] == []
+    assert len(report) == 1 and RELEASE in report[0] and CORRECT not in report[0]
+
+    # Refreshed once: the next retry finds the keys equal and writes nothing.
+    holder.requests.clear()
+    assert await di.provision_user_shares(submission) is True
+    assert holder.posts() == []
+
+
+async def test_a_retry_leaves_a_standing_grant_with_the_same_keys_alone(submission, holder):
+    holder.state["pods"] = [DECLARED, CORRECT]
+    assert await di.provision_user_shares(submission) is True
+    # The same supply points, in another order: a set, not a list.
+    holder.state["pods"] = [CORRECT, DECLARED]
+    holder.requests.clear()
+
+    assert await di.provision_user_shares(submission) is True
+    assert holder.posts() == []
+
+
+async def test_a_retry_never_re_sends_a_withdrawal_for_changed_keys(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.decide(HOLDER_URL, RELEASE, granted=False)
+    holder.state["pods"] = [CORRECT]
+    holder.requests.clear()
+
+    await di.provision_user_shares(submission)
+
+    assert holder.rows[(HOLDER_URL, RELEASE)]["status"] == "revoked"
+    assert _holder_posts(holder) == []
+
+
+async def test_a_retry_does_not_replace_keys_while_the_registry_is_unreadable(
+    submission, holder, monkeypatch
+):
+    holder.state["pods"] = [CORRECT]
+    assert await di.provision_user_shares(submission) is True
+
+    async def _down(dids, *, rec_slug):
+        raise RecRegistryApiError("x", status_code=503)
+
+    # The declared POD stands in for the registry only to grant; it predates the
+    # correction the holder already holds, so it never replaces it.
+    monkeypatch.setattr(rec_registry, "supply_points_by_did", _down)
+    holder.requests.clear()
+
+    assert await di.provision_user_shares(submission) is True
+    assert holder.posts() == []
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{CORRECT}"]
+
+
+async def test_a_retry_leaves_a_grant_whose_keys_it_cannot_read(submission, holder):
+    # A grant the holder returns no keys for — another party registered them
+    # (ds `_keys_for`) — has nothing to compare and is not overwritten.
+    assert await di.provision_user_shares(submission) is True
+    holder.rows[(HOLDER_URL, RELEASE)]["keys"] = []
+    holder.state["pods"] = [CORRECT]
+    holder.requests.clear()
+
+    assert await di.provision_user_shares(submission) is True
+    assert holder.posts() == []
+
+
+async def test_a_retry_refuses_rather_than_sending_a_grant_with_no_keys(submission, holder):
+    assert await di.provision_user_shares(submission) is True
+    holder.state["pods"] = []
+    holder.requests.clear()
+
+    with pytest.raises(ValueError, match="no supply point is recorded"):
+        await di.provision_user_shares(submission, raise_on_error=True)
+
+    assert holder.posts() == []
+    assert holder.rows[(HOLDER_URL, RELEASE)]["keys"] == [f"pod:{DECLARED}"]
