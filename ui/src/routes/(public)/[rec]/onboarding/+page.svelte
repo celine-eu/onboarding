@@ -216,34 +216,86 @@
 			.join('');
 	}
 
-	// A primary offer, when the community declares one and it is published, is the
-	// switch the others depend on: their data exists only because of it. It is
-	// shown first, the others stay inactive until it is accepted, and turning it
-	// off clears them. The backend refuses the same combination.
+	// A primary offer, when the community declares one and it is published, is
+	// shown first. It gates nothing by itself: what an offer waits on is its own
+	// `requires_offers`, as the connector publishes it — a use of data that exists
+	// only because of another offer stays inactive until that one is accepted, and
+	// turning a prerequisite off clears what depends on it. An offer that requires
+	// nothing is its own decision. The backend refuses the same combinations.
 	let primaryOfferId = $derived.by(() => {
 		const id = config?.consent?.data_sharing?.primary;
 		return id && sharingOffers.some((o) => o.id === id && o.requires_consent) ? id : null;
 	});
-	let primaryAccepted = $derived(primaryOfferId ? !!dataSharingSelections[primaryOfferId] : true);
-	let orderedSharingOffers = $derived(
-		primaryOfferId
-			? [
-					...sharingOffers.filter((o) => o.id === primaryOfferId),
-					...sharingOffers.filter((o) => o.id !== primaryOfferId)
-				]
-			: sharingOffers
-	);
+	// The primary first, then every offer another one requires (an access before
+	// its uses), then the rest — each group in the connector's order.
+	let orderedSharingOffers = $derived.by(() => {
+		const required = new Set(sharingOffers.flatMap((o) => o.requires_offers ?? []));
+		const rank = (o: SharingOffer) => (o.id === primaryOfferId ? 0 : required.has(o.id) ? 1 : 2);
+		return [...sharingOffers].sort((a, b) => rank(a) - rank(b));
+	});
 
-	function dependsOnPrimary(offer: SharingOffer): boolean {
-		return !!primaryOfferId && offer.id !== primaryOfferId;
+	// **One switch for the whole step**, when the community words one
+	// (`consent.data_sharing.summary`): ticking it ticks every consent-based
+	// offer, and the list behind "Learn more" keeps each one's own checkbox. Each
+	// offer is still recorded, and withdrawable, on its own.
+	let consentOffers = $derived(sharingOffers.filter((o) => o.requires_consent));
+	let allSharingAccepted = $derived(
+		consentOffers.length > 0 && consentOffers.every((o) => dataSharingSelections[o.id])
+	);
+	let someSharingAccepted = $derived(consentOffers.some((o) => dataSharingSelections[o.id]));
+	let sharingSwitch = $state<HTMLInputElement | null>(null);
+	$effect(() => {
+		if (sharingSwitch) sharingSwitch.indeterminate = someSharingAccepted && !allSharingAccepted;
+	});
+
+	function setAllSharing(accepted: boolean) {
+		dataSharingSelections = Object.fromEntries(consentOffers.map((o) => [o.id, accepted]));
+	}
+
+	/** The community's one-switch wording: the visitor's locale, then the
+	 *  community's, then the first one written. `null` → no switch, one card per offer. */
+	let sharingSummary = $derived.by((): { title: string; label: string } | null => {
+		const summary = config?.consent?.data_sharing?.summary;
+		if (!summary) return null;
+		const first = Object.keys(summary)[0];
+		return summary[$locale ?? ''] ?? summary[config?.locale ?? ''] ?? (first ? summary[first] : null) ?? null;
+	});
+
+	/** Every party the switch sends data to, in order of first appearance. */
+	let sharingParties = $derived([...new Set(orderedSharingOffers.filter((o) => o.requires_consent).map(offerRecipientName))].filter(Boolean));
+
+	/** The consent-based offers published here that *offer* requires and that are
+	 *  not accepted yet. A prerequisite this community does not publish gates
+	 *  nothing: the person could not be asked for it. */
+	function unmetPrerequisites(offer: SharingOffer): SharingOffer[] {
+		return (offer.requires_offers ?? [])
+			.map((id) => sharingOffers.find((o) => o.id === id && o.requires_consent))
+			.filter((o): o is SharingOffer => !!o && !dataSharingSelections[o.id]);
 	}
 
 	function setSharing(offer: SharingOffer, accepted: boolean) {
-		if (offer.id === primaryOfferId && !accepted) {
-			dataSharingSelections = {};
-			return;
+		const next = { ...dataSharingSelections, [offer.id]: accepted };
+		if (!accepted) {
+			// Withdrawing a prerequisite withdraws whatever depends on it, transitively.
+			let changed = true;
+			while (changed) {
+				changed = false;
+				for (const o of sharingOffers) {
+					if (next[o.id] && (o.requires_offers ?? []).some((r) => r in next && !next[r])) {
+						next[o.id] = false;
+						changed = true;
+					}
+				}
+			}
 		}
-		dataSharingSelections = { ...dataSharingSelections, [offer.id]: accepted };
+		dataSharingSelections = next;
+	}
+
+	/** The name shown beside an offer's title: who gets the data, from the
+	 *  manifest's `recipients`, else the recipient alias itself. */
+	function offerRecipientName(offer: SharingOffer): string {
+		const alias = offerRecipient(offer);
+		return config?.consent?.data_sharing?.recipients?.[alias] ?? alias;
 	}
 
 	let acceptedOffers = $derived(
@@ -251,7 +303,7 @@
 			(o) =>
 				o.requires_consent &&
 				dataSharingSelections[o.id] &&
-				(!dependsOnPrimary(o) || primaryAccepted)
+				unmetPrerequisites(o).length === 0
 		)
 	);
 
@@ -721,7 +773,15 @@
 					...new Set(acceptedOffers.map((o) => o.consent_text_version).filter(Boolean)),
 				].join(',');
 				const sha = consented
-					? await sha256Hex(acceptedOffers.map(offerRenderedText).join('\n'))
+					? await sha256Hex(
+							[
+								// The switch's words were shown too, and are part of what was agreed to.
+								...(sharingSummary
+									? [`summary=${sharingSummary.title}|${sharingSummary.label}|${sharingParties.join(', ')}`]
+									: []),
+								...acceptedOffers.map(offerRenderedText)
+							].join('\n')
+						)
 					: null;
 				dataSharing = {
 					data_sharing_consent: consented,
@@ -1142,44 +1202,37 @@
 						</div>
 					{:else if sharingOffers.length > 0}
 						<div class="data-sharing">
-							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
-							<p class="consent-intro">{$t('onboarding.data_sharing_intro')}</p>
-							{#each orderedSharingOffers as offer (offer.id)}
-								<div class="offer-card" class:offer-primary={offer.id === primaryOfferId}>
-									<div class="offer-head">
-										<span class="offer-label">{offerWording(offer)?.title ?? offer.fallback_text_en.purpose_label}</span>
-										{#if !offer.requires_consent}
-											<span class="offer-badge">{$t('onboarding.data_sharing_disclosed')}</span>
-										{/if}
-									</div>
-									{#if offerWording(offer)}
-										<p class="offer-def offer-body">{offerWording(offer)?.body}</p>
-									{:else if offer.fallback_text_en.purpose_definition}
-										<p class="offer-def">{offer.fallback_text_en.purpose_definition}</p>
-									{/if}
-									<ul class="offer-facts">
-										{#each offerFacts(offer) as fact}
-											<li>{fact}</li>
+							{#if sharingSummary && consentOffers.length > 0}
+								<h3 class="data-sharing-title">{sharingSummary.title}</h3>
+								<div class="offer-card offer-primary">
+									<label class="offer-head offer-head-toggle">
+										<input
+											type="checkbox"
+											bind:this={sharingSwitch}
+											checked={allSharingAccepted}
+											onchange={(e) => setAllSharing(e.currentTarget.checked)}
+										/>
+										<span class="offer-title">
+											<span class="offer-label">{sharingSummary.label}</span>
+											{#if sharingParties.length}
+												<span class="offer-recipient">{sharingParties.join(', ')}</span>
+											{/if}
+										</span>
+									</label>
+									<details class="offer-details">
+										<summary>{$t('onboarding.data_sharing_learn_more')}</summary>
+										{#each orderedSharingOffers as offer (offer.id)}
+											{@render offerCard(offer)}
 										{/each}
-									</ul>
-									{#if offer.requires_consent}
-										<label class="toggle-field">
-											<input
-												type="checkbox"
-												checked={!!dataSharingSelections[offer.id]}
-												disabled={dependsOnPrimary(offer) && !primaryAccepted}
-												onchange={(e) => setSharing(offer, e.currentTarget.checked)}
-											/>
-											<span>{$t('onboarding.data_sharing_accept')}</span>
-										</label>
-										{#if dependsOnPrimary(offer) && !primaryAccepted}
-											<p class="offer-disclosed-note">{$t('onboarding.data_sharing_requires_primary')}</p>
-										{/if}
-									{:else}
-										<p class="offer-disclosed-note">{$t('onboarding.data_sharing_disclosed_note')}</p>
-									{/if}
+									</details>
 								</div>
-							{/each}
+							{:else}
+								<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
+								<p class="consent-intro">{$t('onboarding.data_sharing_intro')}</p>
+								{#each orderedSharingOffers as offer (offer.id)}
+									{@render offerCard(offer)}
+								{/each}
+							{/if}
 							<p class="data-sharing-optional">{$t('onboarding.data_sharing_optional')}</p>
 						</div>
 					{/if}
@@ -1304,6 +1357,57 @@
 	</div>
 {/if}
 
+{#snippet offerCard(offer: SharingOffer)}
+	<div class="offer-card" class:offer-primary={offer.id === primaryOfferId}>
+		<!-- The title is the checkbox's label: a plain name for the use, ticked
+		     in place. The full wording and the facts sit one click away, and are
+		     still what is hashed as shown (`offerRenderedText`). -->
+		<label class="offer-head" class:offer-head-toggle={offer.requires_consent}>
+			{#if offer.requires_consent}
+				<input
+					type="checkbox"
+					checked={!!dataSharingSelections[offer.id]}
+					disabled={unmetPrerequisites(offer).length > 0}
+					onchange={(e) => setSharing(offer, e.currentTarget.checked)}
+				/>
+			{/if}
+			<span class="offer-title">
+				<span class="offer-label">{offerWording(offer)?.title ?? offer.fallback_text_en.purpose_label}</span>
+				{#if offerRecipientName(offer)}
+					<span class="offer-recipient">{offerRecipientName(offer)}</span>
+				{/if}
+			</span>
+			{#if !offer.requires_consent}
+				<span class="offer-badge">{$t('onboarding.data_sharing_disclosed')}</span>
+			{/if}
+		</label>
+		{#if offer.requires_consent && unmetPrerequisites(offer).length > 0}
+			<p class="offer-disclosed-note">
+				{$t('onboarding.data_sharing_requires')}
+				{unmetPrerequisites(offer)
+					.map((o) => `«${offerWording(o)?.title ?? o.fallback_text_en.purpose_label}»`)
+					.join(', ')}
+			</p>
+		{/if}
+		<details class="offer-details">
+			<summary>{$t('onboarding.data_sharing_learn_more')}</summary>
+			{#if offerWording(offer)}
+				<p class="offer-def offer-body">{offerWording(offer)?.body}</p>
+			{:else if offer.fallback_text_en.purpose_definition}
+				<p class="offer-def">{offer.fallback_text_en.purpose_definition}</p>
+			{/if}
+			<ul class="offer-facts">
+				{#each offerFacts(offer) as fact}
+					<li>{fact}</li>
+				{/each}
+			</ul>
+		</details>
+		{#if !offer.requires_consent}
+			<p class="offer-disclosed-note">{$t('onboarding.data_sharing_disclosed_note')}</p>
+		{/if}
+	</div>
+{/snippet}
+
 <style>
 	.wizard {
 		display: flex;
@@ -1409,8 +1513,61 @@
 	.offer-head {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--celine-space-sm);
+	}
+
+	.offer-head .offer-badge {
+		margin-left: auto;
+	}
+
+	.offer-head-toggle {
+		cursor: pointer;
+	}
+
+	.offer-title {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.offer-recipient {
+		font-size: 0.8125rem;
+		color: var(--celine-text-secondary);
+	}
+
+	.offer-head input[type='checkbox'] {
+		width: 1.125rem;
+		height: 1.125rem;
+		accent-color: var(--celine-primary);
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.offer-head input[type='checkbox']:disabled,
+	.offer-head input[type='checkbox']:disabled + .offer-title {
+		cursor: not-allowed;
+		opacity: 0.6;
+	}
+
+	.offer-details {
+		display: flex;
+		flex-direction: column;
+		gap: var(--celine-space-xs);
+	}
+
+	.offer-details summary {
+		cursor: pointer;
+		width: fit-content;
+		font-size: 0.8125rem;
+		color: var(--celine-primary);
+	}
+
+	.offer-details[open] summary {
+		margin-bottom: var(--celine-space-xs);
+	}
+
+	/* The offers behind the one switch: cards within its card. */
+	.offer-details .offer-card {
+		background: var(--celine-bg);
 	}
 
 	.offer-label {

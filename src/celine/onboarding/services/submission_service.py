@@ -194,8 +194,8 @@ async def _validate_sharing_offer_ids(rec_slug: str, offer_ids: list[str]) -> No
     ``POST /consent/admin/shares`` refuses a contract offer, ``POST
     /admin/disclosure`` accepts one.
 
-    ``consent.data_sharing.primary``, when set to a published offer, must be among
-    the accepted ids whenever any other one is.
+    An accepted offer's ``requires_offers``, as the connector publishes it, must be
+    accepted too, for every prerequisite this REC publishes.
 
     Fails closed when the vocabulary cannot be reached: an unverifiable consent is
     not recorded. `SharingOffersUnavailableError` propagates for the route to answer
@@ -221,17 +221,27 @@ async def _validate_sharing_offer_ids(rec_slug: str, offer_ids: list[str]) -> No
             f"a data-sharing consent: {', '.join(sorted(contract_based))}"
         )
 
-    # **A primary offer, when the community declares one, gates the others.** The
-    # data the other offers use exists only because of it — a distributor releasing
-    # a member's readings, say — so accepting them without it would record a
-    # consent to a use of data that will never arrive. The wizard enforces the
-    # same rule; this is where a client that does not is refused.
-    primary = (
-        (template_service.load_manifest(rec_slug).get("consent") or {}).get("data_sharing") or {}
-    ).get("primary")
-    if primary and primary in by_id and offer_ids and primary not in offer_ids:
+    # **An offer is gated by its own prerequisites, not by the manifest's
+    # `primary`.** A use whose data exists only because of another offer — a
+    # community's use of readings a distributor releases to it — declares that
+    # offer in `requires_offers`, and accepting it alone would record a consent
+    # to a use of data that will never arrive. An offer that declares nothing is
+    # its own decision, even when `primary` is set: `primary` orders the step, it
+    # does not bundle another party's offer with it. A prerequisite this REC does
+    # not publish gates nothing — the person could not have been asked. The
+    # wizard enforces the same rule; this is where a client that does not is refused.
+    accepted = set(offer_ids)
+    unmet = {
+        i: sorted(r for r in by_id[i].get("requires_offers") or [] if r in by_id and r not in accepted)
+        for i in offer_ids
+    }
+    unmet = {i: r for i, r in unmet.items() if r}
+    if unmet:
         raise ValueError(
-            f"{', '.join(sorted(offer_ids))} depend(s) on {primary!r}, which was not accepted"
+            "; ".join(
+                f"{i!r} depends on {', '.join(repr(r) for r in reqs)}, which was not accepted"
+                for i, reqs in sorted(unmet.items())
+            )
         )
 
 

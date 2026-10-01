@@ -80,6 +80,8 @@ def import_templates(
         # first time a REC manager approves somebody.
         from celine.onboarding.services.template_service import (
             validate_boundary_template,
+            validate_data_sharing_recipients,
+            validate_data_sharing_summary,
             validate_data_sharing_texts,
             validate_dataspace_block,
             validate_organization,
@@ -93,6 +95,14 @@ def import_templates(
             validate_boundary_template(manifest, where=str(manifest_path))
             validate_data_sharing_texts(
                 ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
+                where=str(manifest_path),
+            )
+            validate_data_sharing_recipients(
+                ((manifest.get("consent") or {}).get("data_sharing") or {}).get("recipients"),
+                where=str(manifest_path),
+            )
+            validate_data_sharing_summary(
+                ((manifest.get("consent") or {}).get("data_sharing") or {}).get("summary"),
                 where=str(manifest_path),
             )
         except ValueError as exc:

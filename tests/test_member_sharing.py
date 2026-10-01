@@ -1309,7 +1309,7 @@ class TestTheDecisionGoesToTheHolder:
 
         assert "pod:EX000E00000001" not in json.dumps(view.offers)
 
-    async def test_an_unreachable_holder_fails_closed(self, monkeypatch, _routed):
+    async def test_an_unreachable_holder_fails_closed(self, monkeypatch, _routed, caplog):
         """ "Not granted" is the wrong answer to "I could not ask".
 
         It invites a member to grant again what they already granted, and hides a
@@ -1320,8 +1320,39 @@ class TestTheDecisionGoesToTheHolder:
             self._transport(holder_shares=httpx.Response(503, text="unavailable")),
         )
 
-        with pytest.raises(ms.SharingUnavailableError):
-            await ms.get_data_sharing(_member())
+        with caplog.at_level("ERROR"):
+            with pytest.raises(ms.SharingUnavailableError) as raised:
+                await ms.get_data_sharing(_member())
+
+        # Which participant runs the connector, and what it answered, is for
+        # the log: the member can act on neither.
+        assert "example-dso" not in str(raised.value)
+        assert "503" not in str(raised.value)
+        assert "example-dso's connector answered 503" in caplog.text
+
+    def test_the_route_answers_a_fixed_503_body(self, issue_token, monkeypatch, _routed):
+        """Whatever the reason, the member's 503 says the same thing."""
+        from fastapi.testclient import TestClient
+
+        from celine.onboarding.api.me import UNAVAILABLE
+        from celine.onboarding.main import create_app
+
+        _patch_httpx(
+            monkeypatch,
+            self._transport(holder_shares=httpx.Response(503, text="unavailable")),
+        )
+        token = issue_token(
+            sub="member-sub",
+            email="member@example.org",
+            organization={"rec-example": {"id": "org-uuid", "groups": []}},
+        )
+
+        resp = TestClient(create_app(), raise_server_exceptions=False).get(
+            "/api/me/data-sharing", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": UNAVAILABLE}
 
     async def test_a_prerequisite_the_holder_is_waiting_for_is_shown(self, monkeypatch, _routed):
         _patch_httpx(

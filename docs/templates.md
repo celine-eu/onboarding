@@ -57,7 +57,11 @@ consent:
   data_sharing:                                     # optional; collected in the statute step
     required: false                                 # GDPR Art. 7(4): NEVER required, never blocks submission
     offers: [household-energy-flexibility]          # optional allow-list; omit to offer every consent-based offer the connector publishes
-    primary: household-energy-flexibility         # optional; the offer the others depend on — shown first, the others inactive until it is accepted, and refused without it
+    primary: household-energy-flexibility         # optional; shown first. Gating is each offer's own requires_offers (from the connector): an offer is inactive until its prerequisites are accepted, and refused without them
+    recipients:                                     # optional; the name shown beside each offer's title, by recipient alias
+      example-rec: Example REC
+    summary:                                        # optional; one switch that ticks every offer, the offers behind "Learn more" with their own checkboxes
+      en: { title: "Access to your meter readings", label: "Allow ... to share your meter data" }
     # No version/file here — the version comes from each offer's consent_text_version served by the connector.
     texts:                                          # optional; this community's own wording, per offer and locale (docs/data-sharing.md)
       household-energy-flexibility:

@@ -76,14 +76,21 @@ class DataSharingHistoryResponse(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
 
 
+#: The one 503 body a member is given. The reason names connectors, the
+#: participants that run them, status codes or this deployment's settings — all
+#: for the log and an operator, none of it anything a member can act on.
+UNAVAILABLE = "Data sharing is temporarily unavailable. Please try again later."
+
+
 def _unavailable(exc: Exception) -> HTTPException:
-    """503, and the reason.
+    """503, with the reason logged rather than returned.
 
     Distinct from every :class:`~celine.onboarding.services.member_sharing.SharingState`,
     which are all answers rather than failures: an unreachable connector is worth
     retrying and "your community does not take part" never is.
     """
-    return HTTPException(status_code=503, detail=str(exc))
+    logger.warning("Data sharing unavailable: %s", exc)
+    return HTTPException(status_code=503, detail=UNAVAILABLE)
 
 
 @router.get("/data-sharing", response_model=DataSharingStatusResponse)

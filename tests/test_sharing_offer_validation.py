@@ -126,57 +126,74 @@ async def test_update_submission_refuses_before_it_mutates_anything(offers):
     db.commit.assert_not_called()
 
 
-# ── a primary offer gates the others ──────────────────────────────────────────
+# ── an offer is gated by its own prerequisites ────────────────────────────────
+
+_WITH_PREREQUISITES = [
+    {"id": "meter-release", "requires_consent": True, "consent_text_version": "1.0"},
+    {
+        "id": "household-energy-flexibility",
+        "requires_consent": True,
+        "consent_text_version": "1.0",
+        "requires_offers": ["meter-release"],
+    },
+    # Its data reaches its recipient without the release: no prerequisite.
+    {"id": "grid-operations-planning", "requires_consent": True, "consent_text_version": "2.0"},
+    {
+        "id": "needs-an-unpublished-offer",
+        "requires_consent": True,
+        "consent_text_version": "1.0",
+        "requires_offers": ["not-published-here"],
+    },
+]
 
 
 @pytest.fixture()
-def primary(offers, monkeypatch):
-    """The same vocabulary, with `grid-operations-planning` declared primary."""
+def prerequisites(monkeypatch):
+    """A vocabulary where one offer requires another, with `meter-release` primary."""
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "http://connector:30001")
     monkeypatch.setattr(
         ts,
         "load_manifest",
-        lambda slug: {
-            "consent": {
-                "data_sharing": {
-                    "offers": [o["id"] for o in _OFFERS],
-                    "primary": "grid-operations-planning",
-                }
-            }
-        },
+        lambda slug: {"consent": {"data_sharing": {"primary": "meter-release"}}},
     )
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=_WITH_PREREQUISITES))
+
+    def factory(**kw):
+        kw.pop("transport", None)
+        return _OriginalAsyncClient(transport=transport, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
 
 
-async def test_another_offer_without_the_primary_is_refused(primary):
-    with pytest.raises(ValueError, match="depend.*'grid-operations-planning'"):
+async def test_an_offer_without_its_prerequisite_is_refused(prerequisites):
+    with pytest.raises(ValueError, match="'household-energy-flexibility' depends on 'meter-release'"):
         await submission_service._validate_sharing_offer_ids(
             "example", ["household-energy-flexibility"]
         )
 
 
-async def test_another_offer_with_the_primary_is_accepted(primary):
+async def test_an_offer_with_its_prerequisite_is_accepted(prerequisites):
     await submission_service._validate_sharing_offer_ids(
-        "example", ["grid-operations-planning", "household-energy-flexibility"]
+        "example", ["meter-release", "household-energy-flexibility"]
     )
 
 
-async def test_the_primary_alone_is_accepted(primary):
+async def test_the_prerequisite_alone_is_accepted(prerequisites):
+    await submission_service._validate_sharing_offer_ids("example", ["meter-release"])
+
+
+async def test_the_primary_does_not_gate_an_offer_that_requires_nothing(prerequisites):
+    """`primary` orders the step; it does not bundle another party's offer with it."""
     await submission_service._validate_sharing_offer_ids("example", ["grid-operations-planning"])
 
 
-async def test_accepting_nothing_is_always_allowed(primary):
-    """Sharing is optional; a primary gates the others, it never demands itself."""
+async def test_accepting_nothing_is_always_allowed(prerequisites):
+    """Sharing is optional; a prerequisite gates its dependants, it never demands itself."""
     await submission_service._validate_sharing_offer_ids("example", [])
 
 
-async def test_a_primary_that_is_not_published_gates_nothing(offers, monkeypatch):
-    monkeypatch.setattr(
-        ts,
-        "load_manifest",
-        lambda slug: {"consent": {"data_sharing": {"primary": "no-such-offer"}}},
-    )
-    await submission_service._validate_sharing_offer_ids(
-        "example", ["household-energy-flexibility"]
-    )
+async def test_a_prerequisite_that_is_not_published_gates_nothing(prerequisites):
+    await submission_service._validate_sharing_offer_ids("example", ["needs-an-unpublished-offer"])
 
 
 # ── the presented set is what the web app trusts ──────────────────────────────
@@ -239,3 +256,29 @@ async def test_update_submission_refuses_a_wrong_presented_set_before_writing(of
 
     assert sub.data_sharing_offers_presented is None
     db.commit.assert_not_called()
+
+
+# ── the one-switch summary is validated like the texts ────────────────────────
+
+
+def test_a_summary_with_title_and_label_is_accepted():
+    ts.validate_data_sharing_summary({"en": {"title": "Access", "label": "Allow it"}}, where="t")
+
+
+def test_no_summary_is_accepted():
+    ts.validate_data_sharing_summary(None, where="t")
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {},
+        {"en": {"title": "Access"}},
+        {"en": {"title": "Access", "label": " "}},
+        {"en": {"title": "Access", "label": "Allow", "body": "x"}},
+        {"english": {"title": "Access", "label": "Allow"}},
+    ],
+)
+def test_a_half_written_summary_is_refused(block):
+    with pytest.raises(ValueError, match="summary"):
+        ts.validate_data_sharing_summary(block, where="t")

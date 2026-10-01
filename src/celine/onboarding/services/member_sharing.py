@@ -414,12 +414,18 @@ async def _list_decisions(
         )
     except ConfigurationError:
         # Caught apart, and its message deliberately not passed on: the reason is
-        # this deployment's own settings, the member can do nothing with it, and
-        # `_unavailable` puts whatever it is given into a 503 body.
+        # this deployment's own settings and the member can do nothing with it.
+        # `_unavailable` no longer puts it in a 503 body either; this keeps the
+        # exception itself clean for any other caller.
         logger.exception("Cannot read a holder's decisions for %s", credential.subject_id)
         raise SharingUnavailableError("Data sharing is not fully configured here") from None
     except (RuntimeError, httpx.HTTPError, ValueError) as exc:
-        raise SharingUnavailableError(str(exc)) from exc
+        # The reason names the holder and what its connector answered: for the
+        # log, as on the relay path, and not for the member.
+        logger.error("Cannot read a holder's decisions for %s: %s", credential.subject_id, exc)
+        raise SharingUnavailableError(
+            "A connector holding this member's decisions could not be read"
+        ) from exc
 
     return decisions
 
@@ -612,14 +618,47 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
 
     return SharingView(
         state=state,
-        offers=_merge(
-            offers,
-            await _list_decisions(credential, rec_slug),
-            await _presented_offers(credential.subject_id),
-            binding=template_service.dataspace_binding(rec_slug),
+        offers=_presented(
+            rec_slug,
+            _merge(
+                offers,
+                await _list_decisions(credential, rec_slug),
+                await _presented_offers(credential.subject_id),
+                binding=template_service.dataspace_binding(rec_slug),
+            ),
         ),
         identity=_identity_of(credential),
     )
+
+
+def _presented(rec_slug: str, offers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each offer with the community's presentation of it, as the wizard shows it.
+
+    ``recipient_name`` is the name beside the title (`consent.data_sharing.recipients`,
+    else the alias); ``switch`` is the one switch's wording
+    (`consent.data_sharing.summary`), the same on every offer, absent when the
+    community words none.
+
+    **Carried on each offer, not beside them**, because the member page reaches
+    this answer through the generated SDK, whose status schema keeps only the
+    fields it knows while ``offers`` passes through as plain dicts. A top-level
+    field is the better home once the SDK is regenerated.
+    """
+    data_sharing = (template_service.load_manifest(rec_slug).get("consent") or {}).get(
+        "data_sharing"
+    ) or {}
+    names = data_sharing.get("recipients") or {}
+    switch = data_sharing.get("summary")
+    presented = []
+    for offer in offers:
+        item = dict(offer)
+        recipients = item.get("recipients") or {}
+        alias = recipients.get("recipient") or recipients.get("controller") or ""
+        item["recipient_name"] = names.get(alias, alias)
+        if switch:
+            item["switch"] = switch
+        presented.append(item)
+    return presented
 
 
 def _rendered_text(offer: dict[str, Any], wording: dict[str, Any] | None) -> str:

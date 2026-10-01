@@ -931,6 +931,49 @@ def validate_data_sharing_texts(block: Any, *, where: str) -> None:
                     raise ValueError(f"{at}.{locale} needs a non-empty '{key}'")
 
 
+def validate_data_sharing_recipients(block: Any, *, where: str) -> None:
+    """Refuse a malformed ``consent.data_sharing.recipients`` block.
+
+    ``{recipient_alias: display_name}``: the name the wizard shows beside each
+    offer's title, so who gets the data stays visible without opening the
+    details. A proper name, not translated. An alias with no entry shows the
+    alias itself.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: consent.data_sharing.recipients must map recipient aliases to names")
+    for alias, name in block.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{where}: consent.data_sharing.recipients.{alias} needs a non-empty name")
+
+
+def validate_data_sharing_summary(block: Any, *, where: str) -> None:
+    """Refuse a malformed ``consent.data_sharing.summary`` block.
+
+    ``{<locale>: {title: str, label: str}}``: the one switch that ticks every
+    offer, and the heading above it. Its words are shown as part of what a person
+    agrees to, so a half-written one is refused rather than rendered blank.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict) or not block:
+        raise ValueError(f"{where}: consent.data_sharing.summary must map locales to a title and label")
+    for locale, text in block.items():
+        at = f"{where}: consent.data_sharing.summary.{locale}"
+        if not _LOCALE_KEY.match(str(locale)):
+            raise ValueError(f"{at}: {locale!r} is not a two-letter locale code")
+        if not isinstance(text, dict):
+            raise ValueError(f"{at} must be a mapping with 'title' and 'label'")
+        extra = set(text) - {"title", "label"}
+        if extra:
+            raise ValueError(f"{at}: unknown key(s) {', '.join(sorted(extra))}")
+        for key in ("title", "label"):
+            value = text.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{at} needs a non-empty '{key}'")
+
+
 def _text_for(rec_slug: str, offer: dict[str, Any], texts: dict[str, Any]) -> dict[str, Any] | None:
     """The community's wording for *offer*, if it was written for this version.
 

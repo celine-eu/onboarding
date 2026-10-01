@@ -32,6 +32,8 @@ async def _validate_dataspace_config() -> None:
         organization_for,
         rec_registry_binding,
         validate_boundary_template,
+        validate_data_sharing_recipients,
+        validate_data_sharing_summary,
         validate_data_sharing_texts,
         validate_organization,
     )
@@ -47,6 +49,14 @@ async def _validate_dataspace_config() -> None:
         validate_boundary_template(manifest, where=f"REC {slug!r}")
         validate_data_sharing_texts(
             ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
+            where=f"REC {slug!r}",
+        )
+        validate_data_sharing_recipients(
+            ((manifest.get("consent") or {}).get("data_sharing") or {}).get("recipients"),
+            where=f"REC {slug!r}",
+        )
+        validate_data_sharing_summary(
+            ((manifest.get("consent") or {}).get("data_sharing") or {}).get("summary"),
             where=f"REC {slug!r}",
         )
 

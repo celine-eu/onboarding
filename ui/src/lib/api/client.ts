@@ -132,7 +132,18 @@ export interface SiteConfig {
 	};
 	consent: Record<
 		string,
-		{ version?: string; file?: string; url?: string; required: boolean; offers?: string[]; primary?: string }
+		{
+			version?: string;
+			file?: string;
+			url?: string;
+			required: boolean;
+			offers?: string[];
+			primary?: string;
+			/** Recipient alias → the name shown beside an offer's title. */
+			recipients?: Record<string, string>;
+			/** Locale → the one switch that ticks every offer, and its heading. */
+			summary?: Record<string, { title: string; label: string }>;
+		}
 	>;
 	steps: (string | { custom: string; title: string })[];
 	content: Record<string, string>;
