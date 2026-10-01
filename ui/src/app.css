@@ -3,14 +3,17 @@
  * Based on @celine-eu/ui design tokens
  */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+/* Served with the app, never from a third-party CDN: a font request carries the
+   applicant's IP address to whoever hosts the file. */
+@import '@fontsource-variable/dm-sans/opsz.css';
+@import '@fontsource-variable/dm-sans/opsz-italic.css';
 
 :root {
   --celine-font-scale: 1;
 
   /* Typography */
-  --celine-font-display: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  --celine-font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --celine-font-display: 'DM Sans Variable', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --celine-font-body: 'DM Sans Variable', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   --celine-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
 
   /* Spacing */
