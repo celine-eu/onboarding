@@ -200,6 +200,7 @@ Off by default. Scanning sends a participant's utility bill and identity documen
 | `LLM_BASE_URL` | *(none)* | OpenAI-compatible endpoint that reads the documents |
 | `LLM_VISION_MODEL` | *(none)* | Vision model at that endpoint |
 | `LLM_API_KEY` | *(none)* | Key for the endpoint, if it needs one (for vLLM, `--api-key`) |
+| `LLM_THINKING` | `true` | `false` asks a reasoning model (Qwen on vLLM or SGLang) to skip thinking, via `chat_template_kwargs`; extraction then takes about half as long. Leave `true` for OpenAI, which refuses the field |
 
 Some older names are no longer read:
 

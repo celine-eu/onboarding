@@ -98,5 +98,11 @@
 	"iso_PT1H": "hourly",
 	"iso_P1Y": "1 year",
 	"iso_P2Y": "2 years",
-	"iso_P5Y": "5 years"
+	"iso_P5Y": "5 years",
+	"error_extraction_unavailable": "We couldn't read your document right now. Please fill in the fields yourself, or try uploading it again in a few minutes.",
+	"error_server": "Something went wrong on our side. Please try again in a moment.",
+	"error_rate_limited": "Too many attempts in a short time. Please wait a few minutes and try again.",
+	"error_network": "We couldn't reach the server. Check your connection and try again.",
+	"error_generic": "Something went wrong. Please try again.",
+	"error_reference": "Reference for support:"
 }

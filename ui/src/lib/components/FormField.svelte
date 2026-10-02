@@ -58,7 +58,8 @@
 		background: var(--celine-bg-elevated);
 		color: var(--celine-text);
 		font-family: var(--celine-font-body);
-		font-size: 0.9375rem;
+		/* 16px: iOS Safari zooms the page into any field smaller than that. */
+		font-size: 1rem;
 		transition: border-color var(--celine-transition-fast);
 	}
 

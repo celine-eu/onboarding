@@ -204,6 +204,11 @@ class OpenAIExtractor:
                 {"role": "user", "content": content},
             ],
             max_completion_tokens=500,
+            extra_body=(
+                None
+                if settings.llm_thinking
+                else {"chat_template_kwargs": {"enable_thinking": False}}
+            ),
         )
 
         raw = response.model_dump()

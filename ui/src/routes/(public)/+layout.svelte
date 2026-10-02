@@ -90,6 +90,13 @@
 		font-weight: 600;
 	}
 
+	@media (max-width: 600px) {
+		.locale-btn {
+			min-width: 2.75rem;
+			min-height: 2.75rem;
+		}
+	}
+
 	.content-wrap {
 		max-width: 900px;
 		margin: 0 auto;

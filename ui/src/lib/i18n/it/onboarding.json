@@ -98,5 +98,11 @@
 	"iso_PT1H": "ogni ora",
 	"iso_P1Y": "1 anno",
 	"iso_P2Y": "2 anni",
-	"iso_P5Y": "5 anni"
+	"iso_P5Y": "5 anni",
+	"error_extraction_unavailable": "Al momento non riusciamo a leggere il documento. Compila i campi a mano, oppure riprova a caricarlo tra qualche minuto.",
+	"error_server": "Si è verificato un problema da parte nostra. Riprova tra poco.",
+	"error_rate_limited": "Troppi tentativi in poco tempo. Attendi qualche minuto e riprova.",
+	"error_network": "Non riusciamo a raggiungere il server. Controlla la connessione e riprova.",
+	"error_generic": "Si è verificato un errore. Riprova.",
+	"error_reference": "Riferimento per l'assistenza:"
 }

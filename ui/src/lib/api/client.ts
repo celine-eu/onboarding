@@ -45,6 +45,33 @@ export interface AdminSubmission extends SubmissionResponse {
 	verification?: AdminVerification | null;
 }
 
+/** A failed call to the API. `code` and `reference` are what the API puts in an
+ *  error body it shaped itself (`{detail, code, reference}`); `reference` is also
+ *  in the server's log line, so it is what a participant reads out and an operator
+ *  searches for. Absent when the body was not one of those — a proxy's page, say. */
+export class ApiError extends Error {
+	status: number;
+	code: string | null;
+	reference: string | null;
+	detail: string | null;
+	constructor(status: number, body: string) {
+		let parsed: Record<string, unknown> | null = null;
+		try {
+			parsed = JSON.parse(body);
+		} catch {
+			parsed = null;
+		}
+		const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+		const detail = str(parsed?.detail);
+		super(`API error ${status}: ${detail ?? body}`);
+		this.name = 'ApiError';
+		this.status = status;
+		this.code = str(parsed?.code);
+		this.reference = str(parsed?.reference);
+		this.detail = detail;
+	}
+}
+
 export class ValidationError extends Error {
 	fieldErrors: Record<string, string>;
 
@@ -104,7 +131,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 			const fieldErrors = parseValidationErrors(body);
 			if (fieldErrors) throw new ValidationError(fieldErrors);
 		}
-		throw new Error(`API error ${res.status}: ${body}`);
+		throw new ApiError(res.status, body);
 	}
 
 	return res.json();
@@ -646,7 +673,7 @@ export function createRecApi(recSlug: string): RecApi {
 		}
 		if (!res.ok) {
 			const body = await res.text();
-			throw new Error(`API error ${res.status}: ${body}`);
+			throw new ApiError(res.status, body);
 		}
 		return res;
 	}

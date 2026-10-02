@@ -41,7 +41,9 @@ test.describe('Operator console', () => {
 	test('identifiers are masked in the queue', async ({ page }) => {
 		await signedIn(page);
 		await page.goto(`/admin/${REC}`);
-		const cell = page.locator('tbody tr').first().locator('.muted').first();
+		// A row with a fiscal code: a draft another test's wizard has only just
+		// created has none yet ("—"), and the specs run in parallel.
+		const cell = page.locator('tbody tr .muted').filter({ hasNotText: '—' }).first();
 		await expect(cell).toContainText('•');
 	});
 
@@ -198,10 +200,12 @@ test.describe('Operator console', () => {
 		await expect(approve).toBeDisabled();
 		await expect(page.getByText('Nessuna verifica registrata.', { exact: false })).toBeVisible();
 
-		// No document is uploaded, so only the offline check can be chosen.
-		await expect(page.getByLabel('Verificato su un documento caricato qui')).toBeDisabled();
-		await page.getByLabel('Verificato dalla comunità fuori dalla piattaforma').check();
-		await page.getByLabel('Nota (facoltativa)').fill('Documento visto in sede');
+		// No document is uploaded, so only the offline check can be chosen. Scoped to
+		// the participant's verification: a revision's form repeats the same labels.
+		const participant = page.getByRole('group', { name: 'Come è stato verificato il partecipante?' });
+		await expect(participant.getByLabel('Verificato su un documento caricato qui')).toBeDisabled();
+		await participant.getByLabel('Verificato dalla comunità fuori dalla piattaforma').check();
+		await page.getByLabel('Nota (facoltativa)').first().fill('Documento visto in sede');
 		await page.getByRole('button', { name: 'Registra verifica' }).click();
 
 		await expect(page.getByText('Verifica registrata.')).toBeVisible();

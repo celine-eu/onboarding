@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="", validation_alias="LLM_BASE_URL")
     llm_api_key: str = Field(default="", validation_alias="LLM_API_KEY")
     llm_vision_model: str = Field(default="", validation_alias="LLM_VISION_MODEL")
+    # `false` asks a reasoning model to answer without thinking first, through
+    # `chat_template_kwargs` (vLLM, SGLang; Qwen-style templates). Extraction is
+    # reading, not reasoning: on a self-hosted Qwen it halves the wait and returns
+    # the same JSON. Left `true`, nothing extra is sent — OpenAI refuses the field.
+    llm_thinking: bool = Field(default=True, validation_alias="LLM_THINKING")
 
     data_dir: str = str(REPO_ROOT / "data")
     templates_dir: str = str(REPO_ROOT / "templates")

@@ -98,5 +98,11 @@
 	"iso_PT1H": "cada hora",
 	"iso_P1Y": "1 año",
 	"iso_P2Y": "2 años",
-	"iso_P5Y": "5 años"
+	"iso_P5Y": "5 años",
+	"error_extraction_unavailable": "Ahora mismo no podemos leer tu documento. Rellena los campos tú mismo o vuelve a subirlo dentro de unos minutos.",
+	"error_server": "Algo ha fallado por nuestra parte. Inténtalo de nuevo en un momento.",
+	"error_rate_limited": "Demasiados intentos en poco tiempo. Espera unos minutos y vuelve a intentarlo.",
+	"error_network": "No podemos conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+	"error_generic": "Algo ha fallado. Inténtalo de nuevo.",
+	"error_reference": "Referencia para soporte:"
 }

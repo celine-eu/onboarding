@@ -1,7 +1,9 @@
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import openai
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -197,6 +199,52 @@ async def _validate_dataspace_config() -> None:
                 f"     until it is reinstated\n\n"
                 f"═══════════════════════════════════════════════════════════════\n"
             )
+
+
+# **An error a person can be told about, and one an operator can find.** Every
+# body below carries a `code` the wizard turns into a sentence in the
+# participant's language, and a `reference` that is also in the log line with
+# the cause — so "it said ab12cd34" is enough to find what happened, and no
+# traceback or upstream message ever reaches the browser.
+def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(openai.APIError)
+    async def model_endpoint_handler(request: Request, exc: openai.APIError):
+        # The model endpoint at `LLM_BASE_URL` failed: down, unreachable, or no
+        # longer serving `LLM_VISION_MODEL` (a self-hosted server swapping models
+        # answers 404). Not this service's fault, and the participant can type the
+        # fields instead — so a 502, not a 500.
+        reference = uuid.uuid4().hex[:8]
+        logger.warning(
+            "Model endpoint failed on %s %s (reference %s, model %s): %s",
+            request.method,
+            request.url.path,
+            reference,
+            settings.llm_vision_model,
+            exc,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": "The document reader is not available right now.",
+                "code": "extraction_unavailable",
+                "reference": reference,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_handler(request: Request, exc: Exception):
+        reference = uuid.uuid4().hex[:8]
+        logger.exception(
+            "Unhandled error on %s %s (reference %s)", request.method, request.url.path, reference
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Internal server error.",
+                "code": "internal_error",
+                "reference": reference,
+            },
+        )
 
 
 def _warn_document_processing() -> None:
@@ -653,6 +701,8 @@ def create_app() -> FastAPI:
             status_code=429,
             content={"detail": "Too many requests. Please try again later."},
         )
+
+    install_error_handlers(app)
 
     if settings.security_headers:
         app.add_middleware(SecurityHeadersMiddleware)

@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { t, locale, isSupported } from '$lib/i18n';
 	import { setSessionToken, getSessionToken, ValidationError, offerRecipient, type SiteConfig, type RecApi, type SharingOffer, type OfferWording } from '$lib/api/client';
+	import { describeError, type ShownError } from '$lib/api/errors';
 	import FormField from '$lib/components/FormField.svelte';
 	import FileUpload from '$lib/components/FileUpload.svelte';
 	import ConsentCheckbox from '$lib/components/ConsentCheckbox.svelte';
@@ -76,7 +77,16 @@
 	let currentStep = $state(0);
 	let submitting = $state(false);
 	let submitted = $state(false);
-	let errorMsg = $state('');
+	let shownError = $state<ShownError | null>(null);
+	let errorBanner: HTMLElement | null = $state(null);
+
+	// The banner sits above the step, and the person who just pressed "Next" or
+	// added a page is usually scrolled down to it — so it is brought into view.
+	async function showError(e: unknown) {
+		shownError = describeError(e, $t);
+		await tick();
+		errorBanner?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	}
 
 	let submissionId: string | null = $state(null);
 	let submissionRef: string | null = $state(null);
@@ -448,7 +458,7 @@
 	}
 
 	async function advanceStep() {
-		errorMsg = '';
+		shownError = null;
 
 		if (currentStepName === 'consents' && !submissionId) {
 			submitting = true;
@@ -465,7 +475,7 @@
 				submissionRef = (res as Record<string, unknown>).ref as string;
 				if (res.session_token) setSessionToken(res.session_token);
 			} catch (e) {
-				errorMsg = e instanceof Error ? e.message : 'Failed to create submission';
+				showError(e);
 				submitting = false;
 				return;
 			}
@@ -497,7 +507,7 @@
 					errors = { ...errors, ...translateFieldErrors(e.fieldErrors) };
 					return;
 				}
-				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
+				showError(e);
 				return;
 			}
 		}
@@ -507,7 +517,7 @@
 			try {
 				await saveSubmission(submissionId, { extra_data: extraData });
 			} catch (e) {
-				errorMsg = e instanceof Error ? e.message : 'Failed to save data';
+				showError(e);
 				return;
 			}
 		}
@@ -557,7 +567,7 @@
 
 		const thisVersion = ++extractionVersion;
 		extracting = true;
-		errorMsg = '';
+		shownError = null;
 		try {
 			const newData = await recApi.extractBill(allFiles);
 			if (thisVersion !== extractionVersion) return;
@@ -565,7 +575,7 @@
 			applyExtraction(extractionData);
 		} catch (e) {
 			if (thisVersion !== extractionVersion) return;
-			errorMsg = e instanceof Error ? e.message : 'Extraction failed';
+			showError(e);
 		} finally {
 			if (thisVersion === extractionVersion) extracting = false;
 		}
@@ -599,7 +609,7 @@
 		if (!eligibilityAddress.trim()) return;
 		eligibilityChecking = true;
 		eligibilityResult = null;
-		errorMsg = '';
+		shownError = null;
 		// The address exactly as it is checked: this is what the server geocodes
 		// again, at submit and at approval, to decide the member's primary
 		// substation (REQ-0018). Never a point or a boundary, which the server
@@ -622,11 +632,11 @@
 					// Without the saved address a community whose areas are
 					// boundaries cannot resolve the submission, so say so rather
 					// than let the submit fail later for no visible reason.
-					errorMsg = e instanceof Error ? e.message : 'Failed to save the address';
+					showError(e);
 				}
 			}
 		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Eligibility check failed';
+			showError(e);
 		} finally {
 			eligibilityChecking = false;
 		}
@@ -701,7 +711,7 @@
 
 		const thisVersion = ++idExtractionVersion;
 		idExtracting = true;
-		errorMsg = '';
+		shownError = null;
 		try {
 			const newData = await recApi.extractIdCard(allFiles);
 			if (thisVersion !== idExtractionVersion) return;
@@ -709,7 +719,7 @@
 			applyIdExtraction(idExtractionData);
 		} catch (e) {
 			if (thisVersion !== idExtractionVersion) return;
-			errorMsg = e instanceof Error ? e.message : 'ID extraction failed';
+			showError(e);
 		} finally {
 			if (thisVersion === idExtractionVersion) idExtracting = false;
 		}
@@ -759,7 +769,7 @@
 	async function handleFinalSubmit() {
 		if (!submissionId) return;
 		submitting = true;
-		errorMsg = '';
+		shownError = null;
 		try {
 			let dataSharing: Record<string, unknown> = {};
 			if (sharingOffers.length > 0) {
@@ -806,9 +816,13 @@
 			submitted = true;
 		} catch (e) {
 			if (e instanceof ValidationError) {
-				errorMsg = Object.values(translateFieldErrors(e.fieldErrors)).join(', ');
+				shownError = {
+					message: Object.values(translateFieldErrors(e.fieldErrors)).join(', '),
+					reference: null,
+					status: null
+				};
 			} else {
-				errorMsg = e instanceof Error ? e.message : 'Submission failed';
+				showError(e);
 			}
 		} finally {
 			submitting = false;
@@ -859,6 +873,9 @@
 	<div class="wizard">
 		<h2 class="wizard-title">{$t('onboarding.title')}</h2>
 
+		<p class="step-current">
+			{currentStep + 1}/{steps.length} · {stepLabelOverrides[steps[currentStep]] ?? $t(STEP_LABELS[steps[currentStep]] ?? steps[currentStep])}
+		</p>
 		<div class="steps">
 			{#each steps as step, i}
 				<div class="step" class:active={i === currentStep} class:done={i < currentStep}>
@@ -867,6 +884,18 @@
 				</div>
 			{/each}
 		</div>
+
+		{#if shownError}
+			<div class="error-banner" role="alert" bind:this={errorBanner}>
+				<p class="error-message">{shownError.message}</p>
+				{#if shownError.reference || shownError.status}
+					<p class="error-reference">
+						{$t('onboarding.error_reference')}
+						<code>{[shownError.reference, shownError.status ? `HTTP ${shownError.status}` : null].filter(Boolean).join(' · ')}</code>
+					</p>
+				{/if}
+			</div>
+		{/if}
 
 		<div class="step-content">
 			{#if currentStepName === 'consents'}
@@ -1316,10 +1345,6 @@
 			{/if}
 		</div>
 
-		{#if errorMsg}
-			<div class="error-banner">{errorMsg}</div>
-		{/if}
-
 		<div class="wizard-nav">
 			<button
 				class="btn btn-secondary"
@@ -1430,6 +1455,7 @@
 
 	.step {
 		flex: 1;
+		min-width: 0;
 	}
 
 	.step-bar {
@@ -1459,6 +1485,27 @@
 
 	.step.done .step-label {
 		color: var(--celine-text-secondary);
+	}
+
+	/* Seven labels side by side do not fit a phone: the row was 422px on a 360px
+	 * screen, which made the whole page scroll sideways. Below this width the bars
+	 * stay and only the current step is named, above them. */
+	.step-current {
+		display: none;
+		margin: 0 0 calc(-1 * var(--celine-space-sm));
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--celine-primary);
+	}
+
+	@media (max-width: 600px) {
+		.step-current {
+			display: block;
+		}
+
+		.step-label {
+			display: none;
+		}
 	}
 
 	.step-content {
@@ -1701,7 +1748,9 @@
 
 	.review-row {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
+		gap: 0 var(--celine-space-md);
 		padding: var(--celine-space-xs) 0;
 		border-bottom: 1px solid var(--celine-border);
 	}
@@ -1715,6 +1764,8 @@
 		font-size: 0.875rem;
 		font-weight: 500;
 		color: var(--celine-text);
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 
 	.eligibility-row {
@@ -1862,7 +1913,8 @@
 		background: var(--celine-bg-elevated);
 		color: var(--celine-text);
 		font-family: var(--celine-font-body);
-		font-size: 0.9375rem;
+		/* 16px: iOS Safari zooms the page into any field smaller than that. */
+		font-size: 1rem;
 		transition: border-color var(--celine-transition-fast);
 	}
 
@@ -1899,6 +1951,23 @@
 		padding: var(--celine-space-sm) var(--celine-space-md);
 		border-radius: var(--celine-radius-md);
 		font-size: 0.875rem;
+		margin-bottom: var(--celine-space-md);
+		scroll-margin-top: var(--celine-space-md);
+	}
+
+	.error-message {
+		margin: 0;
+	}
+
+	.error-reference {
+		margin: var(--celine-space-xs) 0 0;
+		font-size: 0.75rem;
+		opacity: 0.8;
+	}
+
+	.error-reference code {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		user-select: all;
 	}
 
 	.mismatch-banner {

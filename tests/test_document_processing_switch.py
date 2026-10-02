@@ -34,6 +34,7 @@ def switch(monkeypatch):
         monkeypatch.setattr(settings, "llm_base_url", endpoint)
         monkeypatch.setattr(settings, "llm_vision_model", model)
         monkeypatch.setattr(settings, "llm_api_key", "")
+        monkeypatch.setattr(settings, "llm_thinking", True)
         for removed in (
             "removed_dpa_signed",
             "removed_openai_api_key",
@@ -318,7 +319,6 @@ def test_off_an_upload_that_is_not_for_scanning_is_not_refused(switch, client, m
     assert res.status_code == 404
 
 
-
 async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypatch):
     """No vendor and no model is assumed: both come from `LLM_*`, and no key is required."""
     import io
@@ -332,6 +332,7 @@ async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypa
     class _Completions:
         async def create(self, **kwargs):
             seen["model"] = kwargs["model"]
+            seen["extra_body"] = kwargs.get("extra_body")
             message = type("M", (), {"content": '{"pod_code": "IT001E00000000"}'})()
             choice = type("C", (), {"message": message})()
             return type("R", (), {"choices": [choice], "model_dump": lambda self: {}})()
@@ -351,4 +352,70 @@ async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypa
     )
 
     assert extracted == {"pod_code": "IT001E00000000"}
-    assert seen == {"base_url": ENDPOINT, "api_key": "not-used", "model": "vision-model"}
+    assert seen == {
+        "base_url": ENDPOINT,
+        "api_key": "not-used",
+        "model": "vision-model",
+        "extra_body": None,
+    }
+
+    # `LLM_THINKING=false` is the only way anything beyond the OpenAI fields is sent.
+    monkeypatch.setattr(settings, "llm_thinking", False)
+    await openai_extractor.OpenAIExtractor().extract_pages([(png.getvalue(), "image/png")])
+    assert seen["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+# ── when the model endpoint fails ─────────────────────────────────────────────
+
+
+def test_a_failing_model_endpoint_is_a_502_with_a_reference(switch, client, monkeypatch, caplog):
+    """A self-hosted server that stopped serving the model answers 404; the wizard
+    gets a code it can say in words and a reference that is also in the log."""
+    import httpx
+    import openai
+
+    from celine.onboarding.extractors import openai_extractor
+
+    async def _model_gone(self, pages, **kwargs):
+        raise openai.NotFoundError(
+            "The model `vision-model` does not exist.",
+            response=httpx.Response(404, request=httpx.Request("POST", ENDPOINT)),
+            body=None,
+        )
+
+    switch(dpa=True, endpoint=ENDPOINT)
+    monkeypatch.setattr(openai_extractor.OpenAIExtractor, "extract_pages", _model_gone)
+    app_main.install_error_handlers(client.app)
+
+    with caplog.at_level(logging.WARNING, logger=app_main.logger.name):
+        res = client.post("/api/rec-a/extract", files=FILE)
+
+    assert res.status_code == 502
+    body = res.json()
+    assert body["code"] == "extraction_unavailable"
+    assert len(body["reference"]) == 8
+    assert body["reference"] in caplog.text
+    assert "does not exist" not in res.text
+
+
+def test_an_unhandled_error_is_a_500_with_a_reference_and_no_internals(
+    switch, client, monkeypatch, caplog
+):
+    from celine.onboarding.extractors import openai_extractor
+
+    async def _boom(self, pages, **kwargs):
+        raise RuntimeError("secret internals")
+
+    switch(dpa=True, endpoint=ENDPOINT)
+    monkeypatch.setattr(openai_extractor.OpenAIExtractor, "extract_pages", _boom)
+    app_main.install_error_handlers(client.app)
+    client = TestClient(client.app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR, logger=app_main.logger.name):
+        res = client.post("/api/rec-a/extract", files=FILE)
+
+    assert res.status_code == 500
+    body = res.json()
+    assert body["code"] == "internal_error"
+    assert body["reference"] in caplog.text
+    assert "secret internals" not in res.text
