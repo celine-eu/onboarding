@@ -35,6 +35,8 @@ existing_members:
   a draft. The submission records it as `declared_existing_member`.
 - **A declaration the template does not offer is refused with `422`**, on create and on
   `PATCH`. It is not recorded and then ignored.
+- **The tick says only what the community will complete.** It names the POD and the supply
+  address where the template skips `eligibility`, and the POD alone where it keeps it.
 - **The wizard does not show the skipped steps to a declared applicant.** A required extra
   field that belongs to a skipped step is not required at submit.
 - **A skipped `phone_verify` is not required at approval.** It is not waived either: the

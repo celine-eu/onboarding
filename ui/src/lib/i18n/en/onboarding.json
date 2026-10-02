@@ -105,6 +105,7 @@
 	"error_generic": "Something went wrong. Please try again.",
 	"error_reference": "Reference for support:",
 	"existing_member": "I am already a member of {{community}}. I ask {{community}} to complete my POD code and supply address with the details it already holds in its member register.",
+	"existing_member_pod_only": "I am already a member of {{community}}. I ask {{community}} to complete my POD code with the details it already holds in its member register.",
 	"existing_member_hint": "We will ask you for less: {{community}} will complete the rest from its member register.",
 	"existing_member_pod_hint": "Don't have it to hand? Leave it empty: {{community}} will complete it.",
 	"existing_member_completed": "To be completed by {{community}}"

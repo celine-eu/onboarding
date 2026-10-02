@@ -969,7 +969,12 @@
 					{#if existingMembers}
 						<div class="existing-member">
 							<ConsentCheckbox
-								label={$t('onboarding.existing_member', { community })}
+								label={$t(
+									existingMembers.skip_steps.includes('eligibility')
+										? 'onboarding.existing_member'
+										: 'onboarding.existing_member_pod_only',
+									{ community }
+								)}
 								bind:checked={declaredExistingMember}
 							/>
 							<p class="step-hint">{$t('onboarding.existing_member_hint', { community })}</p>

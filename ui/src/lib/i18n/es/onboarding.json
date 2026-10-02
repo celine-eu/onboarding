@@ -105,6 +105,7 @@
 	"error_generic": "Algo ha fallado. Inténtalo de nuevo.",
 	"error_reference": "Referencia para soporte:",
 	"existing_member": "Ya soy socio/a de {{community}}. Pido a {{community}} que complete mi código POD y la dirección de suministro con los datos que ya tiene en su registro de socios.",
+	"existing_member_pod_only": "Ya soy socio/a de {{community}}. Pido a {{community}} que complete mi código POD con los datos que ya tiene en su registro de socios.",
 	"existing_member_hint": "Te pediremos menos datos: {{community}} completará el resto a partir de su registro de socios.",
 	"existing_member_pod_hint": "¿No lo tienes a mano? Déjalo vacío: lo completará {{community}}.",
 	"existing_member_completed": "Lo completará {{community}}"

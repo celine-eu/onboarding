@@ -105,6 +105,7 @@
 	"error_generic": "Si è verificato un errore. Riprova.",
 	"error_reference": "Riferimento per l'assistenza:",
 	"existing_member": "Sono già socio/a di {{community}}. Chiedo che {{community}} completi il codice POD e l'indirizzo di fornitura con i dati che ha già nel registro dei soci.",
+	"existing_member_pod_only": "Sono già socio/a di {{community}}. Chiedo che {{community}} completi il codice POD con i dati che ha già nel registro dei soci.",
 	"existing_member_hint": "Ti chiederemo meno dati: il resto lo completerà {{community}} dal registro dei soci.",
 	"existing_member_pod_hint": "Se non lo hai a portata di mano, lascialo vuoto: lo completerà {{community}}.",
 	"existing_member_completed": "Lo completerà {{community}}"
