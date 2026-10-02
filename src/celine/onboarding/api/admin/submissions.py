@@ -2,9 +2,8 @@
 
 Moved from `api/admin.py` (mounted at `/api/{rec}/admin`) with two changes: the
 shared bearer token is gone, and each endpoint names the capability it needs
-instead of all six sharing one gate. So an `editors` operator can correct a
-misread fiscal code but cannot approve anybody, and only an `admins` one can
-erase.
+instead of all six sharing one gate. So an `editors` operator can edit a draft
+but cannot approve anybody, and only an `admins` one can erase.
 """
 
 from __future__ import annotations
@@ -34,6 +33,7 @@ from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.security.policy import Capability, get_policy
 from celine.onboarding.services import (
     audit_service,
+    existing_member,
     review,
     revision,
     submission_service,
@@ -66,6 +66,7 @@ def _read(submission, *, reveal: bool = False) -> SubmissionAdminRead:
     # shows no area; the console shows its display name, the key stays beside.
     model.supply_boundary_area = supply_boundary.area_of(submission)
     model.supply_boundary_area_name = supply_boundary.area_name_of(submission)
+    model.existing_member_pending = existing_member.pending(submission)
     if reveal:
         return model
     return model.model_copy(
@@ -105,6 +106,11 @@ async def list_submissions(
     ),
     created_from: datetime | None = Query(None),
     created_to: datetime | None = Query(None),
+    declared_existing_member: bool | None = Query(
+        None,
+        description="Only applicants who declared (true) or did not declare (false) "
+        "they are already members (REQ-0025).",
+    ),
 ):
     """One page of the queue, always masked.
 
@@ -116,6 +122,7 @@ async def list_submissions(
         "ref": ref,
         "created_from": created_from,
         "created_to": created_to,
+        "declared_existing_member": declared_existing_member,
     }
     result = await submission_service.list_submissions(
         db, rec_slug=rec_slug, skip=skip, limit=limit, **filters
@@ -197,11 +204,11 @@ async def update_submission(
 ):
     """Edit fields, and — for now — drive the state machine.
 
-    409 for the POD, first name, last name or email once the submission is
-    submitted: those are corrected by revision.
+    409 for the POD, first name, last name, email, fiscal code or supply address
+    once the submission is submitted: those are corrected by revision.
 
     A payload carrying `status` additionally requires `submissions.review`: an
-    editor may correct a misread fiscal code, but approving somebody provisions a
+    editor may edit other fields, but approving somebody provisions a
     login, a registry member and a dataspace identity, which is a different
     decision. The transition moves to its own endpoint in B2, where it can also
     carry a rejection reason; the extra check is here so the distinction is

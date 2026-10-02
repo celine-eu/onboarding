@@ -52,7 +52,11 @@
 		"col_updated": "Aggiornata",
 		"previous": "← Precedenti",
 		"next": "Successive →",
-		"range": "{{from}}–{{to}} di {{total}}"
+		"range": "{{from}}–{{to}} di {{total}}",
+		"declared_only": "Solo già soci",
+		"declared": "Già socio/a",
+		"declared_pending": "Dichiara di essere già socio/a: POD o indirizzo da completare dal registro",
+		"declared_complete": "Dichiara di essere già socio/a: dati completati dal registro"
 	},
 	"audit": {
 		"title": "Registro attività",
@@ -145,7 +149,7 @@
 		"verification_recorded": "Verifica registrata.",
 		"verification_needed_to_approve": "Registra come è stato verificato il partecipante prima di approvare.",
 		"revisions": "Correzioni",
-		"revisions_hint": "Dopo l'invio, POD, nome, cognome ed email si correggono qui, non si modificano. Ogni correzione conserva il valore che sostituisce, come è stato verificato il nuovo e perché. Il valore più vecchio di un campo è quello dichiarato dalla persona.",
+		"revisions_hint": "Dopo l'invio, POD, nome, cognome, email, codice fiscale e indirizzo di fornitura si correggono qui, non si modificano. Ogni correzione conserva il valore che sostituisce, come è stato verificato il nuovo e perché. Il valore più vecchio di un campo è quello dichiarato dalla persona.",
 		"revisions_none": "Nessuna correzione registrata.",
 		"revision_field": "Campo",
 		"revision_field_first_name": "Nome",
@@ -170,7 +174,14 @@
 		"revision_step_status_pending": "in attesa",
 		"revision_step_status_done": "fatto",
 		"revision_step_status_failed": "fallito",
-		"revision_step_status_skipped": "saltato"
+		"revision_step_status_skipped": "saltato",
+		"revision_field_fiscal_code": "Codice fiscale",
+		"revision_field_supply_address": "Indirizzo di fornitura",
+		"existing_member": "Dichiara di essere già socio/a.",
+		"existing_member_pending": "Da completare dal registro dei soci prima dell'approvazione",
+		"existing_member_complete": "POD e indirizzo di fornitura completati dal registro dei soci.",
+		"existing_member_reject_hint": "Non è nel registro dei soci? Puoi anche avvisarlo/a con un'email già compilata, da rivedere prima dell'invio:",
+		"existing_member_reject_email": "apri l'email"
 	},
 	"enablement_state": {
 		"not_started": "non avviata",

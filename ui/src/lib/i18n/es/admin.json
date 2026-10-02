@@ -52,7 +52,11 @@
 		"col_updated": "Actualizada",
 		"previous": "← Anteriores",
 		"next": "Siguientes →",
-		"range": "{{from}}–{{to}} de {{total}}"
+		"range": "{{from}}–{{to}} de {{total}}",
+		"declared_only": "Solo ya socios",
+		"declared": "Ya socio/a",
+		"declared_pending": "Declara que ya es socio/a: POD o dirección por completar desde el registro",
+		"declared_complete": "Declara que ya es socio/a: datos completados desde el registro"
 	},
 	"audit": {
 		"title": "Registro de actividad",
@@ -145,7 +149,7 @@
 		"verification_recorded": "Verificación registrada.",
 		"verification_needed_to_approve": "Registra cómo se verificó al participante antes de aprobar.",
 		"revisions": "Correcciones",
-		"revisions_hint": "Tras el envío, el POD, el nombre, los apellidos y el email se corrigen aquí, no se editan. Cada corrección conserva el valor que sustituye, cómo se comprobó el nuevo y por qué. El valor más antiguo de un campo es el que declaró la persona.",
+		"revisions_hint": "Tras el envío, el POD, el nombre, los apellidos, el email, el código fiscal y la dirección de suministro se corrigen aquí, no se editan. Cada corrección conserva el valor que sustituye, cómo se comprobó el nuevo y por qué. El valor más antiguo de un campo es el que declaró la persona.",
 		"revisions_none": "No hay correcciones registradas.",
 		"revision_field": "Campo",
 		"revision_field_first_name": "Nombre",
@@ -170,7 +174,14 @@
 		"revision_step_status_pending": "pendiente",
 		"revision_step_status_done": "hecho",
 		"revision_step_status_failed": "fallido",
-		"revision_step_status_skipped": "omitido"
+		"revision_step_status_skipped": "omitido",
+		"revision_field_fiscal_code": "Código fiscal",
+		"revision_field_supply_address": "Dirección de suministro",
+		"existing_member": "Declara que ya es socio/a.",
+		"existing_member_pending": "Por completar desde el registro de socios antes de la aprobación",
+		"existing_member_complete": "POD y dirección de suministro completados desde el registro de socios.",
+		"existing_member_reject_hint": "¿No está en el registro de socios? También puedes avisarle con un correo ya redactado, para revisar antes de enviarlo:",
+		"existing_member_reject_email": "abrir el correo"
 	},
 	"enablement_state": {
 		"not_started": "no iniciada",

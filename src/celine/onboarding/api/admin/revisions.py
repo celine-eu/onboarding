@@ -1,6 +1,7 @@
-"""An operator's corrections of a participant's POD, names and email.
+"""An operator's corrections of a participant's POD, names, email, fiscal code
+and supply address.
 
-From `submitted` on these four fields change only here (the admin `PATCH` refuses
+From `submitted` on these six fields change only here (the admin `PATCH` refuses
 them): each correction is a revision with its evidence and note, recorded beside
 the value it replaced. See `services/revision.py`.
 
@@ -38,7 +39,9 @@ ReadDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_READ))]
 ReviseDep = Annotated[JwtUser, Depends(require(Capability.SUBMISSIONS_REVISE))]
 
 #: Revised fields masked like the submission's own (`masking.MASKED_FIELDS`).
-_MASKED = frozenset({revision.RevisableField.POD_CODE.value})
+_MASKED = frozenset(
+    {revision.RevisableField.POD_CODE.value, revision.RevisableField.FISCAL_CODE.value}
+)
 
 
 def _render(row, *, reveal: bool) -> RevisionRead:
@@ -66,7 +69,7 @@ async def list_revisions(
     rec_slug: RecDep,
     reveal: bool = Query(
         False,
-        description="Unmask the POD values. Requires `submissions.reveal`, and is "
+        description="Unmask the POD and fiscal code values. Requires `submissions.reveal`, and is "
         "recorded in the audit trail.",
     ),
 ):
@@ -91,7 +94,7 @@ async def list_revisions(
             actor=actor,
             rec_slug=rec_slug,
             ip=ip,
-            detail="revisions: pod_code unmasked",
+            detail="revisions: fiscal_code, pod_code unmasked",
         )
     return [_render(row, reveal=reveal) for row in submission.revisions]
 

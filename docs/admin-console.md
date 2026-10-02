@@ -43,13 +43,33 @@ disabled until one is recorded. The API is
 
 ## Correcting declared data: revisions
 
-From `submitted` on, a participant's **POD, first name, last name and email** are
-corrected by **revision**, never edited: the admin `PATCH` answers 409 for them
-(sending one of them is enough, whether or not it changes), and the wizard's
-`PATCH` answers 409 for every field once the application is submitted. People may
-not know their POD and enter it wrong; the operator checks it and fixes it here.
-The fiscal code is not revisable, and the Keycloak username never changes. Why:
+From `submitted` on, a participant's **POD, first name, last name, email, fiscal
+code and supply address** are corrected by **revision**, never edited:
+
+- the admin `PATCH` answers 409 for them, and sending one of them is enough, whether
+  or not it changes;
+- the wizard's `PATCH` answers 409 for every field once the application is
+  submitted.
+
+People may not know their POD and enter it wrong; the operator checks it and fixes
+it here. The Keycloak username never changes. Why:
 [ADR-0015](decisions/ADR-0015-a-correction-is-a-revision.md).
+
+Two of the fields have their own rules
+([specifications/existing-members.md](specifications/existing-members.md), REQ-0026):
+
+- **The fiscal code** is revisable after approval too, and propagates nowhere,
+  since it never leaves this service. It is masked in the history like the POD.
+- **The supply address** is revisable before approval only. It re-resolves the
+  recorded boundary.
+
+**A declared existing member** (the applicant ticked "I am already a member") may
+arrive without a POD. Where the template skips the coverage step, they also arrive
+without a checked supply address. The operator completes both from the community's
+member register with the revisions above. Approval stays refused until the
+submission holds a POD and, where the address was deferred, an operator has
+revised it. The admin read lists what is still missing in
+`existing_member_pending`.
 
 - **Who:** `submissions.revise`, granted where `submissions.review` is (`managers`,
   `admins`). The operator vouches for the new value. A service account would need

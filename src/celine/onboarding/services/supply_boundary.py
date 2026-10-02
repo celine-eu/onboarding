@@ -118,6 +118,12 @@ async def resolve_for_submit(submission: Submission) -> None:
     if binding is None:
         return
 
+    from celine.onboarding.services import existing_member
+
+    if existing_member.address_deferred(submission):
+        await _resolve_deferred(submission, binding)
+        return
+
     address = supply_address(submission)
     if address is None:
         raise ValueError(
@@ -131,6 +137,29 @@ async def resolve_for_submit(submission: Submission) -> None:
     _record(submission, resolution)
     if not resolution.eligible:
         raise ValueError("Cannot submit: the supply address is not in the community's area")
+
+
+async def _resolve_deferred(
+    submission: Submission, binding: template_service.RecRegistryBinding
+) -> None:
+    """A declared member spared the coverage step: resolved when possible, never refused.
+
+    The operator completes the address from the register before approval
+    (REQ-0025). An address the submission holds anyway (a scanned bill's, say)
+    is resolved as a hint for the review; one that is not found, outside every
+    area, or not checkable now refuses nothing.
+    """
+    address = supply_address(submission)
+    if address is None:
+        return
+    try:
+        _record(submission, await boundaries.resolve_address(binding, address))
+    except ValueError:
+        logger.info("Submission %s: the supply address was not found", submission.ref)
+    except BoundaryUnavailableError as exc:
+        logger.warning(
+            "Submission %s: supply address not resolved on submit: %s", submission.ref, exc
+        )
 
 
 async def resolve_for_approval(

@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from celine.onboarding.models.schemas import ConsentCreate, SubmissionUpdate
 from celine.onboarding.models.submission import Submission, SubmissionStatus
+from celine.onboarding.services import existing_member
 from celine.onboarding.services.audit_service import Actor
 
 
@@ -27,6 +28,8 @@ async def create_from_consent(
     rec_slug: str,
 ) -> Submission:
     now = datetime.now(UTC)
+    if data.declared_existing_member:
+        existing_member.assert_offered(rec_slug)
 
     submission = Submission(
         rec_slug=rec_slug,
@@ -40,6 +43,7 @@ async def create_from_consent(
         statute_consent=data.statute_consent,
         statute_consent_at=now if data.statute_consent else None,
         statute_consent_version=data.statute_consent_version,
+        declared_existing_member=data.declared_existing_member,
     )
     db.add(submission)
     await db.commit()
@@ -64,6 +68,7 @@ def _queue_filters(
     ref: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
+    declared_existing_member: bool | None = None,
 ):
     """Shared between the list and its count, so the two cannot disagree.
 
@@ -83,6 +88,8 @@ def _queue_filters(
         query = query.where(Submission.created_at >= created_from)
     if created_to is not None:
         query = query.where(Submission.created_at <= created_to)
+    if declared_existing_member is not None:
+        query = query.where(Submission.declared_existing_member == declared_existing_member)
     return query
 
 
@@ -96,6 +103,7 @@ async def list_submissions(
     ref: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
+    declared_existing_member: bool | None = None,
 ) -> list[Submission]:
     query = _queue_filters(
         select(Submission),
@@ -104,6 +112,7 @@ async def list_submissions(
         ref=ref,
         created_from=created_from,
         created_to=created_to,
+        declared_existing_member=declared_existing_member,
     )
     result = await db.execute(
         query.order_by(Submission.created_at.desc()).offset(skip).limit(limit)
@@ -119,6 +128,7 @@ async def count_submissions(
     ref: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
+    declared_existing_member: bool | None = None,
 ) -> int:
     """The total behind a filtered page, for `X-Total-Count`.
 
@@ -132,6 +142,7 @@ async def count_submissions(
         ref=ref,
         created_from=created_from,
         created_to=created_to,
+        declared_existing_member=declared_existing_member,
     )
     return int((await db.execute(query)).scalar_one())
 
@@ -315,6 +326,11 @@ async def update_submission(
             list(updates["data_sharing_offers_presented"]),
             updates.get("data_sharing_consent_offer_ids"),
         )
+
+    if updates.get("declared_existing_member"):
+        existing_member.assert_offered(submission.rec_slug)
+    if updates.get("declared_existing_member") is None:
+        updates.pop("declared_existing_member", None)
 
     target_status = updates.pop("status", None)
 

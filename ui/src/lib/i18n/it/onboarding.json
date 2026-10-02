@@ -4,10 +4,9 @@
 	"step_personal": "Dati personali",
 	"step_utility": "Bolletta e POD",
 	"step_energy": "Impianto",
-	"step_statute": "Statuto",
+	"step_data_sharing": "Condivisione dati",
 	"step_review": "Riepilogo",
 	"consent_intro": "Prima di procedere, e' necessario accettare i seguenti consensi per la raccolta dei dati.",
-	"statute_intro": "Per completare l'adesione, e' necessario accettare lo statuto della comunita energetica.",
 	"view_document": "Leggi",
 	"first_name": "Nome",
 	"last_name": "Cognome",
@@ -104,5 +103,9 @@
 	"error_rate_limited": "Troppi tentativi in poco tempo. Attendi qualche minuto e riprova.",
 	"error_network": "Non riusciamo a raggiungere il server. Controlla la connessione e riprova.",
 	"error_generic": "Si è verificato un errore. Riprova.",
-	"error_reference": "Riferimento per l'assistenza:"
+	"error_reference": "Riferimento per l'assistenza:",
+	"existing_member": "Sono già socio/a di {{community}}. Chiedo che {{community}} completi il codice POD e l'indirizzo di fornitura con i dati che ha già nel registro dei soci.",
+	"existing_member_hint": "Ti chiederemo meno dati: il resto lo completerà {{community}} dal registro dei soci.",
+	"existing_member_pod_hint": "Se non lo hai a portata di mano, lascialo vuoto: lo completerà {{community}}.",
+	"existing_member_completed": "Lo completerà {{community}}"
 }

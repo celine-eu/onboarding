@@ -18,6 +18,9 @@ class ConsentCreate(BaseModel):
     policy_consent_version: str = Field(max_length=20)
     statute_consent: bool
     statute_consent_version: str = Field(max_length=20)
+    # "I am already a member" (REQ-0024). Refused with a 422 by a template that
+    # does not offer it, rather than recorded and then ignored.
+    declared_existing_member: bool = False
 
 
 class PresentedOffer(BaseModel):
@@ -63,6 +66,8 @@ class SubmissionUpdate(BaseModel):
     extracted_data: dict | None = None
     id_extracted_data: dict | None = None
     extra_data: dict | None = None
+    # The applicant may change their mind before submitting (REQ-0024).
+    declared_existing_member: bool | None = None
     statute_consent: bool | None = None
     # Data-sharing consent — collected in the statute step (after data exists, so
     # the choice is informed), optional by design. The offers, version, locale and
@@ -179,6 +184,8 @@ class SubmissionRead(BaseModel):
     data_sharing_offers_presented: list[PresentedOffer] | None = None
     share_provisioned: bool
     keep_me_updated: bool
+    # None only on an object never flushed, before the column default applies.
+    declared_existing_member: bool = False
     phone_verified: bool
     phone_verified_at: datetime | None
     notes: str | None
@@ -186,6 +193,12 @@ class SubmissionRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+    @field_validator("declared_existing_member", mode="before")
+    @classmethod
+    def unflushed_is_undeclared(cls, v: bool | None) -> bool:
+        return bool(v)
 
 
 class SubmissionCreatedRead(SubmissionRead):
@@ -217,11 +230,12 @@ class VerificationRead(BaseModel):
 class RevisionCreate(BaseModel):
     """An operator's correction of one declared field, from `submitted` on.
 
-    `value` is checked per field by `services.revision.normalise`; the fiscal code
-    is not revisable.
+    `value` is checked per field by `services.revision.normalise`. The supply
+    address is its text, as the eligibility step saves it, and is revisable only
+    before approval (REQ-0026).
     """
 
-    field: Literal["first_name", "last_name", "email", "pod_code"]
+    field: Literal["first_name", "last_name", "email", "pod_code", "fiscal_code", "supply_address"]
     value: str = Field(..., min_length=1, max_length=255)
     method: VerificationMethod
     # Required for `uploaded-document`, refused for `offline`.
@@ -291,6 +305,14 @@ class SubmissionAdminRead(SubmissionRead):
     # That area's display name in the template in force (its key when the
     # template gives none), which is what the review shows (REQ-0023).
     supply_boundary_area_name: str | None = None
+    # For a declared existing member: what the operator still has to complete
+    # before approval, as field names (`pod_code`, `supply_address`). Empty when
+    # nothing is missing or the applicant declared nothing (REQ-0025). Set by the
+    # admin API.
+    existing_member_pending: list[str] = []
+    # The language the applicant last used in the wizard: what the console
+    # writes a prefilled email in (REQ-0027).
+    locale: str | None = None
 
     @model_validator(mode="after")
     def explain_unprovisioned_share(self) -> "SubmissionAdminRead":

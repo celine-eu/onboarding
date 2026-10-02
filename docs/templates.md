@@ -75,6 +75,9 @@ coverage:
     - type: postal_code
       values: ["12345", "12346"]
 steps: [consents, utility, personal, energy, eligibility, statute, review]
+existing_members:              # optional: "I am already a member" (see below)
+  enabled: true
+  skip_steps: [energy]         # only utility, phone_verify, energy, eligibility
 notifications:
   from: "noreply@my-rec.org"
   notify: [admin@my-rec.org]
@@ -98,6 +101,24 @@ content:
 ```
 
 Imported into the `Rec` table with `task import-templates`, then served per community at `/{rec}` — one deployment hosts several.
+
+### Existing members (optional, per community)
+
+`existing_members` lets an applicant tick "I am already a member" on the consents step. It is
+meant for a community onboarding the members it already has.
+
+- **Steps.** A declared applicant does not see the steps in `skip_steps`. With `eligibility`
+  among them, the supply address is the operator's to enter; without it, the coverage check
+  is the same as for everyone.
+- **Deferred data.** They may submit without a POD.
+- **The operator completes the record.** The operator fills in the POD (if missing) and the
+  full supply address from the community's member register, as revisions, before approving.
+  Approval refuses until both are done.
+- **What is refused at import:** a step other than `utility`, `phone_verify`, `energy` or
+  `eligibility` in
+  `skip_steps`, an unknown key, or a non-boolean `enabled`.
+
+[specifications/existing-members.md](specifications/existing-members.md) states the rules.
 
 ### REC registry binding (optional, per community)
 

@@ -191,6 +191,7 @@ def get_config(rec_slug: str) -> dict[str, Any]:
         "fields": manifest.get("fields", {"extra": [], "hidden": []}),
         "consent": manifest.get("consent", {}),
         "steps": manifest.get("steps", list(DEFAULT_STEPS)),
+        "existing_members": existing_members(manifest),
         "content": _load_content(rec_slug, manifest),
     }
 
@@ -790,6 +791,62 @@ def validate_boundary_template(manifest: dict[str, Any], *, where: str) -> None:
             f"{where}: a template with boundary areas must place the 'eligibility' step "
             f"after the '{SUBMISSION_CREATING_STEP}' step, which creates the submission "
             "the checked supply address is saved on."
+        )
+
+
+#: The steps a declared existing member may be spared (REQ-0024). Only steps
+#: that collect nothing approval needs from the applicant: the consents, the
+#: person, the statute with its sharing offers and the review stay.
+#: `eligibility` is among them because a declared member's supply address is
+#: the operator's to complete from the register, whatever the step asked.
+EXISTING_MEMBERS_SKIPPABLE = frozenset({"utility", "phone_verify", "energy", "eligibility"})
+
+
+def existing_members(manifest: dict[str, Any]) -> dict[str, Any]:
+    """The template's ``existing_members`` block as the wizard reads it.
+
+    ``{"enabled": False, "skip_steps": []}`` when the template declares none, so
+    a caller never has to tell "absent" from "off".
+    """
+    block = manifest.get("existing_members") or {}
+    if not isinstance(block, dict) or block.get("enabled") is not True:
+        return {"enabled": False, "skip_steps": []}
+    return {"enabled": True, "skip_steps": list(block.get("skip_steps") or [])}
+
+
+def existing_members_enabled(rec_slug: str) -> bool:
+    """Whether the REC lets an applicant declare they are already a member."""
+    return existing_members(load_manifest(rec_slug))["enabled"]
+
+
+def validate_existing_members(block: Any, *, where: str) -> None:
+    """What an ``existing_members`` block may say (REQ-0024).
+
+    ``enabled`` is a boolean; ``skip_steps`` names only steps in
+    :data:`EXISTING_MEMBERS_SKIPPABLE`. Anything else is refused at import and at
+    boot, rather than read as "off" or quietly skipping a step approval needs.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: 'existing_members' must be a mapping")
+    unknown = set(block) - {"enabled", "skip_steps"}
+    if unknown:
+        raise ValueError(
+            f"{where}: 'existing_members' has unknown keys {sorted(unknown)}; "
+            "it takes 'enabled' and 'skip_steps'"
+        )
+    if not isinstance(block.get("enabled", False), bool):
+        raise ValueError(f"{where}: 'existing_members.enabled' must be true or false")
+    skip = block.get("skip_steps", [])
+    if not isinstance(skip, list) or not all(isinstance(s, str) for s in skip):
+        raise ValueError(f"{where}: 'existing_members.skip_steps' must be a list of step names")
+    refused = sorted(set(skip) - EXISTING_MEMBERS_SKIPPABLE)
+    if refused:
+        raise ValueError(
+            f"{where}: 'existing_members.skip_steps' may name only "
+            f"{sorted(EXISTING_MEMBERS_SKIPPABLE)}, not {refused}: the other steps "
+            "collect what a declared member still gives"
         )
 
 

@@ -263,6 +263,7 @@ def test_the_console_is_told(sms, phone_rec):
         created_at=datetime(2026, 9, 14),
         updated_at=datetime(2026, 9, 14),
         data_sharing_issues=[],
+        existing_member_pending=[],
         phone_verification_waived=False,
     )
 

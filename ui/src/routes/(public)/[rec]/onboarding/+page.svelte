@@ -31,7 +31,9 @@
 		phone_verify: 'onboarding.step_phone_verify',
 		energy: 'onboarding.step_energy',
 		eligibility: 'onboarding.step_eligibility',
-		statute: 'onboarding.step_statute',
+		// The step keeps its manifest name, `statute`, but holds the data-sharing
+		// offers only: the statute is accepted with the other consents.
+		statute: 'onboarding.step_data_sharing',
 		review: 'onboarding.step_review'
 	};
 
@@ -44,6 +46,17 @@
 	// Same for SMS: a real gateway needs an agreement, and without one the step
 	// could never be completed, so it is left out rather than shown and failing.
 	let phoneVerification = $derived(config?.features?.phone_verification === true);
+	// "I am already a member" (REQ-0024), where the template offers it. A
+	// declared applicant skips the template's `skip_steps` and may leave the POD
+	// empty: the community completes it, and the supply address when the coverage
+	// step is skipped, from its member register before approving (REQ-0025).
+	let existingMembers = $derived(
+		config?.existing_members?.enabled === true ? config.existing_members : null
+	);
+	let declaredExistingMember = $state(false);
+	// What the submission holds, so going back and changing the tick is saved.
+	let declaredSaved = false;
+	let community = $derived(config?.name ?? '');
 
 	let steps = $derived(
 		(config
@@ -52,6 +65,9 @@
 		)
 			.filter((s) => documentUpload || s !== 'utility')
 			.filter((s) => phoneVerification || s !== 'phone_verify')
+			// Nothing to show in it without the community's data-sharing block.
+			.filter((s) => s !== 'statute' || !!config?.consent?.data_sharing)
+			.filter((s) => !(declaredExistingMember && existingMembers?.skip_steps.includes(s)))
 	);
 
 	let stepLabelOverrides = $derived<Record<string, string>>(
@@ -396,8 +412,9 @@
 		}
 		if (!fiscalCode.trim()) e.fiscal_code = $t('common.required');
 		else if (!CF_RE.test(fiscalCode.trim())) e.fiscal_code = $t('onboarding.invalid_cf');
-		if (!podCode.trim()) e.pod_code = $t('common.required');
-		else if (!POD_RE.test(podCode.trim())) e.pod_code = $t('onboarding.invalid_pod');
+		if (!podCode.trim()) {
+			if (!declaredExistingMember) e.pod_code = $t('common.required');
+		} else if (!POD_RE.test(podCode.trim())) e.pod_code = $t('onboarding.invalid_pod');
 		errors = e;
 		validated = true;
 		return Object.keys(e).length === 0;
@@ -430,19 +447,23 @@
 
 	function canProceed(): boolean {
 		if (currentStepName === 'consents') {
-			if (!gdprConsent || !policyConsent) return false;
-			if (!steps.includes('statute') && !statuteConsent) return false;
-			return true;
+			return gdprConsent && policyConsent && statuteConsent;
 		}
 		if (currentStepName === 'utility') return !stepBusy;
 		if (currentStepName === 'personal') {
 			if (stepBusy) return false;
-			if (!validated) return !!firstName && !!lastName && (!!email || !!phone) && !!fiscalCode && !!podCode;
+			if (!validated)
+				return (
+					!!firstName &&
+					!!lastName &&
+					(!!email || !!phone) &&
+					!!fiscalCode &&
+					(!!podCode || declaredExistingMember)
+				);
 			return Object.keys(errors).length === 0;
 		}
 		if (currentStepName === 'eligibility') return eligibilityResult?.eligible === true;
 		if (currentStepName === 'phone_verify') return phoneVerified;
-		if (currentStepName === 'statute') return statuteConsent;
 
 		const stepFields = extraFieldsForStep(currentStepName);
 		if (stepFields.length > 0) {
@@ -470,7 +491,9 @@
 					policy_consent_version: consentVersions.policy,
 					statute_consent: statuteConsent,
 					statute_consent_version: consentVersions.statute,
+					...(existingMembers ? { declared_existing_member: declaredExistingMember } : {})
 				});
+				declaredSaved = declaredExistingMember;
 				submissionId = res.id;
 				submissionRef = (res as Record<string, unknown>).ref as string;
 				if (res.session_token) setSessionToken(res.session_token);
@@ -480,6 +503,19 @@
 				return;
 			}
 			submitting = false;
+		} else if (
+			currentStepName === 'consents' &&
+			submissionId &&
+			existingMembers &&
+			declaredSaved !== declaredExistingMember
+		) {
+			try {
+				await saveSubmission(submissionId, { declared_existing_member: declaredExistingMember });
+				declaredSaved = declaredExistingMember;
+			} catch (e) {
+				showError(e);
+				return;
+			}
 		}
 
 		if (currentStepName === 'utility') {
@@ -497,7 +533,7 @@
 					email: email || null,
 					phone: phone || null,
 					fiscal_code: fiscalCode,
-					pod_code: podCode,
+					pod_code: podCode.trim() || null,
 					extracted_data: extractionData,
 					id_extracted_data: idExtractionData,
 					extra_data: extraData,
@@ -919,19 +955,26 @@
 						documentUrl={config?.consent?.policy?.url ?? `/api/${rec}/consent-documents/policy`}
 						documentLabel={$t('onboarding.view_document')}
 					/>
-					{#if !steps.includes('statute')}
-						<ConsentCheckbox
-							label={$t('onboarding.statute_consent')}
-							bind:checked={statuteConsent}
-							required
-							documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
-							documentLabel={$t('onboarding.view_document')}
-						/>
-					{/if}
+					<ConsentCheckbox
+						label={$t('onboarding.statute_consent')}
+						bind:checked={statuteConsent}
+						required
+						documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
+						documentLabel={$t('onboarding.view_document')}
+					/>
 					<ConsentCheckbox
 						label={$t('onboarding.keep_me_updated')}
 						bind:checked={keepMeUpdated}
 					/>
+					{#if existingMembers}
+						<div class="existing-member">
+							<ConsentCheckbox
+								label={$t('onboarding.existing_member', { community })}
+								bind:checked={declaredExistingMember}
+							/>
+							<p class="step-hint">{$t('onboarding.existing_member_hint', { community })}</p>
+						</div>
+					{/if}
 				</div>
 			{:else if currentStepName === 'utility'}
 				<div class="step-section">
@@ -1021,7 +1064,7 @@
 					<FormField label={$t('onboarding.first_name')} name="first_name" bind:value={firstName} required error={errors.first_name ?? ''} />
 					<FormField label={$t('onboarding.last_name')} name="last_name" bind:value={lastName} required error={errors.last_name ?? ''} />
 					<FormField label={$t('onboarding.fiscal_code')} name="fiscal_code" bind:value={fiscalCode} required maxlength={16} error={errors.fiscal_code ?? ''} placeholder="RSSMRA80A01H501U" />
-					<FormField label={$t('onboarding.pod_code')} name="pod_code" bind:value={podCode} required maxlength={20} error={errors.pod_code ?? ''} placeholder="IT001E12345678" />
+					<FormField label={$t('onboarding.pod_code')} name="pod_code" bind:value={podCode} required={!declaredExistingMember} maxlength={20} error={errors.pod_code ?? ''} placeholder="IT001E12345678" hint={declaredExistingMember ? $t('onboarding.existing_member_pod_hint', { community }) : ''} />
 					<FormField label={$t('onboarding.email')} name="email" type="email" bind:value={email} error={errors.email ?? ''} placeholder="email@example.com" />
 					<FormField label={$t('onboarding.phone')} name="phone" type="tel" bind:value={phone} error={errors.phone ?? ''} placeholder="+39 ..." />
 				</div>
@@ -1215,15 +1258,6 @@
 				</div>
 			{:else if currentStepName === 'statute'}
 				<div class="consents">
-					<p class="consent-intro">{$t('onboarding.statute_intro')}</p>
-					<ConsentCheckbox
-						label={$t('onboarding.statute_consent')}
-						bind:checked={statuteConsent}
-						required
-						documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
-						documentLabel={$t('onboarding.view_document')}
-					/>
-
 					{#if sharingOffersUnavailable}
 						<div class="data-sharing">
 							<h3 class="data-sharing-title">{$t('onboarding.data_sharing_title')}</h3>
@@ -1313,7 +1347,9 @@
 						</div>
 						<div class="review-row">
 							<span class="review-label">{$t('onboarding.pod_code')}</span>
-							<span class="review-value">{podCode}</span>
+							<span class="review-value">
+								{podCode || (declaredExistingMember ? $t('onboarding.existing_member_completed', { community }) : '')}
+							</span>
 						</div>
 					</div>
 					{#if config && Object.keys(extraData).length > 0}
@@ -1537,6 +1573,13 @@
 		border-top: 1px solid var(--celine-border);
 	}
 
+	/* The step holds nothing above it any more: no divider to draw. */
+	.data-sharing:first-child {
+		margin-top: 0;
+		padding-top: 0;
+		border-top: none;
+	}
+
 	.offer-primary {
 		border-color: var(--celine-primary);
 	}
@@ -1729,6 +1772,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--celine-space-lg);
+	}
+
+	.existing-member {
+		margin-top: 1rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--celine-border);
 	}
 
 	.review-section {

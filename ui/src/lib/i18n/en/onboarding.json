@@ -4,10 +4,9 @@
 	"step_personal": "Personal data",
 	"step_utility": "Utility bill & POD",
 	"step_energy": "Energy system",
-	"step_statute": "Statute",
+	"step_data_sharing": "Data sharing",
 	"step_review": "Review",
 	"consent_intro": "Before proceeding, please accept the following consents for data collection.",
-	"statute_intro": "To complete your membership, please accept the energy community statute.",
 	"view_document": "Read",
 	"first_name": "First name",
 	"last_name": "Last name",
@@ -104,5 +103,9 @@
 	"error_rate_limited": "Too many attempts in a short time. Please wait a few minutes and try again.",
 	"error_network": "We couldn't reach the server. Check your connection and try again.",
 	"error_generic": "Something went wrong. Please try again.",
-	"error_reference": "Reference for support:"
+	"error_reference": "Reference for support:",
+	"existing_member": "I am already a member of {{community}}. I ask {{community}} to complete my POD code and supply address with the details it already holds in its member register.",
+	"existing_member_hint": "We will ask you for less: {{community}} will complete the rest from its member register.",
+	"existing_member_pod_hint": "Don't have it to hand? Leave it empty: {{community}} will complete it.",
+	"existing_member_completed": "To be completed by {{community}}"
 }

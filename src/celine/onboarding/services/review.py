@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission, SubmissionStatus
-from celine.onboarding.services import audit_service, enablement
+from celine.onboarding.services import audit_service, enablement, existing_member
 from celine.onboarding.services.audit_service import Actor
 from celine.onboarding.workflows.engine import can_submit, validate_transition
 
@@ -26,7 +26,11 @@ def _phone_unverified_where_required(submission: Submission) -> bool:
     from celine.onboarding.services import template_service
 
     manifest = template_service.load_manifest(submission.rec_slug)
-    return "phone_verify" in manifest.get("steps", []) and not submission.phone_verified
+    if "phone_verify" not in manifest.get("steps", []) or submission.phone_verified:
+        return False
+    # A declared existing member the template spared the step was never asked
+    # (REQ-0024): the phone is not required of them, rather than waived.
+    return "phone_verify" not in existing_member.skipped_steps(submission)
 
 
 def phone_verification_waived(submission: Submission) -> bool:
@@ -85,6 +89,7 @@ def check(submission: Submission, target: SubmissionStatus) -> None:
     if target == SubmissionStatus.APPROVED:
         _assert_phone_verified(submission)
         _assert_verified(submission)
+        existing_member.assert_complete(submission)
 
 
 async def transition(

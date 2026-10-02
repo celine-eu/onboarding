@@ -84,6 +84,7 @@ def import_templates(
             validate_data_sharing_summary,
             validate_data_sharing_texts,
             validate_dataspace_block,
+            validate_existing_members,
             validate_organization,
             validate_rec_registry_block,
         )
@@ -93,6 +94,7 @@ def import_templates(
             validate_dataspace_block(manifest.get("dataspace"), where=str(manifest_path))
             validate_rec_registry_block(manifest.get("rec_registry"), where=str(manifest_path))
             validate_boundary_template(manifest, where=str(manifest_path))
+            validate_existing_members(manifest.get("existing_members"), where=str(manifest_path))
             validate_data_sharing_texts(
                 ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
                 where=str(manifest_path),

@@ -16,7 +16,7 @@ from celine.onboarding.models.schemas import (
     SubmissionUpdate,
 )
 from celine.onboarding.models.submission import Submission, SubmissionStatus
-from celine.onboarding.services import submission_service, template_service
+from celine.onboarding.services import existing_member, submission_service, template_service
 from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.workflows.engine import InvalidTransitionError
 
@@ -72,7 +72,10 @@ async def create_submission(
     # forwarded address only when the connection comes from a proxy listed in
     # FORWARDED_ALLOW_IPS (REQ-0020).
     client_ip = peer_ip(request)
-    submission = await submission_service.create_from_consent(db, data, client_ip, rec_slug)
+    try:
+        submission = await submission_service.create_from_consent(db, data, client_ip, rec_slug)
+    except existing_member.DeclarationNotOfferedError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return submission
 
 

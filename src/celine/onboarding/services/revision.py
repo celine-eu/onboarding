@@ -1,7 +1,8 @@
 """Correcting what a participant declared, as a tracked revision.
 
-From `submitted` on, a POD, first name, last name or email changes only here: the
-admin `PATCH` refuses them and the wizard `PATCH` refuses everything. Each
+From `submitted` on, a POD, first name, last name, email, fiscal code or supply
+address changes only here: the admin `PATCH` refuses them and the wizard `PATCH`
+refuses everything. Each
 correction is one append-only `SubmissionRevision` row, written in the same
 transaction as the `Submission` column it corrects and the audit row that says it
 happened, so none of the three exists without the others.
@@ -10,7 +11,9 @@ Who may correct what, and on which evidence, is an `EvidencePolicy`:
 
 - `OPERATOR` — the REC's operator, checked by hand (`offline`) or against a
   document on this submission (`uploaded-document`), with a required note. Any of
-  the four fields.
+  the six fields. The fiscal code and the supply address are also how the
+  operator completes a declared existing member from the community's register
+  (REQ-0025, REQ-0026).
 - `MEMBER` — the member's own correction from their authenticated session, for
   the later self-service route in the web app. Names and email only: the POD
   stays the operator's. No route uses it yet.
@@ -37,18 +40,26 @@ from celine.onboarding.models.submission import Submission, SubmissionStatus
 from celine.onboarding.models.verification import VerificationMethod
 from celine.onboarding.services import audit_service, document_service, enablement
 from celine.onboarding.services.audit_service import Actor
+from celine.onboarding.validators.fiscal_code import validate_fiscal_code
 from celine.onboarding.validators.pod_code import validate_pod_code
 
 logger = logging.getLogger(__name__)
 
 
 class RevisableField(enum.StrEnum):
-    """The `Submission` columns a revision corrects. The fiscal code is not one."""
+    """The `Submission` columns a revision corrects."""
 
     FIRST_NAME = "first_name"
     LAST_NAME = "last_name"
     EMAIL = "email"
     POD_CODE = "pod_code"
+    #: Never leaves this service (PDF, CSV export, console), so it propagates
+    #: nowhere and may be corrected after approval too.
+    FISCAL_CODE = "fiscal_code"
+    #: The text of the supply address the boundary is resolved from. Before
+    #: approval only: afterwards a new address would mean moving the member to
+    #: another registry area, which no propagation step does.
+    SUPPLY_ADDRESS = "supply_address"
 
 
 #: What the admin `PATCH` refuses from `submitted` on.
@@ -60,12 +71,18 @@ REVISABLE = frozenset(
     {SubmissionStatus.SUBMITTED, SubmissionStatus.UNDER_REVIEW, SubmissionStatus.APPROVED}
 )
 
+#: Fields whose revision stops at approval (see `RevisableField.SUPPLY_ADDRESS`).
+BEFORE_APPROVAL_ONLY = frozenset({RevisableField.SUPPLY_ADDRESS})
+
 #: Same limits as `SubmissionUpdate`: a correction is held to what a declaration is.
 MAX_LENGTH = {
     RevisableField.FIRST_NAME: 100,
     RevisableField.LAST_NAME: 100,
     RevisableField.EMAIL: 255,
     RevisableField.POD_CODE: 20,
+    RevisableField.FISCAL_CODE: 16,
+    # `SupplyAddress.text`.
+    RevisableField.SUPPLY_ADDRESS: 300,
 }
 
 NOTE_MAX_LENGTH = 1000
@@ -147,6 +164,8 @@ PROPAGATION: dict[RevisableField, tuple[PropagationStep, ...]] = {
         PropagationStep.REGISTRY_DELIVERY_POINT,
         PropagationStep.CONSENT_KEYS,
     ),
+    RevisableField.FISCAL_CODE: (),
+    RevisableField.SUPPLY_ADDRESS: (),
 }
 
 #: Why every step of a revision on a revoked member is skipped.
@@ -194,7 +213,26 @@ def normalise(field: RevisableField, value: str) -> str:
         if not validate_pod_code(cleaned):
             raise RevisionError("Invalid POD code")
         return cleaned.upper()
+    if field is RevisableField.FISCAL_CODE:
+        if not validate_fiscal_code(cleaned):
+            raise RevisionError("Invalid fiscal code")
+        return cleaned.upper()
     return cleaned
+
+
+def current_value(submission: Submission, field: RevisableField) -> str | None:
+    """The value in force, as a revision records it: the supply address as its text."""
+    if field is RevisableField.SUPPLY_ADDRESS:
+        address = submission.supply_address
+        return address.get("text") if isinstance(address, dict) else None
+    return getattr(submission, field.value)
+
+
+def _apply(submission: Submission, field: RevisableField, value: str) -> None:
+    if field is RevisableField.SUPPLY_ADDRESS:
+        submission.supply_address = {"text": value}
+    else:
+        setattr(submission, field.value, value)
 
 
 def history(submission: Submission, field: RevisableField) -> list[SubmissionRevision]:
@@ -207,7 +245,7 @@ def declared_value(submission: Submission, field: RevisableField) -> str | None:
     revisions = history(submission, field)
     if revisions:
         return revisions[0].previous_value
-    return getattr(submission, field.value)
+    return current_value(submission, field)
 
 
 async def _propagation_for(
@@ -240,6 +278,11 @@ async def record(
             f"A revision can be recorded only while a submission is submitted, under "
             f"review or approved, not {submission.status.value}"
         )
+    if field in BEFORE_APPROVAL_ONLY and submission.status == SubmissionStatus.APPROVED:
+        raise RevisionStatusError(
+            f"{field.value} can be revised only before approval: the member is "
+            "already registered in the area it resolved to"
+        )
     if field not in policy.fields:
         raise RevisionError(f"A {policy.role.value} cannot revise {field.value}")
     if method not in policy.methods:
@@ -263,7 +306,7 @@ async def record(
         raise RevisionError(f"A {method.value} revision names no document")
 
     new_value = normalise(field, value)
-    previous_value = getattr(submission, field.value)
+    previous_value = current_value(submission, field)
     if previous_value == new_value:
         raise RevisionError(f"{field.value} already holds this value")
 
@@ -288,7 +331,15 @@ async def record(
         actor_client_id=actor.client_id,
     )
     submission.revisions.append(row)
-    setattr(submission, field.value, new_value)
+    if field is RevisableField.SUPPLY_ADDRESS:
+        # The recorded boundary follows the address, as on a wizard save.
+        from celine.onboarding.services import supply_boundary
+
+        address_before = supply_boundary.supply_address(submission)
+        _apply(submission, field, new_value)
+        await supply_boundary.refresh_on_save(submission, address_before=address_before)
+    else:
+        _apply(submission, field, new_value)
 
     # Field, method and ids only. Never the values, never the note: the trail is
     # readable by every tier that can read the queue, and the POD is masked there.

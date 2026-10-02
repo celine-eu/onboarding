@@ -110,7 +110,10 @@ async def main():
     async with async_session() as db:
         rec = (await db.execute(select(Rec).where(Rec.slug == REC))).scalar_one_or_none()
         manifest = {"slug": REC, "name": "E2E Community", "organization": "community-a",
-                    "steps": ["consents", "personal", "phone_verify", "review"]}
+                    "steps": ["consents", "personal", "phone_verify", "review"],
+                    # The declaration is offered, and the supply address deferred to
+                    # the operator as when coverage is skipped (existing-member.spec.ts).
+                    "existing_members": {"enabled": True, "skip_steps": ["eligibility"]}}
         if rec:
             rec.manifest = manifest
         else:

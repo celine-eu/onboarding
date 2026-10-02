@@ -11,13 +11,13 @@ unknown slug is `404`. Only the cross-community routes, downloads, `/api/me/**` 
 | `GET` | `/api/health` | none | Liveness |
 | `GET` | `/api/recs` | none | Every community this deployment serves, for the landing page |
 | `POST` | `/api/recs/find-by-address` | none | The coverage check across every community (`RATE_LIMIT_ELIGIBILITY`, shared with the per-community check); see below |
-| `GET` | `/api/{rec}/config` | none | Template config, `login_invitation` and `features` |
+| `GET` | `/api/{rec}/config` | none | Template config (with `existing_members: {enabled, skip_steps}`), `login_invitation` and `features` |
 | `GET` | `/api/{rec}/template/{path}` | none | A template asset (logo, content) |
 | `GET` | `/api/{rec}/sharing-offers` | none | Data-sharing offers for the wizard, proxied from the connector's `/ns/sharing-offers` and filtered by the manifest allow-list |
 | `GET` | `/api/{rec}/consent-documents` | none | The community's local consent documents' metadata |
 | `GET` | `/api/{rec}/consent-documents/{slug}` | none | PDF or redirect (`/meta` for its metadata) |
 | `POST` | `/api/{rec}/eligibility` | none | Coverage check (`RATE_LIMIT_ELIGIBILITY`, default 30/hr per client address); see below |
-| `POST` | `/api/{rec}/submissions` | none | Create (consent-first), returns session token (20/hr) |
+| `POST` | `/api/{rec}/submissions` | none | Create (consent-first), returns session token (20/hr). `declared_existing_member: true` where the template offers it, `422` where it does not |
 | `GET/PATCH` | `/api/{rec}/submissions/{id}` | session | Read/update own (10min TTL). `PATCH` edits a draft only: once submitted it answers `409` for any field |
 | `POST/GET` | `/api/{rec}/submissions/{id}/documents` | session | Upload, list (10min TTL) |
 | `GET` | `/api/{rec}/submissions/{id}/pdf` | session | Download summary (10min TTL, 5/min) |
@@ -143,11 +143,11 @@ endpoint needs is in brackets.
 | `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **Realm `admins` only**, no scope grants it; see below [`recs.write`] |
 | `GET` | `/api/admin/recs/{rec}/registry-drift` | Whether the registry's areas and topology match the template; a read, see below. Realm `admins` and the REC's own `managers`/`admins` only, no scope [`recs.drift`] |
 | `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
-| `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
+| `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`, `declared_existing_member`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action. Carries `supply_boundary_id`, `supply_boundary_source`, `supply_boundary_area` (the key of the area of the template in force whose boundary it is, or `null`) and `supply_boundary_area_name` (that area's display name, its key when the template gives none, or `null`; REQ-0023) |
 | `PATCH` | `/api/admin/{rec}/submissions/{id}` | Edit fields and notes. From `submitted` on, `pod_code`, `first_name`, `last_name` and `email` answer `409`: they are corrected by revision [`submissions.write`] |
-| `GET` | `/api/admin/{rec}/submissions/{id}/revisions` | Every correction of the POD, names and email, oldest first; per field the newest is in force. POD values masked; `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited [`submissions.read`] |
-| `POST` | `/api/admin/{rec}/submissions/{id}/revisions` | Correct one field: `{"field", "value", "method": "offline"\|"uploaded-document", "document_id"?, "note"}`, note required. Updates the column; `409` unless submitted, under review or approved; `422` for a value the field refuses, the value already held, or a document not on this submission. After approval the value is then propagated, and the answer's `steps` say how far each target got ([admin console](admin-console.md#propagation)) [`submissions.revise`] |
+| `GET` | `/api/admin/{rec}/submissions/{id}/revisions` | Every correction of the POD, names, email, fiscal code and supply address, oldest first; per field the newest is in force. POD and fiscal code values masked; `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited [`submissions.read`] |
+| `POST` | `/api/admin/{rec}/submissions/{id}/revisions` | Correct one field: `{"field", "value", "method": "offline"\|"uploaded-document", "document_id"?, "note"}`, note required. Updates the column; `409` unless submitted, under review or approved (the supply address: unless submitted or under review); `422` for a value the field refuses, the value already held, or a document not on this submission. After approval the value is then propagated, and the answer's `steps` say how far each target got ([admin console](admin-console.md#propagation)) [`submissions.revise`] |
 | `POST` | `/api/admin/{rec}/submissions/{id}/revisions/{revision}/retry` | Re-run a revision's unfinished propagation steps, or one named step (`{"step"}`), then the steps waiting for it. `409` for a revision recorded before approval [`submissions.revise`] |
 | `POST` | `/api/admin/{rec}/submissions/{id}/transition` | Drive the state machine. A reason is required when rejecting [`submissions.review`] |
 | `DELETE` | `/api/admin/{rec}/submissions/{id}` | GDPR erasure (files + DB) [`submissions.purge`] |

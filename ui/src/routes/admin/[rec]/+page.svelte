@@ -20,6 +20,7 @@
 	let skip = $state(0);
 	let statusFilter = $state('');
 	let refFilter = $state('');
+	let declaredFilter = $state(false);
 	let stats = $state<RecStats | null>(null);
 	let loading = $state(false);
 	let errorMsg = $state('');
@@ -31,6 +32,7 @@
 			const page = await api.listSubmissions({
 				status: statusFilter || undefined,
 				ref: refFilter.trim() || undefined,
+				declaredExistingMember: declaredFilter || undefined,
 				skip,
 				limit: PAGE_SIZE
 			});
@@ -128,6 +130,10 @@
 				{/each}
 			</select>
 		</label>
+		<label class="check">
+			<input type="checkbox" bind:checked={declaredFilter} />
+			<span>{$t('admin.queue.declared_only')}</span>
+		</label>
 		<button type="submit" class="primary" disabled={loading}>
 			{loading ? $t('admin.loading') : $t('admin.queue.filter')}
 		</button>
@@ -169,6 +175,17 @@
 								<span class="status" data-status={submission.status}>
 									{statusLabel(submission.status)}
 								</span>
+								{#if submission.declared_existing_member}
+									<span
+										class="member"
+										class:pending={(submission.existing_member_pending ?? []).length > 0}
+										title={(submission.existing_member_pending ?? []).length > 0
+											? $t('admin.queue.declared_pending')
+											: $t('admin.queue.declared_complete')}
+									>
+										{$t('admin.queue.declared')}
+									</span>
+								{/if}
 							</td>
 							<td>{formatDate(submission.updated_at)}</td>
 						</tr>
@@ -353,6 +370,29 @@
 		font-size: 0.75rem;
 		font-weight: 600;
 		background: var(--celine-bg);
+	}
+
+	.member {
+		display: inline-block;
+		margin-left: 0.25rem;
+		padding: 0.125rem 0.5rem;
+		border-radius: 999px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		background: #e0e7ff;
+		color: #3730a3;
+	}
+
+	.member.pending {
+		background: #fef3c7;
+		color: #92400e;
+	}
+
+	.check {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 0.375rem;
 	}
 
 	.status[data-status='approved'] {

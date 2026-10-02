@@ -8,9 +8,11 @@
 		placeholder?: string;
 		error?: string;
 		maxlength?: number;
+		/** A short note under the input, belonging to this field only. */
+		hint?: string;
 	}
 
-	let { label, name, type = 'text', value = $bindable(''), required = false, placeholder = '', error = '', maxlength }: Props = $props();
+	let { label, name, type = 'text', value = $bindable(''), required = false, placeholder = '', error = '', maxlength, hint = '' }: Props = $props();
 </script>
 
 <div class="field">
@@ -27,10 +29,13 @@
 		{placeholder}
 		{required}
 		{maxlength}
+		aria-describedby={hint && !error ? `${name}-hint` : undefined}
 		bind:value
 	/>
 	{#if error}
 		<p class="field-error">{error}</p>
+	{:else if hint}
+		<p class="field-hint" id="{name}-hint">{hint}</p>
 	{/if}
 </div>
 
@@ -71,6 +76,12 @@
 
 	.field-input.has-error {
 		border-color: var(--celine-danger);
+	}
+
+	.field-hint {
+		font-size: 0.8125rem;
+		color: var(--celine-text-secondary);
+		margin: 0;
 	}
 
 	.field-error {

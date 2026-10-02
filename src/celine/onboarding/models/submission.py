@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, false, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -110,6 +110,14 @@ class Submission(Base):
     statute_consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     keep_me_updated: Mapped[bool] = mapped_column(default=False)
+
+    # The applicant said they are already a member, on a template that offers
+    # the declaration (REQ-0024). Trusted for one thing only: the POD and the
+    # supply address may be left to the operator, who completes them from the
+    # community's register before approval (REQ-0025). It grants nothing.
+    declared_existing_member: Mapped[bool] = mapped_column(
+        default=False, server_default=false(), nullable=False
+    )
 
     phone_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     phone_verified_at: Mapped[datetime | None] = mapped_column(

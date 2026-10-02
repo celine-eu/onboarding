@@ -506,12 +506,12 @@ def test_names_are_not_masked(api, operator_token):
     [
         {**BODY, "note": ""},
         {k: v for k, v in BODY.items() if k != "note"},
-        {**BODY, "field": "fiscal_code", "value": "RSSMRA85T10A562S"},
+        {**BODY, "field": "fiscal_code", "value": "not-a-fiscal-code"},
         {**BODY, "method": "member-session"},
         {**BODY, "value": "not-a-pod"},
         {**BODY, "method": "uploaded-document", "document_id": str(uuid.uuid4())},
     ],
-    ids=["blank note", "no note", "fiscal code", "member method", "bad pod", "foreign document"],
+    ids=["blank note", "no note", "bad fiscal code", "member method", "bad pod", "foreign document"],
 )
 def test_bad_requests_answer_422(api, operator_token, documents, body):
     client, state = api

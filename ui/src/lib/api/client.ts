@@ -43,6 +43,13 @@ export interface AdminSubmission extends SubmissionResponse {
 	phone_verification_waived?: boolean;
 	/** Approval is refused while this is null. */
 	verification?: AdminVerification | null;
+	/** The applicant ticked "I am already a member" (REQ-0024). */
+	declared_existing_member?: boolean;
+	/** Admin reads only: what the operator must still complete from the member
+	 *  register before approval, `pod_code` and `supply_address` (REQ-0025). */
+	existing_member_pending?: Array<'pod_code' | 'supply_address'>;
+	/** The language the applicant last used in the wizard. */
+	locale?: string | null;
 }
 
 /** A failed call to the API. `code` and `reference` are what the API puts in an
@@ -173,6 +180,9 @@ export interface SiteConfig {
 		}
 	>;
 	steps: (string | { custom: string; title: string })[];
+	/** "I am already a member" (REQ-0024): offered or not, and the steps a
+	 *  declared applicant skips. */
+	existing_members?: { enabled: boolean; skip_steps: string[] };
 	content: Record<string, string>;
 	/** Whether approval gives this community's participants a login, and so an
 	 *  email inviting them to set a password. */
@@ -382,7 +392,7 @@ export interface AdminVerification {
  *  masked unless the read asked to reveal them. */
 export interface AdminRevision {
 	id: string;
-	field: 'first_name' | 'last_name' | 'email' | 'pod_code';
+	field: 'first_name' | 'last_name' | 'email' | 'pod_code' | 'fiscal_code' | 'supply_address';
 	previous_value: string | null;
 	new_value: string;
 	method: 'offline' | 'uploaded-document' | 'member-session';
@@ -424,6 +434,8 @@ export interface SubmissionPage {
 export interface QueueFilters {
 	status?: string;
 	ref?: string;
+	/** Only applicants who declared they are already members. */
+	declaredExistingMember?: boolean;
 	skip?: number;
 	limit?: number;
 }
@@ -496,6 +508,7 @@ export function createRecAdminApi(recSlug: string) {
 			const params = new URLSearchParams();
 			if (filters.status) params.set('status', filters.status);
 			if (filters.ref) params.set('ref', filters.ref);
+			if (filters.declaredExistingMember) params.set('declared_existing_member', 'true');
 			params.set('skip', String(filters.skip ?? 0));
 			params.set('limit', String(filters.limit ?? 25));
 			const res = await adminFetch(`${base}/submissions?${params}`);

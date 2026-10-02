@@ -11,6 +11,7 @@
 		type Enablement
 	} from '$lib/api/client';
 	import { intlLocale, locale, t } from '$lib/i18n';
+	import { rejectionMailto } from '$lib/rejection-email';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -62,7 +63,42 @@
 
 	// Mirrors services/revision.REVISED_FIELDS and REVISABLE. From `submitted` on
 	// these change only by revision; the API refuses a draft or a rejected one.
-	const REVISED_FIELDS: AdminRevision['field'][] = ['first_name', 'last_name', 'email', 'pod_code'];
+	const REVISED_FIELDS: AdminRevision['field'][] = [
+		'first_name',
+		'last_name',
+		'email',
+		'fiscal_code',
+		'pod_code',
+		'supply_address'
+	];
+	// Mirrors services/revision.BEFORE_APPROVAL_ONLY: after approval a new supply
+	// address would mean moving the member to another area.
+	const revisableFields = $derived(
+		REVISED_FIELDS.filter((f) => !(f === 'supply_address' && submission?.status === 'approved'))
+	);
+	const MAX_LENGTH: Partial<Record<AdminRevision['field'], number>> = {
+		pod_code: 20,
+		fiscal_code: 16,
+		email: 255,
+		supply_address: 300
+	};
+	const MONO_FIELDS = new Set(['pod_code', 'fiscal_code']);
+
+	// A declared existing member (REQ-0025): what is still to complete from the
+	// community's register before approval.
+	const pending = $derived(submission?.existing_member_pending ?? []);
+	const rejectionEmail = $derived(
+		submission?.declared_existing_member
+			? rejectionMailto({
+					email: submission.email,
+					locale: submission.locale,
+					fallbackLocale: $locale,
+					community: data.access.name,
+					name: [submission.first_name, submission.last_name].filter(Boolean).join(' '),
+					ref: submission.ref
+				})
+			: null
+	);
 	const revisable = $derived(
 		submission?.status === 'submitted' ||
 			submission?.status === 'under_review' ||
@@ -85,6 +121,11 @@
 	async function refresh() {
 		submission = await api.getSubmission(id, revealed);
 		notes = (submission.notes as string) ?? '';
+		// Offer the first thing still missing, so completing a declared member is
+		// one form after another.
+		if (submission.existing_member_pending?.length) {
+			reviseField = submission.existing_member_pending[0];
+		}
 		try {
 			enablement = await api.enablement(id);
 		} catch {
@@ -270,10 +311,13 @@
 						<button
 							class={action.tone}
 							disabled={busy !== null ||
-								(action.target === 'approved' && !submission.verification)}
+								(action.target === 'approved' &&
+									(!submission.verification || pending.length > 0))}
 							title={action.target === 'approved' && !submission.verification
 								? $t('admin.detail.verification_needed_to_approve')
-								: undefined}
+								: action.target === 'approved' && pending.length > 0
+									? $t('admin.detail.existing_member_pending')
+									: undefined}
 							onclick={() => transition(action.target)}
 						>
 							{busy === action.target ? '…' : $t(action.label)}
@@ -287,6 +331,20 @@
 
 	{#if submission.status === 'under_review' && !submission.verification && can('submissions.review')}
 		<p class="message notice">{$t('admin.detail.verification_needed_to_approve')}</p>
+	{/if}
+
+	{#if submission.declared_existing_member}
+		<div class="message notice existing-member">
+			<strong>{$t('admin.detail.existing_member')}</strong>
+			{#if pending.length > 0}
+				<span>
+					{$t('admin.detail.existing_member_pending')}:
+					{pending.map((f) => $t(`admin.detail.revision_field_${f}`)).join(', ')}
+				</span>
+			{:else}
+				<span>{$t('admin.detail.existing_member_complete')}</span>
+			{/if}
+		</div>
 	{/if}
 
 	{#if showReject}
@@ -313,6 +371,14 @@
 			<button type="button" class="secondary" onclick={() => (showReject = false)}>
 				{$t('admin.cancel')}
 			</button>
+			{#if rejectionEmail}
+				<!-- Sent by the operator's own mail client, from the community's
+				     mailbox, after reading and editing it. This service sends nothing. -->
+				<p class="hint">
+					{$t('admin.detail.existing_member_reject_hint')}
+					<a href={rejectionEmail}>{$t('admin.detail.existing_member_reject_email')}</a>
+				</p>
+			{/if}
 		</form>
 	{/if}
 
@@ -483,9 +549,9 @@
 						<ol class="verifications">
 							{#each [...group.rows].reverse() as r, i (r.id)}
 								<li data-current={i === 0}>
-									<strong class:mono={r.field === 'pod_code'}>{r.new_value}</strong>
+									<strong class:mono={MONO_FIELDS.has(r.field)}>{r.new_value}</strong>
 									{#if i === 0}<span class="muted small">{$t('admin.detail.revision_in_force')}</span>{/if}
-									<span class="small" class:mono={r.field === 'pod_code'}>
+									<span class="small" class:mono={MONO_FIELDS.has(r.field)}>
 										← {r.previous_value ?? '—'}
 										{#if i === group.rows.length - 1}<span class="muted">({$t('admin.detail.revision_declared')})</span>{/if}
 									</span>
@@ -543,7 +609,7 @@
 						<label>
 							<span>{$t('admin.detail.revision_field')}</span>
 							<select bind:value={reviseField}>
-								{#each REVISED_FIELDS as field (field)}
+								{#each revisableFields as field (field)}
 									<option value={field}>{$t(`admin.detail.revision_field_${field}`)}</option>
 								{/each}
 							</select>
@@ -553,9 +619,9 @@
 							<input
 								bind:value={reviseValue}
 								required
-								maxlength={reviseField === 'pod_code' ? 20 : reviseField === 'email' ? 255 : 100}
+								maxlength={MAX_LENGTH[reviseField] ?? 100}
 								type={reviseField === 'email' ? 'email' : 'text'}
-								class:mono={reviseField === 'pod_code'}
+								class:mono={MONO_FIELDS.has(reviseField)}
 							/>
 						</label>
 						<fieldset>
@@ -906,6 +972,12 @@
 		color: var(--celine-text-secondary);
 	}
 
+	.existing-member {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
 	.reject {
 		display: flex;
 		gap: 0.75rem;
@@ -916,6 +988,11 @@
 		border: 1px solid #fecaca;
 		border-radius: var(--celine-radius-sm);
 		background: #fef2f2;
+	}
+
+	.reject .hint {
+		flex-basis: 100%;
+		margin: 0;
 	}
 
 	.reject label {

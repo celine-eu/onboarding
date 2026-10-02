@@ -52,7 +52,11 @@
 		"col_updated": "Updated",
 		"previous": "← Previous",
 		"next": "Next →",
-		"range": "{{from}}–{{to}} of {{total}}"
+		"range": "{{from}}–{{to}} of {{total}}",
+		"declared_only": "Existing members only",
+		"declared": "Already a member",
+		"declared_pending": "Says they are already a member: POD or address to complete from the register",
+		"declared_complete": "Says they are already a member: completed from the register"
 	},
 	"audit": {
 		"title": "Audit log",
@@ -145,7 +149,7 @@
 		"verification_recorded": "Verification recorded.",
 		"verification_needed_to_approve": "Record how the participant was verified before approving.",
 		"revisions": "Corrections",
-		"revisions_hint": "From submission on, the POD, first name, last name and email are corrected here rather than edited. Each correction keeps the value it replaces, how the new one was checked and why. The oldest value of a field is what the person declared.",
+		"revisions_hint": "From submission on, the POD, first name, last name, email, fiscal code and supply address are corrected here rather than edited. Each correction keeps the value it replaces, how the new one was checked and why. The oldest value of a field is what the person declared.",
 		"revisions_none": "No corrections recorded.",
 		"revision_field": "Field",
 		"revision_field_first_name": "First name",
@@ -170,7 +174,14 @@
 		"revision_step_status_pending": "pending",
 		"revision_step_status_done": "done",
 		"revision_step_status_failed": "failed",
-		"revision_step_status_skipped": "skipped"
+		"revision_step_status_skipped": "skipped",
+		"revision_field_fiscal_code": "Fiscal code",
+		"revision_field_supply_address": "Supply address",
+		"existing_member": "Says they are already a member.",
+		"existing_member_pending": "To complete from the member register before approval",
+		"existing_member_complete": "POD and supply address completed from the member register.",
+		"existing_member_reject_hint": "Not in the member register? You can also tell them with a prefilled email, to review before sending:",
+		"existing_member_reject_email": "open the email"
 	},
 	"enablement_state": {
 		"not_started": "not started",
