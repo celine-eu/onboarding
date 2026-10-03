@@ -64,7 +64,7 @@ All PII is encrypted using Fernet symmetric encryption (`ENCRYPTION_KEY`). This 
 - Database columns: `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`, `consent_ip`, `supply_municipality`, `supply_boundary_id`
 - JSON fields: `extracted_data`, `id_extracted_data` (OCR results), `raw_response` (LLM responses), `supply_address` (the address the eligibility step checked)
 
-Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false` (dev-only). Legacy unencrypted data is read gracefully during migration.
+Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false`, which is accepted only with `CELINE_ENV=dev`. Legacy unencrypted data is read gracefully during migration.
 
 ### Session and authentication
 
@@ -146,6 +146,29 @@ See `templates/example/` for the manifest format.
 
 ## Environment Variables
 
+### Development or deployment: `CELINE_ENV`
+
+The defaults below make a checkout run on the celine-dev workspace with no
+configuration, and each of them is refused anywhere else. **Only `CELINE_ENV=dev`
+allows them.** The signal is `CELINE_ENV`, then `ENVIRONMENT`; unset, empty,
+`prod`, `staging` or anything else is hardened, and startup refuses to run —
+before touching the database, naming every offending setting in one message —
+while any of these is in force: a development database password, the workspace's
+`OIDC_BASE_URL`, the workspace's Mailpit as `SMTP_HOST` or `SMTP_TLS=false`, a
+development `SMS_PROVIDER` (`log`, `console`, `dev`), `REQUIRE_ENCRYPTION=false`,
+`ALLOW_PERMISSIVE_POLICY=true`, `ALLOW_LOCAL_ADMIN=true`, or a client secret equal
+to its client id. In dev the same list is one warning at boot. See
+[docs/specifications/deployment-posture.md](docs/specifications/deployment-posture.md).
+
+`CELINE_ENV` is read from the process environment, not from `.env`. `task run:api`
+and `task dev` export `CELINE_ENV=dev` unless the shell sets it already, so
+`CELINE_ENV=staging task run:api` is the prod-like mode of the same entry point.
+The compose file passes `CELINE_ENV` through with no default.
+
+The check comes from `celine.sdk.posture`, which is not in a released celine-sdk
+yet: until it is, install the SDK checkout editable
+(`uv pip install --python .venv/bin/python -e ../celine-sdk`).
+
 ### How the defaults are chosen
 
 An address only gets a default if **one string resolves to the same service from
@@ -169,14 +192,14 @@ address is the only thing that says whether the dependency is there:
 
 | Variable | Description |
 |---|---|
-| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it in development only |
+| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it with `CELINE_ENV=dev` only |
 
 ### Defaulted, but wrong off the celine-dev workspace
 
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://postgres:securepassword123@172.17.0.1:15432/rec_onboarding` | The workspace's shared host Postgres, which is also where `docker compose up` puts the database |
-| `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | Keycloak realm issuer for the admin console and outbound M2M. **The one default that is silently wrong rather than merely absent**: elsewhere its JWKS is unreachable and every `/api/admin` request is denied, so the app logs a warning at boot while it is in force |
+| `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | Keycloak realm issuer for the admin console and outbound M2M. **The one default that is silently wrong rather than merely absent**: elsewhere its JWKS is unreachable and every `/api/admin` request is denied, so startup refuses it outside `CELINE_ENV=dev` |
 | `ONBOARDING_API_URL` | `http://172.17.0.1:8040` | What `onboarding-cli` talks to |
 
 ### Not defaulted, on purpose
@@ -213,7 +236,7 @@ A deployment still setting any of them starts with scanning off and logs the ren
 
 | Variable | Default | Description |
 |---|---|---|
-| `REQUIRE_ENCRYPTION` | `true` | App refuses to start without `ENCRYPTION_KEY`. Set `false` for local dev only. |
+| `REQUIRE_ENCRYPTION` | `true` | App refuses to start without `ENCRYPTION_KEY`. `false` is accepted with `CELINE_ENV=dev` only. |
 | `SECURITY_HEADERS` | `true` | Adds security headers to all responses. Disable if your reverse proxy handles them. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated allowed origins |
 | `DOWNLOAD_TOKEN_TTL` | `86400` | Download link expiry in seconds (default: 24 hours) |
@@ -228,7 +251,7 @@ A deployment still setting any of them starts with scanning off and logs the ren
 
 ### Email (SMTP)
 
-The defaults are for development: they point at the Mailpit that `celine-policies`' compose publishes on the host's port 1025 (UI on 8025), the same inbox Keycloak's invitation emails land in, so nothing reaches a real person. A deployment overrides them with its relay; `SMTP_HOST=` (set, empty) switches email off. The app logs a warning at boot while the development host is in force.
+The defaults are for development: they point at the Mailpit that `celine-policies`' compose publishes on the host's port 1025 (UI on 8025), the same inbox Keycloak's invitation emails land in, so nothing reaches a real person. A deployment overrides them with its relay; `SMTP_HOST=` (set, empty) switches email off. Outside `CELINE_ENV=dev` startup refuses the development host, and `SMTP_TLS=false` with a relay.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -242,13 +265,13 @@ The defaults are for development: they point at the Mailpit that `celine-policie
 
 ### Phone Verification (SMS OTP)
 
-Optional. When a REC manifest's `steps` includes `phone_verify`, participants verify their phone via an SMS one-time code, and approval is gated on successful verification. Defaults to a `log` provider (prints the code) for local dev.
+Optional. When a REC manifest's `steps` includes `phone_verify`, participants verify their phone via an SMS one-time code, and approval is gated on successful verification. Defaults to a `log` provider (prints the code) for local dev; outside `CELINE_ENV=dev` startup refuses `log`, `console` and `dev`, so a deployment sets `brevo` or switches verification off with `SMS_PROVIDER=none`.
 
 A real provider receives participants' phone numbers, so it is used only with `DPA_SMS_SIGNED=yes`. Without it — or with an unknown `SMS_PROVIDER` — the app still starts and logs one warning, and phone verification is **off**: the wizard leaves the `phone_verify` step out, `verify-phone` and `confirm-phone` answer 403 with `detail.code` `phone_verification_disabled`, `GET /api/{rec}/config` reports `features.phone_verification: false`, and approval does not wait for a verification that cannot happen. The console shows that on the submission and the approval's audit row records the waiver. See [docs/phone-verification.md](docs/phone-verification.md).
 
 | Variable | Default | Description |
 |---|---|---|
-| `SMS_PROVIDER` | `log` | `log` (dev) or `brevo` |
+| `SMS_PROVIDER` | `log` | `log` (dev only), `brevo`, or `none` to switch phone verification off |
 | `BREVO_API_KEY` | *(none)* | Required for `brevo` |
 | `BREVO_SMS_SENDER` | *(none)* | Alphanumeric sender id or E.164; required for `brevo` |
 | `SMS_OTP_TEMPLATE` | `Il tuo codice di verifica e' {code}` | Message body (must contain `{code}`) |

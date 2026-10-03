@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 import celine.onboarding.main as app_main
+from celine.onboarding.config.settings import Settings
 from celine.onboarding.services import template_service as ts
 
 
@@ -231,57 +232,77 @@ def test_unconfigured_oidc_refuses_to_start(monkeypatch, _oidc_configured):
         app_main._validate_admin_config()
 
 
-def test_the_development_issuer_default_warns_rather_than_passing_quietly(
-    monkeypatch, _oidc_configured, caplog
-):
-    """The issuer has a default now, so the refusal above can no longer fire for
-    a deployment that simply forgot the variable — only for one that emptied it
-    deliberately. The warning is what keeps that from being a silent regression:
-    an unreachable JWKS still fails closed on every /api/admin request, but
-    without this a production deployment would learn it one denied operator at a
-    time instead of at boot."""
-    default = app_main.Settings.model_fields["oidc_base_url"].default
+# The issuer and SMTP defaults used to be warned about from `_validate_admin_config`.
+# They are now registered with the posture guard (`config/posture.py`), which
+# warns in dev and refuses anywhere else; `test_posture.py` covers both sides.
+
+
+def test_the_development_issuer_default_is_not_passed_quietly(monkeypatch, caplog):
+    """The issuer has a default, so the refusal above can no longer fire for a
+    deployment that simply forgot the variable — only for one that emptied it
+    deliberately. The posture guard is what keeps that from being a silent
+    regression: a warning in dev, a refusal at boot anywhere else.
+
+    @verifies REQ-0028
+    @verifies REQ-0029
+    """
+    from celine.sdk.posture import InsecureConfiguration
+
+    from celine.onboarding.config.posture import enforce_posture
+
+    default = Settings.model_fields["oidc_base_url"].default
     monkeypatch.setattr(app_main.settings, "oidc_base_url", default)
-    from celine.onboarding.security import oidc
-
-    oidc.oidc_settings.cache_clear()
 
     with caplog.at_level("WARNING"):
-        app_main._validate_admin_config()
+        enforce_posture(app_main.settings, env="dev")
+    assert "OIDC_BASE_URL" in caplog.text
 
-    assert any("OIDC_BASE_URL is unset" in r.message for r in caplog.records)
+    with pytest.raises(InsecureConfiguration, match="OIDC_BASE_URL"):
+        enforce_posture(app_main.settings, env="")
 
 
-def test_a_configured_issuer_does_not_warn(_oidc_configured, caplog):
+def test_a_configured_issuer_is_not_flagged(_oidc_configured):
     """`_oidc_configured` sets a realm of its own, which is what a deployment
-    does. The warning must not cry wolf at one that got it right."""
-    with caplog.at_level("WARNING"):
-        app_main._validate_admin_config()
+    does. The guard must not cry wolf at one that got it right."""
+    from celine.onboarding.config.posture import posture_guard
 
-    assert not any("OIDC_BASE_URL is unset" in r.message for r in caplog.records)
+    flagged = [v.setting for v in posture_guard(app_main.settings, env="").violations]
+    assert "OIDC_BASE_URL" not in flagged
 
 
-def test_the_development_smtp_default_warns(monkeypatch, _oidc_configured, caplog):
+def test_the_development_smtp_default_is_not_passed_quietly(monkeypatch, caplog):
     """Email points at the workspace's Mailpit unless told otherwise. Off the
     workspace that address answers nothing, so a deployment that forgot
-    SMTP_HOST is told at boot rather than by a missing confirmation email."""
-    default = app_main.Settings.model_fields["smtp_host"].default
+    SMTP_HOST is stopped at boot rather than told by a missing confirmation email.
+
+    @verifies REQ-0028
+    @verifies REQ-0029
+    """
+    from celine.sdk.posture import InsecureConfiguration
+
+    from celine.onboarding.config.posture import enforce_posture
+
+    default = Settings.model_fields["smtp_host"].default
     monkeypatch.setattr(app_main.settings, "smtp_host", default)
 
     with caplog.at_level("WARNING"):
-        app_main._validate_admin_config()
+        enforce_posture(app_main.settings, env="dev")
+    assert "SMTP_HOST" in caplog.text
 
-    assert any("SMTP_HOST is unset" in r.message for r in caplog.records)
+    with pytest.raises(InsecureConfiguration, match="SMTP_HOST"):
+        enforce_posture(app_main.settings, env="staging")
 
 
 @pytest.mark.parametrize("host", ["smtp.example.org", ""])
-def test_a_configured_or_disabled_smtp_does_not_warn(monkeypatch, _oidc_configured, caplog, host):
+def test_a_configured_or_disabled_smtp_is_not_flagged(monkeypatch, host):
+    from celine.onboarding.config.posture import posture_guard
+
     monkeypatch.setattr(app_main.settings, "smtp_host", host)
+    monkeypatch.setattr(app_main.settings, "smtp_tls", True)
 
-    with caplog.at_level("WARNING"):
-        app_main._validate_admin_config()
-
-    assert not any("SMTP_HOST is unset" in r.message for r in caplog.records)
+    flagged = [v.setting for v in posture_guard(app_main.settings, env="").violations]
+    assert "SMTP_HOST" not in flagged
+    assert "SMTP_TLS" not in flagged
 
 
 def test_jwks_uri_is_derived_from_the_issuer(_oidc_configured):

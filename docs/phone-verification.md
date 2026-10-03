@@ -88,7 +88,7 @@ fails.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SMS_PROVIDER` | `log` | `log` (dev — prints the OTP) or `brevo` |
+| `SMS_PROVIDER` | `log` | `log` (dev — prints the OTP; refused outside `CELINE_ENV=dev`), `brevo`, or `none` (off) |
 | `BREVO_API_KEY` | *(none)* | Brevo API key. Required for `brevo`. |
 | `BREVO_SMS_SENDER` | *(none)* | Alphanumeric sender id (≤11 chars) or E.164. Required for `brevo`. |
 | `SMS_OTP_TEMPLATE` | `Il tuo codice di verifica e' {code}` | Message body. Must contain `{code}`. |
@@ -165,8 +165,9 @@ endpoints remain callable but optional. This gate is enforced in
 ## When verification is off
 
 Verification is on for a development provider (`log`, `console`, `dev`), and for
-`brevo` only with `DPA_SMS_SIGNED=yes`. Anything else switches it off, and the
-app logs one warning at startup naming the reason. Off:
+`brevo` only with `DPA_SMS_SIGNED=yes`. Anything else (`none`, say) switches it
+off, and the app logs one warning at startup naming the reason. A development
+provider sends nothing, so outside `CELINE_ENV=dev` startup refuses it. Off:
 
 - `GET /api/{rec}/config` reports `features.phone_verification: false`, and the
   wizard leaves a `phone_verify` step out of the steps it shows;

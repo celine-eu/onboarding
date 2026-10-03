@@ -46,6 +46,9 @@ services:
     ports:
       - "8040:8040"
     environment:
+      # Passed through with no default: unset is hardened, and every dev default
+      # below is then refused at startup. `task dev` exports CELINE_ENV=dev.
+      CELINE_ENV: ${CELINE_ENV:-}
       # The same host/port as init-db, migrate and seed-templates above. They
       # disagreed until 2026-09-12: those three created and migrated a database
       # on the host Postgres while this one pointed at `postgres:5432`, a service

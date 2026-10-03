@@ -21,6 +21,10 @@ dependencies = [
     "fpdf2>=2.8.7",
     "slowapi>=0.1.9",
     "cryptography>=44.0",
+    # Imported directly (`api/admin/deps.py`, `members.py`) for the exception
+    # types token verification raises; 2.14 is the floor with the known advisories
+    # fixed.
+    "pyjwt>=2.14",
     "pymupdf>=1.25",
     "boto3>=1.35",
     # 1.18.0 is the first release carrying `celine.sdk.provisioning`, which is
@@ -48,6 +52,11 @@ dependencies = [
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
+    #
+    # TODO: `celine.sdk.posture` (the CELINE_ENV startup guard, config/posture.py)
+    # is unreleased; 1.24.0 does not ship it. Raise this floor to the first
+    # release that does. Until then the local SDK checkout must be installed
+    # editable for the service to import.
     "celine-sdk>=1.24.0",
     "phonenumbers>=8.13",
 ]

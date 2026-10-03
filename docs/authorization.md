@@ -208,7 +208,7 @@ manager's token. See [Delegated actions](#delegated-actions).
 | `OIDC_AUDIENCE` | `svc-onboarding`. A token minted for another service is rejected. |
 | `JWT_HEADER_NAME` | `x-auth-request-access-token`, set by oauth2-proxy. |
 | `POLICIES_DIR` | Where the rego lives. Shipped in the image. |
-| `ALLOW_PERMISSIVE_POLICY` | **Allows everything** when the bundle fails to load. Development only. |
+| `ALLOW_PERMISSIVE_POLICY` | **Allows everything** when the bundle fails to load. Development only: startup refuses it unless `CELINE_ENV=dev`. |
 
 Startup refuses four configurations in which the console would *appear* guarded
 and not be: `ADMIN_TOKEN` still set, no OIDC issuer, unloadable policies without
@@ -236,3 +236,6 @@ A deployment with no Keycloak still has an operator with a shell and a
 records every action as `actor_type=cli` with the OS user and host. It is a better
 trust boundary than a shared string in an env file — and unlike one, it cannot be
 copied out of a chat message.
+
+Set `ALLOW_LOCAL_ADMIN=true` on that one CLI invocation, not in the service's
+environment: outside `CELINE_ENV=dev` the API refuses to start with it set.

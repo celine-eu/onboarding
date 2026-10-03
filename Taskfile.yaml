@@ -8,13 +8,17 @@ tasks:
   dev:
     desc: Start all services with docker compose
     cmds:
-      - docker compose up --build
+      # The compose file passes CELINE_ENV through with no default; this dev
+      # entry point is what says dev (unset is hardened).
+      - CELINE_ENV=${CELINE_ENV:-dev} docker compose up --build
 
   run:api:
     desc: Start backend dev server (requires local Postgres)
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8040 --reload
+      # The prepared virtualenv directly: `uv run` re-syncs the lockfile at every
+      # start and would replace an editable celine-sdk link with the locked wheel.
+      - CELINE_ENV=${CELINE_ENV:-dev} ../.venv/bin/uvicorn celine.onboarding.main:app --host 0.0.0.0 --port 8040 --reload
 
   run:ui:
     desc: Start frontend dev server on :3000 (proxies /api to backend)

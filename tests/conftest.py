@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import os
 import time
 from unittest.mock import MagicMock
 
 import pytest
+
+# The suite exercises the development defaults (the shared Postgres password, the
+# workspace issuer, the logging SMS provider), which the posture guard refuses
+# anywhere but CELINE_ENV=dev. Hardened behaviour is tested explicitly, with the
+# environment passed in (`test_posture.py`).
+os.environ.setdefault("CELINE_ENV", "dev")
 
 
 @pytest.fixture(autouse=True)

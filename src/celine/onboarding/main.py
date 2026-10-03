@@ -11,7 +11,8 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from celine.onboarding.api.deps import limiter
-from celine.onboarding.config.settings import REAL_SMS_PROVIDERS, Settings, settings
+from celine.onboarding.config.posture import enforce_posture
+from celine.onboarding.config.settings import REAL_SMS_PROVIDERS, settings
 from celine.onboarding.security.middleware import AdminAuthMiddleware
 
 logger = logging.getLogger(__name__)
@@ -558,36 +559,11 @@ def _validate_admin_config() -> None:
             "═══════════════════════════════════════════════════════════════\n"
         )
 
-    # The issuer has a development default, so the refusal above no longer fires
-    # for a deployment that merely forgot the variable — only for one that set it
-    # empty on purpose. That trade is why this warning exists: an unreachable
-    # JWKS still fails closed on every /api/admin request, but a production
-    # deployment would otherwise learn it one denied operator at a time instead
-    # of at boot. It is the one default here that is silently wrong off this
-    # workspace rather than merely absent.
-    if settings.oidc_base_url == Settings.model_fields["oidc_base_url"].default:
-        logger.warning(
-            "OIDC_BASE_URL is unset, so the development default %r is in force. "
-            "That issuer exists on the celine-dev workspace and nowhere else: off "
-            "it, its JWKS is unreachable and every /api/admin request will be "
-            "denied. Set OIDC_BASE_URL to this deployment's realm.",
-            settings.oidc_base_url,
-        )
-
-    # Same trade for email, with a softer failure: off this workspace nothing
-    # answers on the dev Mailpit address, so every submission email is attempted,
-    # fails and is logged — the submission itself is unaffected. Said once at boot
-    # so a deployment learns it here rather than from a participant who never got
-    # their confirmation.
-    if settings.smtp_is_dev_default():
-        logger.warning(
-            "SMTP_HOST is unset, so the development default %s:%s (the workspace's "
-            "Mailpit) is in force. Off celine-dev nothing answers there and no "
-            "email is delivered. Set SMTP_HOST to this deployment's relay, or "
-            "SMTP_HOST= to switch email off.",
-            settings.smtp_host,
-            settings.smtp_port,
-        )
+    # The issuer and SMTP host have development defaults, so the refusal above
+    # fires only for a deployment that set the issuer empty on purpose. Their
+    # defaults used to be warned about here; they are now registered with the
+    # posture guard (`config/posture.py`), which `lifespan` runs first — a
+    # warning in dev, a refusal anywhere else.
 
     policy = get_policy()
     if not policy.available and not settings.allow_permissive_policy:
@@ -601,7 +577,7 @@ def _validate_admin_config() -> None:
             "unusable rather than insecure — but the cause is worth fixing at boot\n"
             "instead of discovering it one denial at a time.\n\n"
             "  1. Check POLICIES_DIR points at the repo's policies/ directory\n"
-            "  2. For development without policies, set\n"
+            "  2. For development without policies (CELINE_ENV=dev only), set\n"
             "     ALLOW_PERMISSIVE_POLICY=true — which allows EVERYTHING\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
@@ -631,6 +607,10 @@ def _validate_admin_config() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # First, before the database is touched: outside CELINE_ENV=dev every
+    # development-only value is refused here, all of them in one message.
+    enforce_posture(settings)
+
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
     from celine.onboarding.services.template_service import load_recs_from_db
@@ -656,7 +636,8 @@ async def lifespan(app: FastAPI):
             '  python -c "from cryptography.fernet import Fernet; '
             'print(Fernet.generate_key().decode())"\n\n'
             "Then set ENCRYPTION_KEY in your .env file.\n\n"
-            "For development only, set REQUIRE_ENCRYPTION=false to skip.\n\n"
+            "For development only (CELINE_ENV=dev), set REQUIRE_ENCRYPTION=false\n"
+            "to skip; any other environment refuses it.\n\n"
             "═══════════════════════════════════════════════════════════════\n"
         )
 
