@@ -46,6 +46,7 @@ async def extract_from_id_upload(
     files: Annotated[list[UploadFile], File()],
     _session: Submission = Depends(require_session),
 ):
+    from celine.onboarding.extractors.fields import ID_CARD_FIELDS
     from celine.onboarding.extractors.openai_extractor import (
         ID_CARD_SYSTEM_PROMPT,
         ID_CARD_USER_PROMPT,
@@ -63,6 +64,7 @@ async def extract_from_id_upload(
         pages,
         system_prompt=ID_CARD_SYSTEM_PROMPT,
         user_prompt=ID_CARD_USER_PROMPT,
+        fields=ID_CARD_FIELDS,
     )
     return extracted_data
 

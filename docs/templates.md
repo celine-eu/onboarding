@@ -84,7 +84,7 @@ notifications:
   base_url: "https://my-rec.example.com"   # base URL for download links in emails
   email: true                               # set false to disable email notifications
   storage:                                  # optional: upload submissions to external storage
-    backend: s3                             # s3 | gdrive
+    backend: s3                             # the only backend
     bucket: "${S3_BUCKET}"                  # env var interpolation with ${VAR}
     access_key_id: "${S3_ACCESS_KEY_ID}"
     secret_access_key: "${S3_SECRET_ACCESS_KEY}"

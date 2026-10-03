@@ -333,7 +333,9 @@ async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypa
         async def create(self, **kwargs):
             seen["model"] = kwargs["model"]
             seen["extra_body"] = kwargs.get("extra_body")
-            message = type("M", (), {"content": '{"pod_code": "IT001E00000000"}'})()
+            message = type(
+                "M", (), {"content": '{"pod": "IT001E00000000", "fornitore": "Example Energia"}'}
+            )()
             choice = type("C", (), {"message": message})()
             return type("R", (), {"choices": [choice], "model_dump": lambda self: {}})()
 
@@ -351,7 +353,9 @@ async def test_the_extractor_calls_the_named_endpoint_and_model(switch, monkeypa
         [(png.getvalue(), "image/png")]
     )
 
-    assert extracted == {"pod_code": "IT001E00000000"}
+    # Only the fields the bill is read for, whatever else the model returned.
+    assert extracted["pod"] == "IT001E00000000"
+    assert "fornitore" not in extracted
     assert seen == {
         "base_url": ENDPOINT,
         "api_key": "not-used",
@@ -419,3 +423,36 @@ def test_an_unhandled_error_is_a_500_with_a_reference_and_no_internals(
     assert body["code"] == "internal_error"
     assert body["reference"] in caplog.text
     assert "secret internals" not in res.text
+
+
+class TestOnlyTheFieldsInUseAreKept:
+    """Data minimisation: what is not used is neither read nor stored."""
+
+    def test_an_identity_document_keeps_names_tax_code_and_expiry(self):
+        from celine.onboarding.extractors.fields import ID_CARD_FIELDS, keep_fields
+
+        read = {
+            "nome": "MARIO",
+            "cognome": "ROSSI",
+            "codice_fiscale": "RSSMRA80A01H501U",
+            "scadenza": "01/01/2030",
+            "data_nascita": "01/01/1980",
+            "sesso": "M",
+            "numero_documento": "CA00000AA",
+        }
+        assert keep_fields(read, ID_CARD_FIELDS) == {
+            "nome": "MARIO",
+            "cognome": "ROSSI",
+            "codice_fiscale": "RSSMRA80A01H501U",
+            "scadenza": "01/01/2030",
+        }
+
+    def test_a_client_cannot_store_more_than_is_read(self):
+        from celine.onboarding.models.schemas import SubmissionUpdate
+
+        update = SubmissionUpdate(
+            extracted_data={"pod": "IT001E00000000", "consumo_annuo": "2700"},
+            id_extracted_data={"nome": "MARIO", "luogo_nascita": "ROMA"},
+        )
+        assert "consumo_annuo" not in update.extracted_data
+        assert "luogo_nascita" not in update.id_extracted_data

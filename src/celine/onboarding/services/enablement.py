@@ -191,6 +191,11 @@ def _invitation_is_due(ctx: RunContext) -> bool:
         return False
     if login.status != EnablementStatus.SUCCEEDED or login.invitation != AWAITING_INVITATION:
         return False
+    return _approval_complete(ctx)
+
+
+def _approval_complete(ctx: RunContext) -> bool:
+    """Whether approval can no longer fail: every fail-closed step `succeeded` or `skipped`."""
     return all(
         ctx.rows[spec.step].status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED)
         for spec in PIPELINE
@@ -726,6 +731,14 @@ async def enable(
     # sends nobody an email.
     if only in (None, EnablementStep.KEYCLOAK_USER) and _invitation_is_due(ctx):
         await _send_invitation(db, ctx)
+
+    # The account is active: the uploaded bill and identity document have served
+    # their purpose, and the check survives in the credential. A no-op on every
+    # later run, so a retry or a resend costs one query.
+    if _approval_complete(ctx):
+        from celine.onboarding.services import document_service
+
+        await document_service.discard_documents(db, submission)
 
     return rows
 

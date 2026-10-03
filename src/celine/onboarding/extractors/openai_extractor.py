@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 from PIL import Image
 
 from celine.onboarding.config.settings import settings
+from celine.onboarding.extractors.fields import BILL_FIELDS, keep_fields
 
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
@@ -25,10 +26,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     '  "codice_fiscale": "Italian fiscal code (16 alphanumeric characters, e.g. RSSMRA80A01H501U)",\n'
     '  "pod": "POD code (starts with IT, 3 digits, letter E, then 8 digits, e.g. IT221E00450738)",\n'
     '  "indirizzo": "full supply address",\n'
-    '  "comune": "municipality of the supply address, name only (e.g. Bologna)",\n'
-    '  "fornitore": "energy provider name",\n'
-    '  "numero_contratto": "contract number",\n'
-    '  "consumo_annuo": "annual consumption in kWh as integer (e.g. 2700)"\n'
+    '  "comune": "municipality of the supply address, name only (e.g. Bologna)"\n'
     "}\n\n"
     "Rules:\n"
     "- Return ONLY the JSON, no additional text.\n"
@@ -37,9 +35,6 @@ EXTRACTION_SYSTEM_PROMPT = (
     "Look for labels like 'Codice POD', 'POD', or 'Punto di Prelievo'.\n"
     "- The codice fiscale is 16 alphanumeric characters. "
     "Look for labels like 'Codice Fiscale', 'C.F.', or 'CF'.\n"
-    "- For consumo_annuo, look for labels like 'Consumo annuo', 'kWh/anno', 'Consumo stimato', "
-    "'Totale consumo', or similar. Return the yearly figure as an integer in kWh. "
-    "If only a partial period is shown, extrapolate to 12 months.\n"
     "- Search ALL provided pages. The POD is often on a different page than the personal details."
 )
 
@@ -52,21 +47,16 @@ ID_CARD_SYSTEM_PROMPT = (
     "Analyze all provided images (front and back if present) and return ONLY a JSON object "
     "with these fields:\n\n"
     "{\n"
-    '  "tipo_documento": "CI" or "CIE" or "PASSAPORTO" or "ID_CARD" or "PASSPORT",\n'
     '  "nome": "first name",\n'
     '  "cognome": "last name",\n'
     '  "codice_fiscale": "Italian fiscal code (16 alphanumeric chars) or null if not present",\n'
-    '  "data_nascita": "birth date in DD/MM/YYYY format",\n'
-    '  "luogo_nascita": "birth place",\n'
-    '  "sesso": "M or F",\n'
-    '  "numero_documento": "document number",\n'
     '  "scadenza": "expiry date in DD/MM/YYYY format"\n'
     "}\n\n"
     "Rules:\n"
     "- Return ONLY the JSON, no additional text.\n"
     "- If a field is not found, use null.\n"
     "- The codice fiscale is 16 alphanumeric characters. It may appear on the back of Italian IDs.\n"
-    "- For CIE, the document number format is CA followed by 5 digits and 2 letters.\n"
+    "- Do not return any other field, even if it is on the document.\n"
     "- Normalize names to UPPERCASE.\n"
     "- Search ALL provided images. Front and back may contain different fields."
 )
@@ -136,11 +126,13 @@ class OpenAIExtractor:
         *,
         system_prompt: str | None = None,
         user_prompt: str | None = None,
+        fields: tuple[str, ...] = BILL_FIELDS,
     ) -> tuple[dict, dict]:
         return await self.extract_pages(
             [(file_bytes, declared_mime)],
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            fields=fields,
         )
 
     async def extract_pages(
@@ -149,6 +141,7 @@ class OpenAIExtractor:
         *,
         system_prompt: str | None = None,
         user_prompt: str | None = None,
+        fields: tuple[str, ...] = BILL_FIELDS,
     ) -> tuple[dict, dict]:
         if not settings.llm_base_url or not settings.llm_vision_model:
             raise RuntimeError("LLM_BASE_URL and LLM_VISION_MODEL must be set")
@@ -212,6 +205,6 @@ class OpenAIExtractor:
         )
 
         raw = response.model_dump()
-        extracted = json.loads(response.choices[0].message.content or "{}")
+        extracted = keep_fields(json.loads(response.choices[0].message.content or "{}"), fields)
 
         return extracted, raw

@@ -38,7 +38,7 @@ Each REC gets a template folder that customizes the platform without code change
 - **Coverage area** — the community's areas as GSE primary-substation boundaries (eligibility and each member's area by boundary, synced to the REC registry by a realm admin), or municipalities, postal codes and regions for a template without boundaries
 - **Wizard steps** — reorderable via the manifest (skip eligibility if no coverage restriction; a template with boundaries requires it, after `consents`)
 - **Content** — markdown files for the welcome page, consent intro, and success message
-- **Notifications** — sender address, operator email list, optional storage backend (S3/Google Drive), optional webhook
+- **Notifications** — sender address, operator email list, optional storage backend (S3), optional webhook
 
 Templates are imported into the database with `task import-templates`, and served per community at `/{rec}` — one deployment hosts several.
 

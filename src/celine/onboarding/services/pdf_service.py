@@ -85,13 +85,7 @@ def generate_submission_pdf(submission: Submission) -> bytes:
         "codice_fiscale": "Codice Fiscale",
         "pod": "POD",
         "indirizzo": "Indirizzo",
-        "fornitore": "Fornitore",
-        "numero_contratto": "N. Contratto",
-        "tipo_documento": "Tipo documento",
-        "data_nascita": "Data di nascita",
-        "luogo_nascita": "Luogo di nascita",
-        "sesso": "Sesso",
-        "numero_documento": "N. Documento",
+        "comune": "Comune",
         "scadenza": "Scadenza",
     }
 

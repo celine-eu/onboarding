@@ -772,6 +772,18 @@
 		applyIdExtraction(data);
 	}
 
+	// An expired identity document backs no verification. Uploading one is
+	// optional, so this asks for a valid one rather than blocking the application.
+	let idExpiredOn = $derived.by(() => {
+		const raw = (idExtractionData?.scadenza ?? '').trim();
+		const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(raw);
+		if (!m) return null;
+		const expiry = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+		const today = new Date();
+		today.setHours(0, 0, 0, 0);
+		return expiry < today ? raw : null;
+	});
+
 	interface MismatchField {
 		field: string;
 		bill: string;
@@ -1023,6 +1035,10 @@
 
 					{#if idExtractionData}
 						<ExtractionReview data={idExtractionData} onchange={onIdExtractionChange} />
+					{/if}
+
+					{#if idExpiredOn}
+						<div class="mismatch-banner">{$t('onboarding.id_expired', { date: idExpiredOn })}</div>
 					{/if}
 				</div>
 				{/if}
@@ -1307,6 +1323,9 @@
 				</div>
 			{:else}
 				<div class="review">
+					{#if idExpiredOn}
+						<div class="mismatch-banner">{$t('onboarding.id_expired', { date: idExpiredOn })}</div>
+					{/if}
 					{#if mismatches.length > 0}
 						<div class="mismatch-banner">
 							<strong>{$t('onboarding.mismatch_title')}</strong>

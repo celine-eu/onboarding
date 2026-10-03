@@ -411,11 +411,5 @@ def check_offers(
     asyncio.run(_run())
 
 
-@app.command()
-def upload_gdrive(folder_id: str = typer.Option(..., help="Google Drive folder ID")):
-    """Upload documents to Google Drive."""
-    typer.echo(f"Uploading to folder {folder_id}... (not yet implemented)")
-
-
 if __name__ == "__main__":
     app()

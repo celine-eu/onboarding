@@ -22,8 +22,6 @@ dependencies = [
     "slowapi>=0.1.9",
     "cryptography>=44.0",
     "pymupdf>=1.25",
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
     "boto3>=1.35",
     # 1.18.0 is the first release carrying `celine.sdk.provisioning`, which is
     # the only way this service reaches Keycloak at all: it holds no realm grant

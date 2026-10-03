@@ -22,6 +22,7 @@ from celine.onboarding.models.submission import SubmissionStatus
 from celine.onboarding.models.verification import VerificationMethod
 from celine.onboarding.services import (
     dataspace_identity,
+    document_service,
     enablement,
     provisioning,
     rec_registry,
@@ -92,6 +93,19 @@ def db() -> FakeDb:
 @pytest.fixture()
 def submission() -> FakeSubmission:
     return FakeSubmission()
+
+
+@pytest.fixture(autouse=True)
+def discarded(monkeypatch) -> list[str]:
+    """The submissions whose uploaded documents were discarded, in order."""
+    refs: list[str] = []
+
+    async def _discard(db, sub):
+        refs.append(sub.ref)
+        return 0
+
+    monkeypatch.setattr(document_service, "discard_documents", _discard)
+    return refs
 
 
 @pytest.fixture()
@@ -1558,3 +1572,32 @@ class TestApprovalRecordsTheAttempt:
             reason="POD belongs to another supply",
         )
         assert "POD belongs to another supply" in recorded[0]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Uploaded documents
+# ---------------------------------------------------------------------------
+
+
+class TestUploadedDocumentsAreDiscardedOnActivation:
+    """A bill or an identity document is kept until the account is active, not
+    after: the check survives in the credential's `verificationMethod`."""
+
+    async def test_discarded_once_approval_completes(self, db, submission, happy_path, discarded):
+        await enablement.enable(db, submission)
+        assert discarded == [submission.ref]
+
+    async def test_kept_while_a_fail_closed_step_has_failed(
+        self, db, submission, monkeypatch, happy_path, discarded
+    ):
+        """The operator may still need the copy to decide what went wrong."""
+
+        async def _identity(sub, **kwargs):
+            raise RuntimeError("identity registry unreachable")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
+
+        with pytest.raises(EnablementError):
+            await enablement.enable(db, submission)
+
+        assert discarded == []

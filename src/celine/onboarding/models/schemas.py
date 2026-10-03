@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from celine.onboarding.extractors.fields import BILL_FIELDS, ID_CARD_FIELDS, keep_fields
 from celine.onboarding.models.document import DocumentType
 from celine.onboarding.models.submission import ParticipantLocale, SubmissionStatus
 from celine.onboarding.models.verification import VerificationMethod
@@ -147,6 +148,18 @@ class SubmissionUpdate(BaseModel):
             raise ValueError("Invalid POD code")
         return v.upper().strip() if v else v
 
+    # A client may send what an older extractor read; only the fields still read
+    # are stored.
+    @field_validator("extracted_data")
+    @classmethod
+    def keep_bill_fields(cls, v: dict | None) -> dict | None:
+        return keep_fields(v, BILL_FIELDS) if v is not None else None
+
+    @field_validator("id_extracted_data")
+    @classmethod
+    def keep_id_card_fields(cls, v: dict | None) -> dict | None:
+        return keep_fields(v, ID_CARD_FIELDS) if v is not None else None
+
 
 class SubmissionRead(BaseModel):
     id: uuid.UUID
@@ -193,7 +206,6 @@ class SubmissionRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
 
     @field_validator("declared_existing_member", mode="before")
     @classmethod

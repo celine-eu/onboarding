@@ -925,7 +925,7 @@ class TestScanningOffEndToEnd:
         from test_enablement import FakeDb as EnablementDb
 
         from celine.onboarding.models.enablement import EnablementStatus, EnablementStep
-        from celine.onboarding.services import audit_service, enablement, review
+        from celine.onboarding.services import audit_service, document_service, enablement, review
         from celine.onboarding.services.audit_service import Actor
 
         client, sub = wizard
@@ -947,6 +947,13 @@ class TestScanningOffEndToEnd:
             enablement, "PIPELINE", (enablement.SPECS[EnablementStep.REC_REGISTRY_MEMBER],)
         )
         monkeypatch.setattr(audit_service, "record", lambda db, **kw: None)
+
+        # The enablement fake answers every query with step rows; with scanning
+        # off there is nothing uploaded to discard.
+        async def _no_documents(db, submission):
+            return 0
+
+        monkeypatch.setattr(document_service, "discard_documents", _no_documents)
         from celine.onboarding.models.verification import (
             SubmissionVerification,
             VerificationMethod,

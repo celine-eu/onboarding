@@ -30,10 +30,6 @@ def _load_builtin_backends() -> None:
     if _BACKENDS:
         return
     try:
-        import celine.onboarding.outputs.gdrive  # noqa: F401
-    except Exception:
-        pass
-    try:
         import celine.onboarding.outputs.s3  # noqa: F401
     except Exception:
         pass

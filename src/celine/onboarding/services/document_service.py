@@ -2,12 +2,14 @@ import uuid
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.document import Document, DocumentType
+from celine.onboarding.models.submission import Submission
+from celine.onboarding.services import audit_service
 
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
@@ -96,3 +98,46 @@ def read_file(document: Document) -> bytes:
 
     path = get_file_path(document)
     return decrypt(path.read_bytes())
+
+
+async def discard_documents(db: AsyncSession, submission: Submission) -> int:
+    """Delete the copies a participant uploaded, once their account is active.
+
+    A bill or an identity document is kept only for the operator to check the
+    application against. Once approval has gone through, what was checked lives on
+    as the verification row and in the dataspace credential's `verificationMethod`
+    (`submission-review:uploaded-document`); the copy itself has no further use. A
+    copy the operator downloaded before then is theirs to look after.
+
+    Files go first, rows after: an interruption leaves a row without its file,
+    which the console reports as gone (410), never a file nothing points at. The
+    extractions go with their rows (`ON DELETE CASCADE`); verifications and
+    revisions keep their row with `document_id` set to null.
+
+    Returns how many documents were discarded.
+    """
+    result = await db.execute(
+        select(Document.file_path).where(Document.submission_id == submission.id)
+    )
+    paths = list(result.scalars().all())
+    if not paths:
+        return 0
+
+    for relative in paths:
+        (Path(settings.data_dir) / relative).unlink(missing_ok=True)
+    folder = Path(settings.data_dir) / submission.rec_slug / "submissions" / submission.ref
+    if folder.is_dir() and not any(folder.iterdir()):
+        folder.rmdir()
+
+    await db.execute(delete(Document).where(Document.submission_id == submission.id))
+    audit_service.record(
+        db,
+        action="discard_documents",
+        entity_type="submission",
+        entity_id=str(submission.id),
+        actor=audit_service.Actor.system("account activated"),
+        rec_slug=submission.rec_slug,
+        detail=f"ref={submission.ref} documents={len(paths)}",
+    )
+    await db.commit()
+    return len(paths)

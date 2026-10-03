@@ -21,14 +21,7 @@
 		codice_fiscale: 'onboarding.field_codice_fiscale',
 		pod: 'onboarding.field_pod',
 		indirizzo: 'onboarding.field_indirizzo',
-		fornitore: 'onboarding.field_fornitore',
-		numero_contratto: 'onboarding.field_numero_contratto',
-		consumo_annuo: 'onboarding.field_consumo_annuo',
-		tipo_documento: 'onboarding.field_tipo_documento',
-		data_nascita: 'onboarding.field_data_nascita',
-		luogo_nascita: 'onboarding.field_luogo_nascita',
-		sesso: 'onboarding.field_sesso',
-		numero_documento: 'onboarding.field_numero_documento',
+		comune: 'onboarding.field_comune',
 		scadenza: 'onboarding.field_scadenza',
 	};
 
