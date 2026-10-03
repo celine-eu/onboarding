@@ -250,6 +250,11 @@ class Settings(BaseSettings):
     otp_max_sends_per_hour: int = 3
     otp_lockout_seconds: int = 3600
 
+    # The legal host serving each community's documents
+    # (`services/legal_documents.py`). Empty: a consent slot shows only what the
+    # manifest declares, as before.
+    legal_base_url: str = ""
+
     # REC registry — where an approved participant is registered as a community
     # member. Empty disables registration entirely, which is the configuration a
     # deployment without a registry runs.

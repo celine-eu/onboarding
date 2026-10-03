@@ -91,9 +91,11 @@
 	let consentVersions = $derived(
 		config
 			? {
-					gdpr: asks('gdpr') ? (config.consent.gdpr?.version ?? '1.0') : null,
-					policy: asks('policy') ? (config.consent.policy?.version ?? '1.0') : null,
-					statute: asks('statute') ? (config.consent.statute?.version ?? '1.0') : null
+					// The version the server shows; none when it does not know it yet (the
+					// legal host has not answered), and then the acceptance date tracks it.
+					gdpr: asks('gdpr') ? (config.consent.gdpr?.version ?? null) : null,
+					policy: asks('policy') ? (config.consent.policy?.version ?? null) : null,
+					statute: asks('statute') ? (config.consent.statute?.version ?? null) : null
 				}
 			: { gdpr: null, policy: null, statute: null }
 	);
@@ -1304,6 +1306,13 @@
 						</div>
 					{:else if sharingOffers.length > 0}
 						<div class="data-sharing">
+							{#if config?.consent?.data_sharing?.notice?.url}
+								<p class="data-sharing-notice">
+									<a href={config.consent.data_sharing.notice.url} target="_blank" rel="noopener">
+										{$t('onboarding.data_sharing_notice')}
+									</a>
+								</p>
+							{/if}
 							{#if sharingSummary && consentOffers.length > 0}
 								<h3 class="data-sharing-title">{sharingSummary.title}</h3>
 								<div class="offer-card offer-primary">

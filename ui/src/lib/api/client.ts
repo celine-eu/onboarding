@@ -167,10 +167,13 @@ export interface SiteConfig {
 	consent: Record<
 		string,
 		{
-			version?: string;
+			/** None until the legal host has answered: the acceptance date then tracks it. */
+			version?: string | null;
 			file?: string;
 			url?: string;
 			required: boolean;
+			/** The data-sharing step only: the privacy notice shown above the offers. */
+			notice?: { url: string; version?: string | null };
 			offers?: string[];
 			primary?: string;
 			/** Recipient alias → the name shown beside an offer's title. */

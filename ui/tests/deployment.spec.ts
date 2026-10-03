@@ -441,6 +441,11 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		await expect(page.locator('.data-sharing-title')).toHaveText(
 			summaryTitle ?? 'Condividi i tuoi dati con la comunità'
 		);
+		// The privacy notice for sharing, above the offers, when the community has one.
+		const notice = config.consent?.data_sharing?.notice as { url?: string } | undefined;
+		if (notice?.url) {
+			await expect(page.locator('.data-sharing-notice a')).toHaveAttribute('href', notice.url);
+		}
 		const offers = page.locator('.offer-card');
 		await expect(offers.first()).toBeVisible();
 		// The first card's first checkbox, deliberately, in both layouts: with a summary
@@ -498,6 +503,8 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		// was never asked, and nothing is recorded for it.
 		for (const slot of ['gdpr', 'policy', 'statute']) {
 			expect(row[`${slot}_consent`]).toBe(Boolean(config.consent?.[slot]));
+			// The version recorded is the one the wizard was shown.
+			expect(row[`${slot}_consent_version`] ?? null).toBe(config.consent?.[slot]?.version ?? null);
 		}
 		// The evidence the backend refuses to record without: an offer id, the
 		// version of the text that was shown, and a hash of what was rendered.

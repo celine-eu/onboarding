@@ -25,19 +25,35 @@ class ConsentNotGivenError(ValueError):
     """A document the community asks to accept was not accepted."""
 
 
-def _consents(data: ConsentCreate, asked: tuple[str, ...], now: datetime) -> dict:
-    """The consent columns: the asked slots as given, the others never recorded."""
+class ConsentVersionMismatchError(ValueError):
+    """The applicant accepted a version that is no longer the one shown: the page is stale."""
+
+
+def _consents(data: ConsentCreate, documents: dict[str, dict], now: datetime) -> dict:
+    """The consent columns: the asked slots as given, the others never recorded.
+
+    The version recorded is the one this service shows (`consent_documents`), never what
+    the client says. A client naming another version saw an older page and must reload.
+    A document whose version is not known (the legal host has not answered yet) is
+    recorded without one: its acceptance date says which it was.
+    """
     from celine.onboarding.services import template_service
 
-    missing = [slot for slot in asked if not getattr(data, f"{slot}_consent")]
+    missing = [slot for slot in documents if not getattr(data, f"{slot}_consent")]
     if missing:
         raise ConsentNotGivenError(f"Required consent not given: {', '.join(missing)}")
     columns: dict = {}
     for slot in template_service.CONSENT_SLOTS:
-        given = slot in asked and getattr(data, f"{slot}_consent")
+        given = slot in documents and getattr(data, f"{slot}_consent")
+        version = documents[slot].get("version") if given else None
+        sent = getattr(data, f"{slot}_consent_version")
+        if given and version is not None and sent is not None and str(sent) != str(version):
+            raise ConsentVersionMismatchError(
+                f"{slot}: version {sent} was accepted, but the current one is {version}; reload the page"
+            )
         columns[f"{slot}_consent"] = given
         columns[f"{slot}_consent_at"] = now if given else None
-        columns[f"{slot}_consent_version"] = getattr(data, f"{slot}_consent_version") if given else None
+        columns[f"{slot}_consent_version"] = str(version) if version is not None else None
     return columns
 
 
@@ -56,7 +72,7 @@ async def create_from_consent(
     submission = Submission(
         rec_slug=rec_slug,
         consent_ip=client_ip,
-        **_consents(data, template_service.consent_slots(rec_slug), now),
+        **_consents(data, template_service.consent_documents(rec_slug), now),
         declared_existing_member=data.declared_existing_member,
     )
     db.add(submission)

@@ -53,8 +53,9 @@ fields:
 consent:
   gdpr: { version: "1.0", url: "https://..." }      # external URL
   policy: { version: "1.0", file: consent/policy.pdf } # local file
-  statute: { version: "1.0", url: "https://..." }
+  statute: { required: true }                       # no url/file: resolved on the legal host (LEGAL_BASE_URL)
   data_sharing:                                     # optional; collected in the statute step
+    notice_url: "https://..."                       # optional; the privacy notice shown above the offers (default: the legal host's)
     required: false                                 # GDPR Art. 7(4): NEVER required, never blocks submission
     offers: [household-energy-flexibility]          # optional allow-list; omit to offer every consent-based offer the connector publishes
     primary: household-energy-flexibility         # optional; shown first. Gating is each offer's own requires_offers (from the connector): an offer is inactive until its prerequisites are accepted, and refused without them
@@ -264,3 +265,25 @@ verification and no agreement, so it declares no capacity — and capacity is wh
 decides whether a recipient is disclosed or must be consented to separately. See
 [dataspace-integration.md](dataspace-integration.md).
 
+## Consent documents and the legal host
+
+`gdpr`, `policy` and `statute` are the documents an applicant accepts on the first step.
+**A slot the manifest leaves out is not asked**: no checkbox, nothing required or recorded.
+That is how a community that publishes no statute is onboarded.
+
+A declared slot shows, in this order:
+
+1. its own `url` or `file`;
+2. otherwise, when `LEGAL_BASE_URL` is set, the legal host's document for that community.
+   This is the versioned page in the community's `locale` (`gdpr` → `privacy`, `policy` →
+   `regulations`, `statute` → `statute`, read from `<LEGAL_BASE_URL>/<community>/current.json`,
+   refreshed every five minutes, the last good copy kept when the host does not answer).
+   A document the host does not have, or that its owner publishes nowhere, is not asked;
+3. before the host has ever answered, the slot's address with no version. The acceptance's
+   date then says which version it was, from the host's dated history.
+
+The version recorded with an acceptance is the one this service showed, never the client's.
+A submission naming another version came from a stale page, and is refused with 409.
+
+The data-sharing step shows a link to its privacy notice above the offers:
+`data_sharing.notice_url`, or the legal host's `data_sharing_notice` document.

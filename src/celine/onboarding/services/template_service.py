@@ -73,14 +73,22 @@ def load_manifest(rec_slug: str) -> dict[str, Any]:
 CONSENT_SLOTS = ("gdpr", "policy", "statute")
 
 
+def consent_documents(rec_slug: str) -> dict[str, dict[str, Any]]:
+    """Per asked consent slot, its document: url, version (`legal_documents`)."""
+    from celine.onboarding.services import legal_documents
+
+    return legal_documents.consent_documents(rec_slug, load_manifest(rec_slug))
+
+
 def consent_slots(rec_slug: str) -> tuple[str, ...]:
-    """The consent slots this community asks for: those its manifest declares.
+    """The consent slots this community asks for: those it declares and that have a document.
 
     A community that publishes no statute (or no regulations) leaves the slot out of
-    `consent:`, and the applicant is not asked to accept a document nobody can read.
+    `consent:`, or the legal host has no such document for it; either way the applicant
+    is not asked to accept a document nobody can read.
     """
-    consent = load_manifest(rec_slug).get("consent") or {}
-    return tuple(slot for slot in CONSENT_SLOTS if isinstance(consent.get(slot), dict))
+    documents = consent_documents(rec_slug)
+    return tuple(slot for slot in CONSENT_SLOTS if slot in documents)
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +203,22 @@ def template_dir_for(rec_slug: str) -> Path:
     return _templates_dir() / rec_slug
 
 
+def _consent_config(rec_slug: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    """The manifest's `consent:` with each document slot resolved (`legal_documents`).
+
+    A slot that is not asked is left out, and the data-sharing block gains the notice
+    shown above the offers when there is one.
+    """
+    from celine.onboarding.services import legal_documents
+
+    consent = {k: v for k, v in (manifest.get("consent") or {}).items() if k not in CONSENT_SLOTS}
+    consent.update(legal_documents.consent_documents(rec_slug, manifest))
+    notice = legal_documents.data_sharing_notice(rec_slug, manifest)
+    if notice and isinstance(consent.get("data_sharing"), dict):
+        consent["data_sharing"] = {**consent["data_sharing"], "notice": notice}
+    return consent
+
+
 def get_config(rec_slug: str) -> dict[str, Any]:
     manifest = load_manifest(rec_slug)
     return {
@@ -203,7 +227,7 @@ def get_config(rec_slug: str) -> dict[str, Any]:
         "locale": manifest.get("locale", "it"),
         "branding": manifest.get("branding", {}),
         "fields": manifest.get("fields", {"extra": [], "hidden": []}),
-        "consent": manifest.get("consent", {}),
+        "consent": _consent_config(rec_slug, manifest),
         "steps": manifest.get("steps", list(DEFAULT_STEPS)),
         "existing_members": existing_members(manifest),
         "content": _load_content(rec_slug, manifest),

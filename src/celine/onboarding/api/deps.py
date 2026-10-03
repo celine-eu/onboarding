@@ -55,6 +55,10 @@ async def valid_rec_slug(rec_slug: str) -> str:
     await template_service.ensure_fresh()
     if rec_slug not in template_service.get_slugs():
         raise HTTPException(404, f"REC '{rec_slug}' not found")
+    # The community's legal documents, when a legal host is set and they are due.
+    from celine.onboarding.services import legal_documents
+
+    await legal_documents.refresh(rec_slug, template_service.load_manifest(rec_slug))
     return rec_slug
 
 
