@@ -133,6 +133,10 @@ def _row(pdf: FPDF, label: str, value: str | None):
 
 
 def _consent_row(pdf: FPDF, label: str, accepted: bool, at: datetime | None, version: str | None):
+    if not accepted and not version:
+        # The community did not ask for this document (it publishes none).
+        _row(pdf, label, "Not asked")
+        return
     status = "Accepted" if accepted else "Not accepted"
     detail = status
     if at:

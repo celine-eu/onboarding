@@ -53,6 +53,23 @@ test.describe('Wizard', () => {
 	});
 });
 
+test.describe('A community that publishes no statute', () => {
+	test('asks for the documents it declares and not for a statute', async ({ page }) => {
+		await page.goto(`/${REC}-no-statute/onboarding`);
+		const gdpr = page.getByLabel('Acconsento al trattamento dei dati personali ai sensi del GDPR');
+		const policy = page.getByLabel('Accetto il regolamento della comunita energetica');
+		await expect(gdpr).toBeVisible();
+		await expect(policy).toBeVisible();
+		await expect(page.getByLabel('Accetto lo statuto della comunita energetica')).toHaveCount(0);
+
+		const next = page.getByRole('button', { name: 'Avanti' });
+		await gdpr.check();
+		await expect(next).toBeDisabled();
+		await policy.check();
+		await expect(next).toBeEnabled();
+	});
+});
+
 test.describe('Wizard without document processing or SMS', () => {
 	// Needs the live backend `scripts/e2e.sh` starts, which runs with both switches off
 	// (no EXTRACTION_ENABLED or LLM_BASE_URL; a real SMS_PROVIDER without

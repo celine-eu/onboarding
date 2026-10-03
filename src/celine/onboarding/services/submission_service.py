@@ -21,12 +21,34 @@ def _assert_phone_verified(submission: Submission) -> None:
     impl(submission)
 
 
+class ConsentNotGivenError(ValueError):
+    """A document the community asks to accept was not accepted."""
+
+
+def _consents(data: ConsentCreate, asked: tuple[str, ...], now: datetime) -> dict:
+    """The consent columns: the asked slots as given, the others never recorded."""
+    from celine.onboarding.services import template_service
+
+    missing = [slot for slot in asked if not getattr(data, f"{slot}_consent")]
+    if missing:
+        raise ConsentNotGivenError(f"Required consent not given: {', '.join(missing)}")
+    columns: dict = {}
+    for slot in template_service.CONSENT_SLOTS:
+        given = slot in asked and getattr(data, f"{slot}_consent")
+        columns[f"{slot}_consent"] = given
+        columns[f"{slot}_consent_at"] = now if given else None
+        columns[f"{slot}_consent_version"] = getattr(data, f"{slot}_consent_version") if given else None
+    return columns
+
+
 async def create_from_consent(
     db: AsyncSession,
     data: ConsentCreate,
     client_ip: str,
     rec_slug: str,
 ) -> Submission:
+    from celine.onboarding.services import template_service
+
     now = datetime.now(UTC)
     if data.declared_existing_member:
         existing_member.assert_offered(rec_slug)
@@ -34,15 +56,7 @@ async def create_from_consent(
     submission = Submission(
         rec_slug=rec_slug,
         consent_ip=client_ip,
-        gdpr_consent=data.gdpr_consent,
-        gdpr_consent_at=now if data.gdpr_consent else None,
-        gdpr_consent_version=data.gdpr_consent_version,
-        policy_consent=data.policy_consent,
-        policy_consent_at=now if data.policy_consent else None,
-        policy_consent_version=data.policy_consent_version,
-        statute_consent=data.statute_consent,
-        statute_consent_at=now if data.statute_consent else None,
-        statute_consent_version=data.statute_consent_version,
+        **_consents(data, template_service.consent_slots(rec_slug), now),
         declared_existing_member=data.declared_existing_member,
     )
     db.add(submission)
@@ -297,6 +311,12 @@ async def update_submission(
     updates = data.model_dump(exclude_unset=True)
     now = datetime.now(UTC)
 
+    if "statute_consent" in updates:
+        from celine.onboarding.services import template_service
+
+        if "statute" not in template_service.consent_slots(submission.rec_slug):
+            # The community asks for no statute: nothing to record, whatever is sent.
+            updates.pop("statute_consent")
     if (
         "statute_consent" in updates
         and updates["statute_consent"]

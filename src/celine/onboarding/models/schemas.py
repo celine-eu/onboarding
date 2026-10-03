@@ -13,12 +13,15 @@ from celine.onboarding.validators.pod_code import validate_pod_code
 
 
 class ConsentCreate(BaseModel):
-    gdpr_consent: bool
-    gdpr_consent_version: str = Field(max_length=20)
-    policy_consent: bool
-    policy_consent_version: str = Field(max_length=20)
-    statute_consent: bool
-    statute_consent_version: str = Field(max_length=20)
+    # Each slot is asked only when the community's manifest declares it
+    # (`template_service.consent_slots`); an undeclared one is never recorded, whatever
+    # is sent, and a declared one must be accepted.
+    gdpr_consent: bool = False
+    gdpr_consent_version: str | None = Field(default=None, max_length=20)
+    policy_consent: bool = False
+    policy_consent_version: str | None = Field(default=None, max_length=20)
+    statute_consent: bool = False
+    statute_consent_version: str | None = Field(default=None, max_length=20)
     # "I am already a member" (REQ-0024). Refused with a 422 by a template that
     # does not offer it, rather than recorded and then ignored.
     declared_existing_member: bool = False

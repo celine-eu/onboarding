@@ -355,13 +355,20 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		await page.goto(`/${rec}/onboarding`);
 
 		// ── consents ────────────────────────────────────────────────────────
-		// Only two here. A deployment that gives the statute its own step does not
-		// render the statute checkbox on this one — it belongs to that step, and
-		// checking for it here would fail on exactly the wizard this run exists for.
-		await page
-			.getByLabel('Acconsento al trattamento dei dati personali ai sensi del GDPR')
-			.check();
-		await page.getByLabel('Accetto il regolamento della comunita energetica').check();
+		// Exactly the documents this community declares: a slot its manifest leaves
+		// out (a statute it publishes nowhere) has no checkbox, and is asserted absent.
+		const consentLabels: Record<string, string> = {
+			gdpr: 'Acconsento al trattamento dei dati personali ai sensi del GDPR',
+			policy: 'Accetto il regolamento della comunita energetica',
+			statute: 'Accetto lo statuto della comunita energetica'
+		};
+		for (const [slot, label] of Object.entries(consentLabels)) {
+			if (config.consent?.[slot]) {
+				await page.getByLabel(label).check();
+			} else {
+				await expect(page.getByLabel(label)).toHaveCount(0);
+			}
+		}
 		await page.getByRole('button', { name: 'Avanti' }).click();
 
 		// Clicking past the consents is what creates the row.
@@ -417,8 +424,7 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		await expect(page.locator('.eligibility-detail')).toContainText(MUNICIPALITY!);
 		await page.getByRole('button', { name: 'Avanti' }).click();
 
-		// ── statute ─────────────────────────────────────────────────────────
-		await page.getByLabel('Accetto lo statuto della comunita energetica').check();
+		// ── statute (the data-sharing step; the statute document is on `consents`) ──
 
 		// The sharing offers render here and nowhere else in the wizard, and this
 		// is the only step that can record a data-sharing consent. It is asserted

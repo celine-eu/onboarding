@@ -113,11 +113,22 @@ async def main():
                     "steps": ["consents", "personal", "phone_verify", "review"],
                     # The declaration is offered, and the supply address deferred to
                     # the operator as when coverage is skipped (existing-member.spec.ts).
-                    "existing_members": {"enabled": True, "skip_steps": ["eligibility"]}}
+                    "existing_members": {"enabled": True, "skip_steps": ["eligibility"]},
+                    # The documents an applicant accepts; each declared slot is a checkbox.
+                    "consent": {slot: {"version": "1.0", "url": f"https://rec.example.org/{slot}"}
+                                for slot in ("gdpr", "policy", "statute")}}
         if rec:
             rec.manifest = manifest
         else:
             db.add(Rec(slug=REC, name="E2E Community", manifest=manifest, active=True))
+        # A community that publishes no statute: its applicants are not asked for one.
+        no_statute = dict(manifest, slug=f"{REC}-no-statute", name="E2E Community without statute",
+                          consent={k: v for k, v in manifest["consent"].items() if k != "statute"})
+        other = (await db.execute(select(Rec).where(Rec.slug == no_statute["slug"]))).scalar_one_or_none()
+        if other:
+            other.manifest = no_statute
+        else:
+            db.add(Rec(slug=no_statute["slug"], name=no_statute["name"], manifest=no_statute, active=True))
         await db.commit()
 
         count = len((await db.execute(select(Submission).where(Submission.rec_slug == REC))).scalars().all())

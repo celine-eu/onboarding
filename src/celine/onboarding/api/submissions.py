@@ -74,7 +74,7 @@ async def create_submission(
     client_ip = peer_ip(request)
     try:
         submission = await submission_service.create_from_consent(db, data, client_ip, rec_slug)
-    except existing_member.DeclarationNotOfferedError as exc:
+    except (existing_member.DeclarationNotOfferedError, submission_service.ConsentNotGivenError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return submission
 

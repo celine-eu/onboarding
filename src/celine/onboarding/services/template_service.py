@@ -69,6 +69,20 @@ def load_manifest(rec_slug: str) -> dict[str, Any]:
     return _cache[rec_slug]
 
 
+#: The documents an applicant may be asked to accept at the first step.
+CONSENT_SLOTS = ("gdpr", "policy", "statute")
+
+
+def consent_slots(rec_slug: str) -> tuple[str, ...]:
+    """The consent slots this community asks for: those its manifest declares.
+
+    A community that publishes no statute (or no regulations) leaves the slot out of
+    `consent:`, and the applicant is not asked to accept a document nobody can read.
+    """
+    consent = load_manifest(rec_slug).get("consent") or {}
+    return tuple(slot for slot in CONSENT_SLOTS if isinstance(consent.get(slot), dict))
+
+
 # ---------------------------------------------------------------------------
 # Organisation — the tenancy key for the admin console
 # ---------------------------------------------------------------------------

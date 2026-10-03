@@ -80,14 +80,22 @@
 			: {}
 	);
 
+	// A consent slot is asked only when the community's manifest declares it: a
+	// community that publishes no statute (or no regulations) leaves it out, and the
+	// applicant is not asked to accept a document they cannot read.
+	type ConsentSlot = 'gdpr' | 'policy' | 'statute';
+	function asks(slot: ConsentSlot): boolean {
+		return !!(config?.consent as Record<string, unknown> | undefined)?.[slot];
+	}
+
 	let consentVersions = $derived(
 		config
 			? {
-					gdpr: config.consent.gdpr?.version ?? '1.0',
-					policy: config.consent.policy?.version ?? '1.0',
-					statute: config.consent.statute?.version ?? '1.0'
+					gdpr: asks('gdpr') ? (config.consent.gdpr?.version ?? '1.0') : null,
+					policy: asks('policy') ? (config.consent.policy?.version ?? '1.0') : null,
+					statute: asks('statute') ? (config.consent.statute?.version ?? '1.0') : null
 				}
-			: { gdpr: '1.0', policy: '1.0', statute: '1.0' }
+			: { gdpr: null, policy: null, statute: null }
 	);
 
 	let currentStep = $state(0);
@@ -447,7 +455,11 @@
 
 	function canProceed(): boolean {
 		if (currentStepName === 'consents') {
-			return gdprConsent && policyConsent && statuteConsent;
+			return (
+				(!asks('gdpr') || gdprConsent) &&
+				(!asks('policy') || policyConsent) &&
+				(!asks('statute') || statuteConsent)
+			);
 		}
 		if (currentStepName === 'utility') return !stepBusy;
 		if (currentStepName === 'personal') {
@@ -953,27 +965,33 @@
 					{:else}
 						<p class="consent-intro">{$t('onboarding.consent_intro')}</p>
 					{/if}
-					<ConsentCheckbox
-						label={$t('onboarding.gdpr_consent')}
-						bind:checked={gdprConsent}
-						required
-						documentUrl={config?.consent?.gdpr?.url ?? `/api/${rec}/consent-documents/gdpr`}
-						documentLabel={$t('onboarding.view_document')}
-					/>
-					<ConsentCheckbox
-						label={$t('onboarding.policy_consent')}
-						bind:checked={policyConsent}
-						required
-						documentUrl={config?.consent?.policy?.url ?? `/api/${rec}/consent-documents/policy`}
-						documentLabel={$t('onboarding.view_document')}
-					/>
-					<ConsentCheckbox
-						label={$t('onboarding.statute_consent')}
-						bind:checked={statuteConsent}
-						required
-						documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
-						documentLabel={$t('onboarding.view_document')}
-					/>
+					{#if asks('gdpr')}
+						<ConsentCheckbox
+							label={$t('onboarding.gdpr_consent')}
+							bind:checked={gdprConsent}
+							required
+							documentUrl={config?.consent?.gdpr?.url ?? `/api/${rec}/consent-documents/gdpr`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
+					{#if asks('policy')}
+						<ConsentCheckbox
+							label={$t('onboarding.policy_consent')}
+							bind:checked={policyConsent}
+							required
+							documentUrl={config?.consent?.policy?.url ?? `/api/${rec}/consent-documents/policy`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
+					{#if asks('statute')}
+						<ConsentCheckbox
+							label={$t('onboarding.statute_consent')}
+							bind:checked={statuteConsent}
+							required
+							documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
 					<ConsentCheckbox
 						label={$t('onboarding.keep_me_updated')}
 						bind:checked={keepMeUpdated}

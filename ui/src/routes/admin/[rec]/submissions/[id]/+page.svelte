@@ -268,9 +268,13 @@
 	const consents = $derived(
 		submission
 			? [
-					consentRow($t('admin.detail.consent_gdpr'), submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version),
-					consentRow($t('admin.detail.consent_policy'), submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version),
-					consentRow($t('admin.detail.consent_statute'), submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version),
+					// A document consent with neither a decision nor a version was never asked:
+					// the community does not publish that document (onboarding `consent_slots`).
+					...[
+						consentRow($t('admin.detail.consent_gdpr'), submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version),
+						consentRow($t('admin.detail.consent_policy'), submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version),
+						consentRow($t('admin.detail.consent_statute'), submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version)
+					].filter((row) => row.given || row.version),
 					consentRow(
 						$t('admin.detail.consent_data_sharing'),
 						submission.data_sharing_consent,
