@@ -84,3 +84,21 @@ async def test_the_final_step_cannot_record_an_undeclared_statute(seed_rec):
     except Exception:
         pass
     assert current.statute_consent is False
+
+
+def test_submitting_requires_only_the_declared_documents(seed_rec):
+    from celine.onboarding.workflows.engine import can_submit
+
+    def _submission(rec_slug, **consents):
+        return MagicMock(
+            rec_slug=rec_slug, first_name="A", last_name="B", fiscal_code="X", pod_code="IT0",
+            email="a@example.org", phone=None, extra_data={}, declared_existing_member=False,
+            gdpr_consent=consents.get("gdpr", False), policy_consent=consents.get("policy", False),
+            statute_consent=consents.get("statute", False),
+        )
+
+    seed_rec("rec-a", consent={"gdpr": DOC, "policy": DOC})
+    assert can_submit(_submission("rec-a", gdpr=True, policy=True)) == []
+    assert can_submit(_submission("rec-a", gdpr=True)) == ["Policy consent is required"]
+    seed_rec("rec-b", consent={"gdpr": DOC, "policy": DOC, "statute": DOC})
+    assert can_submit(_submission("rec-b", gdpr=True, policy=True)) == ["Statute consent is required"]

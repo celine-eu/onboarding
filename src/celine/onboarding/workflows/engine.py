@@ -38,12 +38,12 @@ def can_submit(submission: Submission) -> list[str]:
         errors.append("pod_code is required")
     if not submission.email and not submission.phone:
         errors.append("email or phone is required")
-    if not submission.gdpr_consent:
-        errors.append("GDPR consent is required")
-    if not submission.policy_consent:
-        errors.append("Policy consent is required")
-    if not submission.statute_consent:
-        errors.append("Statute consent is required")
+    # Only the documents the community declares: one it publishes nowhere was never
+    # asked, so it cannot be missing (`template_service.consent_slots`).
+    asked = template_service.consent_slots(submission.rec_slug)
+    for slot, name in (("gdpr", "GDPR"), ("policy", "Policy"), ("statute", "Statute")):
+        if slot in asked and not getattr(submission, f"{slot}_consent"):
+            errors.append(f"{name} consent is required")
 
     manifest = template_service.load_manifest(submission.rec_slug)
     extra_fields = manifest.get("fields", {}).get("extra", [])

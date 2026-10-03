@@ -431,13 +431,22 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		// rather than treated as optional: a deployment that publishes offers and
 		// never manages to show them has a broken funnel, and the "offers could not
 		// be loaded" branch renders in this same place and would otherwise pass.
-		await expect(page.getByText('Condividi i tuoi dati con la comunità')).toBeVisible();
+		// A community with a `consent.data_sharing.summary` shows one switch under its
+		// own title, the offers folded under "Scopri di più"; one without shows the
+		// generic title and a card per offer.
+		const summary = config.consent?.data_sharing?.summary as
+			| Record<string, { title?: string }>
+			| undefined;
+		const summaryTitle = summary ? (summary.it ?? Object.values(summary)[0])?.title : undefined;
+		await expect(page.locator('.data-sharing-title')).toHaveText(
+			summaryTitle ?? 'Condividi i tuoi dati con la comunità'
+		);
 		const offers = page.locator('.offer-card');
 		await expect(offers.first()).toBeVisible();
-		// The first card, deliberately. Where a community declares a primary offer
-		// the others are inert until it is accepted, and the primary is ordered
-		// first — so the first card is the one that can always be checked.
-		await offers.first().getByRole('checkbox').check();
+		// The first card's first checkbox, deliberately, in both layouts: with a summary
+		// it is the switch, which ticks every offer; without one it is the primary
+		// offer, ordered first because the others are inert until it is accepted.
+		await offers.first().getByRole('checkbox').first().check();
 		await page.getByRole('button', { name: 'Avanti' }).click();
 
 		// ── review ──────────────────────────────────────────────────────────
@@ -485,9 +494,11 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		// Persisted by the eligibility step, and the thing that later decides which
 		// registry area the member is enrolled into.
 		expect(row.supply_municipality).toBe(MUNICIPALITY);
-		expect(row.gdpr_consent).toBe(true);
-		expect(row.policy_consent).toBe(true);
-		expect(row.statute_consent).toBe(true);
+		// Each document the community declares was accepted; one it publishes nowhere
+		// was never asked, and nothing is recorded for it.
+		for (const slot of ['gdpr', 'policy', 'statute']) {
+			expect(row[`${slot}_consent`]).toBe(Boolean(config.consent?.[slot]));
+		}
 		// The evidence the backend refuses to record without: an offer id, the
 		// version of the text that was shown, and a hash of what was rendered.
 		expect(row.data_sharing_consent).toBe(true);
