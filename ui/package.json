@@ -24,7 +24,7 @@
 	},
 	"dependencies": {
 		"@fontsource-variable/dm-sans": "^5.3.0",
-		"isomorphic-dompurify": "^3.16.0",
+		"isomorphic-dompurify": "^4.4.0",
 		"marked": "^18.0.4",
 		"sveltekit-i18n": "^2.4.2"
 	}
