@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
@@ -10,7 +10,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
 RUN pnpm build
 
-FROM node:22-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
