@@ -191,6 +191,13 @@ class SubmissionRead(BaseModel):
     statute_consent: bool
     statute_consent_at: datetime | None
     statute_consent_version: str | None
+    # The page each accepted document was served at, and its sha256 as published.
+    gdpr_consent_url: str | None = None
+    gdpr_consent_sha256: str | None = None
+    policy_consent_url: str | None = None
+    policy_consent_sha256: str | None = None
+    statute_consent_url: str | None = None
+    statute_consent_sha256: str | None = None
     data_sharing_consent: bool
     data_sharing_consent_at: datetime | None
     data_sharing_consent_offer_ids: list[str] | None

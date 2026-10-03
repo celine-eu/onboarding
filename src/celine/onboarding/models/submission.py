@@ -108,6 +108,14 @@ class Submission(Base):
         DateTime(timezone=True), nullable=True
     )
     statute_consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Where each accepted document was served, and its sha256 as published: with the
+    # version, exactly which text was accepted (`services/legal_documents.py`).
+    gdpr_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gdpr_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    policy_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    statute_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    statute_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     keep_me_updated: Mapped[bool] = mapped_column(default=False)
 

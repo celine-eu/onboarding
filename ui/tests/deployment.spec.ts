@@ -503,8 +503,10 @@ test.describe('A deployed community wizard, walked end to end', () => {
 		// was never asked, and nothing is recorded for it.
 		for (const slot of ['gdpr', 'policy', 'statute']) {
 			expect(row[`${slot}_consent`]).toBe(Boolean(config.consent?.[slot]));
-			// The version recorded is the one the wizard was shown.
+			// The version recorded is the one the wizard was shown, with the page and its hash.
 			expect(row[`${slot}_consent_version`] ?? null).toBe(config.consent?.[slot]?.version ?? null);
+			expect(row[`${slot}_consent_url`] ?? null).toBe(config.consent?.[slot]?.url ?? null);
+			expect(row[`${slot}_consent_sha256`] ?? null).toBe(config.consent?.[slot]?.sha256 ?? null);
 		}
 		// The evidence the backend refuses to record without: an offer id, the
 		// version of the text that was shown, and a hash of what was rendered.

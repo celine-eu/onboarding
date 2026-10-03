@@ -54,6 +54,9 @@ def _consents(data: ConsentCreate, documents: dict[str, dict], now: datetime) ->
         columns[f"{slot}_consent"] = given
         columns[f"{slot}_consent_at"] = now if given else None
         columns[f"{slot}_consent_version"] = str(version) if version is not None else None
+        columns[f"{slot}_consent_url"] = documents[slot].get("url") if given else None
+        sha = documents[slot].get("sha256") if given else None
+        columns[f"{slot}_consent_sha256"] = sha if isinstance(sha, str) else None
     return columns
 
 

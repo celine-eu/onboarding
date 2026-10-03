@@ -141,6 +141,10 @@ async def test_the_recorded_version_is_the_served_one(seed_rec):
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"}, consent={"gdpr": ASK})
     row = await _create(ConsentCreate(gdpr_consent=True, gdpr_consent_version="0.3"))
     assert row.gdpr_consent_version == "0.3"
+    # The page shown and its hash, as published: exactly which text was accepted.
+    assert row.gdpr_consent_url == f"{BASE}/rec-a/privacy-notice/0.3/it/"
+    assert row.gdpr_consent_sha256 == "a" * 64
+    assert row.statute_consent_url is None and row.statute_consent_sha256 is None
     row = await _create(ConsentCreate(gdpr_consent=True))  # an old client sending no version
     assert row.gdpr_consent_version == "0.3"
 
