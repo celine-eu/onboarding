@@ -12,9 +12,10 @@ locale: it
 # present; `task import-templates` refuses a manifest where the two disagree, and
 # resolves this from the dataspace block when only that one is set.
 #
-# Omit it and the community is administrable only by *platform* operators holding
-# a realm-level group — a coherent setup for a single-community deployment. It
-# fails closed either way: no organization means no per-community grant matches.
+# Omit it and the community is administrable only by a platform admin (the
+# Keycloak realm role `platform-admin`) — a coherent setup for a single-community
+# deployment. It fails closed either way: no organization means no per-community
+# grant matches, and a realm group grants nothing.
 # The organization must already exist in Keycloak, with its role-hierarchy groups
 # created (`celine-policies keycloak sync-users` does both). Onboarding never
 # creates one.

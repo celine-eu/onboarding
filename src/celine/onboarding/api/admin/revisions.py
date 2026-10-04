@@ -149,7 +149,10 @@ async def record_revision(
     return _render(outcome.revision, reveal=False)
 
 
-class RetryRequest(BaseModel):
+class RevisionRetryRequest(BaseModel):
+    # Not `RetryRequest`: the enablement retry's body already carries that name,
+    # and a second schema with the same title is dropped by the SDK's client
+    # generator, taking this route with it.
     step: revision.PropagationStep | None = None
 
 
@@ -160,7 +163,7 @@ class RetryRequest(BaseModel):
 async def retry_revision(
     submission_id: uuid.UUID,
     revision_id: uuid.UUID,
-    body: RetryRequest,
+    body: RevisionRetryRequest,
     _: ReviseDep,
     actor: ActorDep,
     ip: IpDep,

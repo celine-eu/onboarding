@@ -312,15 +312,15 @@ def registry_sync(
     token: str = typer.Option(
         None,
         "--token",
-        help="A realm admin's own access token. Required unless --local: no service "
+        help="A platform admin's own access token. Required unless --local: no service "
         "account may start a sync",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
-    """Push a REC's template areas to its registry community, as a realm admin.
+    """Push a REC's template areas to its registry community, as a platform admin.
 
     The same route the console calls, `POST /api/admin/recs/{rec}/registry-sync`,
-    authorised as `recs.write`, which only a realm-level `admins` group holds.
+    authorised as `recs.write`, which only the realm role `platform-admin` grants.
     Pass that admin's own token with `--token`, or run `--local` in process under
     the break-glass rules (ALLOW_LOCAL_ADMIN=true). The CLI's own
     client-credentials identity is never used for it.
@@ -329,7 +329,7 @@ def registry_sync(
     """
     if not local and not token:
         typer.secho(
-            "registry-sync needs --token <a realm admin's access token>, or --local. "
+            "registry-sync needs --token <a platform admin's access token>, or --local. "
             "It is a person's decision: the CLI's service account cannot start one.",
             fg=typer.colors.RED,
             err=True,

@@ -112,26 +112,42 @@ class TestMe:
         assert "submissions.review" not in capabilities
         assert "submissions.purge" not in capabilities
 
-    def test_a_read_only_realm_group_alone_is_403(self, client, issue_token):
-        """Signed in, platform-wide badge, no organization — the console is not theirs.
+    @pytest.mark.parametrize("group", ["/admins", "admins", "/managers", "/viewers"])
+    def test_a_realm_group_alone_is_403(self, client, issue_token, group):
+        """Signed in, a realm group, no organization — the console is not theirs.
 
-        `viewers` at realm level used to list every REC on the deployment. It now
-        grants nothing, so `/me` answers the same 403 as a token that grants
-        nothing at all, and the console shows its denied page.
+        A realm `/admins` was the platform admin before the role. It now grants
+        nothing, so `/me` answers the same 403 as a token that grants nothing at
+        all, and the console shows its denied page.
+
+        @verifies REQ-0030
         """
-        token = issue_token(email="realm-viewer@example.org", groups=["/viewers"])
+        token = issue_token(email="realm-group@example.org", groups=[group, group.lstrip("/")])
         assert client.get("/api/admin/me", headers=auth(token)).status_code == 403
 
-    def test_a_realm_manager_sees_every_community(self, client, issue_token):
-        token = issue_token(email="platform@example.org", groups=["/managers"])
+    def test_a_platform_admin_sees_every_community_and_their_roles(self, client, issue_token):
+        """
+        @verifies REQ-0030
+        """
+        token = issue_token(
+            email="platform@example.org",
+            realm_access={"roles": ["offline_access", "platform-admin"]},
+        )
         body = client.get("/api/admin/me", headers=auth(token)).json()
         assert [r["slug"] for r in body["recs"]] == ["orphan", "rec-a", "rec-b"]
-        assert body["realm_groups"] == ["managers"]
-        # The tier still decides the actions: the two irreversible ones are
-        # `admins`-only at either level.
+        assert body["platform_roles"] == ["offline_access", "platform-admin"]
+        assert "realm_groups" not in body
         capabilities = body["recs"][1]["capabilities"]
-        assert "submissions.review" in capabilities
-        assert "submissions.purge" not in capabilities
+        assert {"submissions.purge", "enablement.revoke", "recs.write"} <= set(capabilities)
+
+    def test_an_operator_reports_no_platform_role(self, client, operator_token):
+        """
+        @verifies REQ-0030
+        """
+        token = operator_token(ORG, "admins", realm_groups=("admins",))
+        body = client.get("/api/admin/me", headers=auth(token)).json()
+        assert body["platform_roles"] == []
+        assert [r["slug"] for r in body["recs"]] == ["rec-a"]
 
     def test_an_untyped_organization_is_403(self, client, operator_token):
         """The organization grant needs the REC type the realm sync writes."""
@@ -146,11 +162,12 @@ class TestMe:
         assert body["subject_type"] == "user"
         assert body["organizations"] == [ORG]
 
-    def test_realm_operator_sees_every_community(self, client, operator_token):
-        token = operator_token(ORG, realm=("admins",))
+    def test_platform_admin_sees_every_community(self, client, operator_token):
+        token = operator_token(ORG, roles=("platform-admin",))
         body = client.get("/api/admin/me", headers=auth(token)).json()
-        # Including the REC that declares no organization at all — a realm grant
-        # is platform-wide, which is exactly how such a REC stays administrable.
+        # Including the REC that declares no organization at all — the platform
+        # role is platform-wide, which is exactly how such a REC stays
+        # administrable.
         assert [r["slug"] for r in body["recs"]] == ["orphan", "rec-a", "rec-b"]
 
     def test_operator_of_nothing_is_403(self, client, issue_token):
@@ -176,7 +193,7 @@ class TestMe:
         button for it.
         """
         for token in (
-            operator_token(ORG, "managers", realm=("admins",)),
+            operator_token(ORG, "managers", roles=("platform-admin",)),
             service_token("onboarding.admin"),
         ):
             body = client.get("/api/admin/me", headers=auth(token)).json()
@@ -268,22 +285,25 @@ class TestRecs:
         org_admin = operator_token(ORG, "admins")
         assert client.post("/api/admin/recs/reload", headers=auth(org_admin)).status_code == 403
 
-    def test_reload_allows_a_realm_operator(self, client, operator_token, monkeypatch):
+    def test_reload_allows_a_platform_admin(self, client, operator_token, monkeypatch):
         from celine.onboarding.services import template_service
 
         async def _noop_reload():
             return None
 
         monkeypatch.setattr(template_service, "reload", _noop_reload)
-        token = operator_token(ORG, realm=("managers",))
+        token = operator_token(ORG, roles=("platform-admin",))
         assert client.post("/api/admin/recs/reload", headers=auth(token)).status_code == 200
 
-    def test_reload_refuses_a_read_only_realm_group(self, client, operator_token):
-        """A realm badge is platform-wide, so only admins and managers carry one."""
-        token = operator_token(ORG, realm=("viewers",))
+    @pytest.mark.parametrize("group", ["admins", "managers", "viewers"])
+    def test_reload_refuses_a_realm_group(self, client, operator_token, group):
+        """A realm group is not a platform grant, `admins` included.
+
+        @verifies REQ-0030
+        """
+        token = operator_token(ORG, realm_groups=(group,))
         response = client.post("/api/admin/recs/reload", headers=auth(token))
         assert response.status_code == 403
-        assert "not a platform-wide grant" in response.json()["detail"]
 
     def test_recs_is_not_shadowed_by_the_rec_slug_route(self, client, operator_token):
         """`/api/admin/recs` is the community list, not a REC named "recs"."""
@@ -299,7 +319,7 @@ class TestRecs:
 
 class TestTenancy:
     def test_unknown_rec_is_404(self, client, operator_token):
-        token = operator_token(ORG, "admins", realm=("admins",))
+        token = operator_token(ORG, "admins", roles=("platform-admin",))
         assert client.get("/api/admin/nope/submissions", headers=auth(token)).status_code == 404
 
     def test_operator_is_403_on_another_community(self, client, operator_token):

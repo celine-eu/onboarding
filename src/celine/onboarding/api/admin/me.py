@@ -7,7 +7,6 @@ anything", which the frontend turns into a denied page rather than a login loop.
 
 from __future__ import annotations
 
-from celine.sdk.auth import realm_groups
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -35,7 +34,10 @@ class AdminMe(BaseModel):
     # the CLI's `whoami` prints it.
     subject_type: str
     organizations: list[str]
-    realm_groups: list[str]
+    # The caller's realm roles (`realm_access.roles`). `platform-admin` is the one
+    # that grants anything (REQ-0030); the list is diagnostic, and the console
+    # decides what to show from the per-REC capabilities, never from this.
+    platform_roles: list[str]
     recs: list[RecAccess]
 
 
@@ -99,6 +101,6 @@ async def me(user: UserDep) -> AdminMe:
         locale=claims.get("locale"),
         subject_type="service" if user.is_service_account else "user",
         organizations=user.organization_aliases,
-        realm_groups=realm_groups(claims),
+        platform_roles=user.realm_roles,
         recs=recs,
     )

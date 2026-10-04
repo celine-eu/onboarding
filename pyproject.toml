@@ -44,19 +44,23 @@ dependencies = [
     # (1.18.0 raises on them), and its `ProvisioningApiError` carries the `code`
     # revocation branches on.
     #
-    # 1.17.3 remains the floor for the JWT claim readers this service's
-    # authorization is built on: `realm_groups`, which reads the realm level
-    # apart from the organization level, and `Organization.type`/`.groups`,
-    # which the access policy checks per community. 1.16.0 resolves and then
+    # 2.0.0 is the floor for the JWT claim readers this service's authorization
+    # is built on: `JwtUser.realm_roles`, which reads the platform level from
+    # `realm_access.roles` apart from the organization level (1.x has no such
+    # reader and no `platform-admin` role; its `realm_groups` is gone in 2.0.0),
+    # and `Organization.type`/`.groups`, which the access policy checks per
+    # community. 1.16.0 resolves and then
     # denies every organization-scoped operator, which is what a floor exists to
     # prevent. It also carries `MemberPatch.did`, `lookup_members_by_dids` and
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
     #
     # TODO: `celine.sdk.posture` (the CELINE_ENV startup guard, config/posture.py)
-    # is unreleased; 1.24.0 does not ship it. Raise this floor to the first
-    # release that does. Until then the local SDK checkout must be installed
-    # editable for the service to import.
+    # is unreleased; 1.24.0 does not ship it. Neither does it ship
+    # `JwtUser.realm_roles`, and the access policy imports nothing else for the
+    # platform level; its policy input also needs `Subject.roles`: raise this
+    # floor to `>=2.0.0` and re-lock once 2.0.0 is published. Until then the
+    # local SDK checkout must be installed editable for the service to import.
     "celine-sdk>=1.24.0",
     "phonenumbers>=8.13",
 ]
@@ -91,10 +95,11 @@ asyncio_mode = "auto"
 # The unit suite only. End-to-end tests boot a real app against a real database
 # and are opt-in: `task test:e2e`, or point pytest at tests/e2e directly.
 testpaths = ["tests"]
-# Both are opt-in and for the same reason: they need something the unit suite
-# deliberately does not boot. `tests/e2e` wants a real app and database
-# (`task test:e2e`); `tests/contract` wants a live ds (`task test:contract`).
-norecursedirs = ["tests/e2e", "tests/contract"]
+# All three are opt-in and for the same reason: they need something the unit
+# suite deliberately does not boot. `tests/e2e` wants a real app and database
+# (`task test:e2e`); `tests/contract` wants a live ds (`task test:contract`);
+# `tests/real_tokens` wants a real Keycloak realm (`task test:real-tokens`).
+norecursedirs = ["tests/e2e", "tests/contract", "tests/real_tokens"]
 pythonpath = ["src", "tests"]
 markers = [
     "e2e: needs a live app and a database (ONBOARDING_E2E_DATABASE_URL)",

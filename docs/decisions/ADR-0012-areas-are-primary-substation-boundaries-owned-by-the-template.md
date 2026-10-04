@@ -56,7 +56,8 @@ short cache, and an unattended registry write every time a file changes is not a
 admin-driven act.
 
 **The sync needs a new capability, `recs.write`, held by realm-level `admins` only, and by
-no service account.** It lives beside the manifest reload under `/api/admin/recs`, and it
+no service account.** (Update, 2026-10-03: the platform level is now the realm role
+`platform-admin`, not the realm group `admins`, which grants nothing; REQ-0030.) It lives beside the manifest reload under `/api/admin/recs`, and it
 writes a whole community's registry data. No scope grants it, `onboarding.admin` included, so
 a sync always follows a person's decision. The `onboarding-cli` command therefore
 authenticates with a realm admin's own token (`--token`), or runs `--local` in process under

@@ -126,7 +126,8 @@ class TestIdp:
         self,
         organization: str,
         *groups: str,
-        realm: tuple[str, ...] = (),
+        roles: tuple[str, ...] = (),
+        realm_groups: tuple[str, ...] = (),
         sub: str = "operator-1",
         email: str = "operator@example.org",
         org_type: str | None = "rec",
@@ -135,7 +136,9 @@ class TestIdp:
 
         Typed `rec` by default, flattened the way a real token carries it: the
         policy grants an organization-scoped operator nothing on an organization
-        of any other type.
+        of any other type. `roles` go to `realm_access.roles` (`platform-admin` is
+        the platform-wide grant); `realm_groups` writes a legacy top-level
+        `groups` claim, which grants nothing.
         """
         org_claim: dict = {"id": "org-uuid", "groups": [f"/{g}" for g in groups]}
         if org_type is not None:
@@ -146,8 +149,10 @@ class TestIdp:
             "preferred_username": sub,
             "organization": {organization: org_claim},
         }
-        if realm:
-            claims["groups"] = [f"/{g}" for g in realm]
+        if roles:
+            claims["realm_access"] = {"roles": list(roles)}
+        if realm_groups:
+            claims["groups"] = [f"/{g}" for g in realm_groups]
         return self.mint(**claims)
 
     def service(self, *scopes: str, client_id: str = "svc-onboarding-cli") -> str:

@@ -21,21 +21,21 @@ import rego.v1
 #   * Service accounts have no organization membership, so a **scope** is the
 #     only way for them to express intent.
 #
-# Groups exist at two levels and the difference is load-bearing:
+# There are exactly two levels of grant, and nothing in between (REQ-0030):
 #
-#   * A **realm**-level group (`groups` claim) is a platform-wide grant — it
-#     applies to every community on the deployment. Because it is that wide,
-#     only `platform_groups` below carry one; a realm `editors` or `viewers`
-#     badge grants nothing anywhere.
+#   * The realm **role** `platform-admin` (`realm_access.roles`, passed as
+#     `input.subject.roles`) is the only platform-wide grant. It applies to every
+#     community on the deployment, for every action a person may take.
 #   * An **organization**-level group (`organization.<alias>.groups`) grants the
 #     capability for that community only, and only when that organization is
 #     typed `rec`. The console administers RECs; an organization of another kind
 #     is not one, whatever its members are called.
 #
-# The wrapper in `security/policy.py` passes these separately and never merges
-# them. Merging is what `celine.sdk.auth.jwt.extract_groups` does, and it is the
-# wrong thing here: a `managers` badge inside community A would otherwise satisfy
-# a realm-level check and authorise an action on community B.
+# A realm **group** grants nothing. The wrapper in `security/policy.py` never
+# reads the top-level `groups` claim and always passes `input.subject.groups`
+# empty, because a realm group and an organization group share their names
+# (`/admins`): read together, a community's own `admins` would read as the
+# platform's and authorise an action on another community.
 #
 # An action name that appears in neither table is denied. Adding an endpoint
 # without adding its capability here therefore fails closed.
@@ -77,42 +77,17 @@ required_groups := {
 	"enablement.revoke": {"admins"},
 	# Delegated: the group is the acting operator's, never the caller's.
 	"members.invite": {"admins", "managers"},
-	# Pushing a template's areas to the REC registry, and setting the community
-	# up through the provisioning reconcile. Realm-level `admins` only: see
-	# `realm_only_actions` below.
-	"recs.write": {"admins"},
 	# The console's drift check: whether the registry's areas match the
-	# template. The REC's own managers and admins, and realm `admins` only: see
-	# `realm_required_groups` below. No scope grants it.
+	# template. The REC's own managers and admins, and the platform admin. No
+	# scope grants it.
 	"recs.drift": {"admins", "managers"},
 }
 
-# Actions whose **realm**-level grant is narrower than the table above. For
-# these, a realm group grants the action only when it is named here; the
-# organization-level grant is still the table above. The drift check is for the
-# platform's admins and for the REC's own managers and admins (D55), so a realm
-# `managers` badge does not reach it.
-realm_required_groups := {"recs.drift": {"admins"}}
-
-realm_groups_for_action := realm_required_groups[input.action.name]
-
-realm_groups_for_action := required_groups[input.action.name] if {
-	not realm_required_groups[input.action.name]
-}
-
-# Which of those groups mean anything at **realm** level. A realm badge is a
-# grant over every community on the deployment with no organization check, so it
-# is the platform-operator role and not merely the top of the tier list: the two
-# read-only tiers are excluded from it entirely.
-#
-# This is an intersection with the table above, not a second table. A realm
-# `managers` still cannot purge a submission or revoke a credential, because
-# those two actions name only `admins` — the tier keeps deciding *which* actions,
-# and this set decides *whether the realm level applies at all*.
-#
-# `editors` and `viewers` keep their meaning one level down, where a read-only
-# member of one REC belongs.
-platform_groups := {"admins", "managers"}
+# The one platform-wide grant: a realm **role**, read from `input.subject.roles`.
+# Its name is one no organization group carries, so the two levels cannot be
+# mistaken for each other. It grants a person every known action on every
+# community; a service is never granted by it (its scopes decide).
+platform_admin_role := "platform-admin"
 
 # The organization type that owns a REC, as `celine-policies keycloak sync-orgs`
 # writes it from the owner's `organization.role`. An organization carrying no
@@ -143,13 +118,14 @@ required_scopes := {
 # header.
 delegated_actions := {"members.invite"}
 
-# Actions only a **realm**-level group grants. The registry sync writes a whole
-# community's areas and topology in the REC registry and sets its Keycloak
-# organization up, which is platform business: an organization's own `admins`
-# do not reach it, and no scope grants it — it has no entry in
-# `required_scopes`, so `onboarding.admin` does not either, and a sync always
+# Actions only the platform role grants. The registry sync (`recs.write`) pushes
+# a template's areas to the REC registry and sets the community up through the
+# provisioning reconcile: it writes a whole community's areas and topology and
+# its Keycloak organization, which is platform business. So it has no entry in
+# `required_groups` — an organization's own `admins` do not reach it — and none
+# in `required_scopes`, so `onboarding.admin` does not either, and a sync always
 # follows a person's decision.
-realm_only_actions := {"recs.write"}
+platform_only_actions := {"recs.write"}
 
 # Actions no scope grants, for people only: they have no entry in
 # `required_scopes`, so no service account reaches them, `onboarding.admin`
@@ -157,6 +133,8 @@ realm_only_actions := {"recs.write"}
 people_only_actions := {"recs.drift"}
 
 known_action if required_groups[input.action.name]
+
+known_action if input.action.name in platform_only_actions
 
 is_delegated if input.action.name in delegated_actions
 
@@ -170,12 +148,11 @@ actor := input.environment.actor
 
 has_actor if actor.type == "user"
 
-# A realm-level group grants the action everywhere, so no organization check —
-# and for that reason only a platform group qualifies.
-realm_group_grants(principal) if {
-	some g in realm_groups_for_action
-	g in platform_groups
-	g in principal.groups
+# The platform role grants every known action everywhere, so no organization
+# check. Only `roles` is read: a realm group in `groups` is not a grant.
+platform_role_grants(principal) if {
+	known_action
+	platform_admin_role in principal.roles
 }
 
 # An organization-level group grants the action only for that organization's
@@ -185,7 +162,7 @@ realm_group_grants(principal) if {
 # its type attribute — read from the flattened `type` key a real token carries,
 # falling back to the nested `attributes.type` a fixture may use.
 org_group_grants(principal) if {
-	not input.action.name in realm_only_actions
+	not input.action.name in platform_only_actions
 	principal.claims.organization != null
 	principal.claims.organization == input.resource.attributes.organization
 	principal.claims.org_type == rec_organization_type
@@ -193,14 +170,14 @@ org_group_grants(principal) if {
 	g in principal.claims.org_groups
 }
 
-granted_by_realm_group if realm_group_grants(input.subject)
+granted_by_platform_role if platform_role_grants(input.subject)
 
 granted_by_org_group if org_group_grants(input.subject)
 
 # The acting operator is judged by exactly the rules the caller would be.
 actor_granted if {
 	has_actor
-	realm_group_grants(actor)
+	platform_role_grants(actor)
 }
 
 actor_granted if {
@@ -213,7 +190,7 @@ actor_granted if {
 allow if {
 	not is_service
 	not is_delegated
-	granted_by_realm_group
+	granted_by_platform_role
 }
 
 allow if {
@@ -240,10 +217,10 @@ allow if {
 # One else-chain rather than independent rules: two `reason` rules matching the
 # same request is a rego conflict error, not a precedence question.
 
-reason := "granted by realm group" if {
+reason := "granted by platform role" if {
 	not is_service
 	not is_delegated
-	granted_by_realm_group
+	granted_by_platform_role
 } else := "granted by organization group" if {
 	not is_service
 	not is_delegated
@@ -273,15 +250,8 @@ reason := "granted by realm group" if {
 	not has_actor
 } else := "the acting operator holds no group granting this action" if {
 	is_delegated
-} else := "only a realm-level admins group grants this action" if {
-	input.action.name in realm_only_actions
-} else := "at realm level only an admins group grants this action" if {
-	realm_required_groups[input.action.name]
-	some g in required_groups[input.action.name]
-	g in input.subject.groups
-} else := "a realm group is not a platform-wide grant — only admins and managers are" if {
-	some g in required_groups[input.action.name]
-	g in input.subject.groups
+} else := "only the platform-admin role grants this action" if {
+	input.action.name in platform_only_actions
 } else := "caller belongs to a different organization than this community" if {
 	input.subject.claims.organization != input.resource.attributes.organization
 } else := "the caller's organization is not typed as a REC" if {

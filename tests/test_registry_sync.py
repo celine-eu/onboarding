@@ -1,4 +1,4 @@
-"""The registry sync: a template's areas pushed to the REC registry, by a realm admin.
+"""The registry sync: a template's areas pushed to the REC registry, by a platform admin.
 
 `respx` stands in front of the registry, the Digital Twin and the provisioning
 service (`fake_registry.py`, `fake_digital_twin.py`), which answer with their
@@ -132,12 +132,12 @@ def client(template, db) -> TestClient:
 
 
 @pytest.fixture()
-def realm_admin(issue_token) -> dict:
+def platform_admin(issue_token) -> dict:
     token = issue_token(
         sub="platform-admin-sub",
         email="platform-admin@example.org",
         preferred_username="platform-admin",
-        groups=["/admins"],
+        realm_access={"roles": ["default-roles-celine", "platform-admin"]},
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -156,12 +156,12 @@ def _outcomes(body: dict, kind: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-class TestOnlyARealmAdminMaySync:
-    def test_a_realm_admin_may(self, client, registry, provisioning, realm_admin):
+class TestOnlyAPlatformAdminMaySync:
+    def test_a_platform_admin_may(self, client, registry, provisioning, platform_admin):
         """
         @verifies REQ-0009
         """
-        assert _sync(client, realm_admin, dry_run=True).status_code == 200
+        assert _sync(client, platform_admin, dry_run=True).status_code == 200
 
     @pytest.mark.parametrize("group", ["admins", "managers"])
     def test_an_organization_group_may_not(
@@ -176,10 +176,12 @@ class TestOnlyARealmAdminMaySync:
         assert response.status_code == 403
         assert registry.requests == [] and provisioning.calls == []
 
-    @pytest.mark.parametrize("group", ["managers", "editors", "viewers"])
-    def test_another_realm_group_may_not(self, client, registry, issue_token, group):
-        """
+    @pytest.mark.parametrize("group", ["admins", "managers", "editors", "viewers"])
+    def test_no_realm_group_may(self, client, registry, issue_token, group):
+        """A realm `/admins`, the platform admin before the role, included.
+
         @verifies REQ-0009
+        @verifies REQ-0030
         """
         token = issue_token(sub="op", email="op@example.org", groups=[f"/{group}"])
         response = _sync(client, {"Authorization": f"Bearer {token}"}, dry_run=True)
@@ -205,19 +207,19 @@ class TestOnlyARealmAdminMaySync:
         """
         assert client.post(SYNC).status_code == 401
 
-    def test_an_unknown_rec_is_404(self, client, registry, realm_admin):
+    def test_an_unknown_rec_is_404(self, client, registry, platform_admin):
         """
         @verifies REQ-0009
         """
-        response = client.post("/api/admin/recs/nope/registry-sync", headers=realm_admin)
+        response = client.post("/api/admin/recs/nope/registry-sync", headers=platform_admin)
         assert response.status_code == 404
 
-    def test_the_realm_admin_sees_the_capability(self, client, registry, realm_admin):
+    def test_the_platform_admin_sees_the_capability(self, client, registry, platform_admin):
         """The console learns it may offer the sync from `/me`, as for every action.
 
         @verifies REQ-0009
         """
-        [rec] = client.get("/api/admin/me", headers=realm_admin).json()["recs"]
+        [rec] = client.get("/api/admin/me", headers=platform_admin).json()["recs"]
         assert "recs.write" in rec["capabilities"]
 
     def test_an_org_admin_does_not(self, client, registry, operator_token):
@@ -251,13 +253,13 @@ class TestOnlyARealmAdminMaySync:
 
 class TestDryRun:
     def test_it_writes_nothing_and_lists_the_plan(
-        self, client, registry, provisioning, realm_admin, db
+        self, client, registry, provisioning, platform_admin, db
     ):
         """
         @verifies REQ-0010
         """
         before = registry.snapshot()
-        response = _sync(client, realm_admin, dry_run=True)
+        response = _sync(client, platform_admin, dry_run=True)
 
         assert response.status_code == 200
         body = response.json()
@@ -273,7 +275,7 @@ class TestDryRun:
         assert db.audit_rows == []
 
     def test_it_lists_the_undeclared_areas_and_their_member_counts(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0010
@@ -283,7 +285,7 @@ class TestDryRun:
         registry.seed_area("east", "AC000E00003")
         registry.add_member("east", 3)
 
-        body = _sync(client, realm_admin, dry_run=True, prune=True).json()
+        body = _sync(client, platform_admin, dry_run=True, prune=True).json()
 
         [east] = [a for a in body["areas"] if a["key"] == "east"]
         assert east["outcome"] == "refused"
@@ -292,7 +294,7 @@ class TestDryRun:
         assert registry.writes() == []
 
     def test_a_dry_run_with_prune_says_what_would_go(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0010
@@ -301,7 +303,7 @@ class TestDryRun:
         registry.seed_area("south", "AC000E00002")
         registry.seed_area("east", "AC000E00003")
 
-        body = _sync(client, realm_admin, dry_run=True, prune=True).json()
+        body = _sync(client, platform_admin, dry_run=True, prune=True).json()
 
         assert _outcomes(body, "areas")["east"] == "deleted"
         assert _outcomes(body, "nodes")["AC000E00003"] == "deleted"
@@ -315,11 +317,13 @@ class TestDryRun:
 
 
 class TestTheFirstSync:
-    def test_it_creates_each_node_then_each_area(self, client, registry, provisioning, realm_admin):
+    def test_it_creates_each_node_then_each_area(
+        self, client, registry, provisioning, platform_admin
+    ):
         """
         @verifies REQ-0011
         """
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
 
         assert response.status_code == 200
         body = response.json()
@@ -352,26 +356,26 @@ class TestTheFirstSync:
         assert paths.index(f"{base}/topology/AC000E00002") < paths.index(f"{base}/areas/south")
 
     def test_writes_ask_for_the_write_scope_and_reads_do_not(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """`rec-registry.community.write` is requested for the writes only (D37).
 
         @verifies REQ-0009
         """
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
 
         assert {token for _m, _p, token in registry.writes()} == {WRITE_TOKEN}
         assert {token for _m, _p, token in registry.reads()} == {DEFAULT_TOKEN}
 
     def test_the_audit_row_counts_and_names_nobody(
-        self, client, registry, provisioning, realm_admin, db
+        self, client, registry, provisioning, platform_admin, db
     ):
         """
         @verifies REQ-0011
         """
         registry.seed_area("east", "AC000E00003")
         registry.add_member("east", 2)
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
 
         [row] = db.audit_rows
         assert row.action == "registry_sync"
@@ -382,15 +386,15 @@ class TestTheFirstSync:
 
 
 class TestASecondSync:
-    def test_it_changes_nothing(self, client, registry, provisioning, realm_admin):
+    def test_it_changes_nothing(self, client, registry, provisioning, platform_admin):
         """
         @verifies REQ-0011
         """
-        assert _sync(client, realm_admin).status_code == 200
+        assert _sync(client, platform_admin).status_code == 200
         registry.requests.clear()
         before = registry.snapshot()
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert set(_outcomes(body, "nodes").values()) == {"unchanged"}
         assert set(_outcomes(body, "areas").values()) == {"unchanged"}
@@ -398,7 +402,7 @@ class TestASecondSync:
         assert registry.snapshot() == before
 
     def test_it_keeps_what_the_template_does_not_own(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """A node's operator and parent, an area's location, survive a changed write.
 
@@ -416,7 +420,7 @@ class TestASecondSync:
             "location": {"lat": 0.05, "lon": 0.05},
         }
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert _outcomes(body, "nodes")["AC000E00001"] == "changed"
         assert _outcomes(body, "areas")["north"] == "changed"
@@ -438,7 +442,7 @@ class TestASecondSync:
 
 class TestRemoval:
     def test_an_undeclared_area_is_reported_and_kept(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -446,7 +450,7 @@ class TestRemoval:
         registry.seed_area("east", "AC000E00003")
         registry.add_member("east", 1)
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         [east] = [a for a in body["areas"] if a["key"] == "east"]
         assert east["outcome"] == "undeclared" and east["members"] == 1
@@ -454,14 +458,14 @@ class TestRemoval:
         assert not any(m == "DELETE" for m, _p, _t in registry.requests)
 
     def test_prune_deletes_it_and_then_its_orphan_node(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0012
         """
         registry.seed_area("east", "AC000E00003")
 
-        body = _sync(client, realm_admin, prune=True).json()
+        body = _sync(client, platform_admin, prune=True).json()
 
         assert _outcomes(body, "areas")["east"] == "deleted"
         assert _outcomes(body, "nodes")["AC000E00003"] == "deleted"
@@ -475,7 +479,7 @@ class TestRemoval:
         ]
 
     def test_prune_on_an_area_with_members_answers_the_count(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """The admin moves them first; nothing of that area is deleted.
 
@@ -485,7 +489,7 @@ class TestRemoval:
         registry.add_member("east", 4)
         registry.add_member("north", 2)
 
-        response = _sync(client, realm_admin, prune=True)
+        response = _sync(client, platform_admin, prune=True)
 
         assert response.status_code == 200
         body = response.json()
@@ -506,7 +510,7 @@ class TestRemoval:
         assert "Example Person" not in response.text
 
     def test_a_member_moved_in_after_the_count_is_the_registrys_refusal(
-        self, client, registry, provisioning, realm_admin, monkeypatch
+        self, client, registry, provisioning, platform_admin, monkeypatch
     ):
         """
         @verifies REQ-0012
@@ -524,14 +528,14 @@ class TestRemoval:
         monkeypatch.setattr(registry_sync.RegistryAreas, "count_members", _racy)
         registry.add_member("east", 1)
 
-        body = _sync(client, realm_admin, prune=True).json()
+        body = _sync(client, platform_admin, prune=True).json()
 
         [east] = [a for a in body["areas"] if a["key"] == "east"]
         assert east["outcome"] == "refused" and east["code"] == "area_in_use"
         assert east["members"] == 1
 
     def test_two_areas_swapping_boundaries_across_runs(
-        self, client, registry, provisioning, realm_admin, template
+        self, client, registry, provisioning, platform_admin, template
     ):
         """An area moving off a boundary frees it for another in the same run.
 
@@ -540,7 +544,7 @@ class TestRemoval:
         registry.seed_area("north", "AC000E00001")
         template(north="AC000E00003", south="AC000E00001")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert _outcomes(body, "areas") == {"north": "changed", "south": "created"}
         assert registry.snapshot()["areas"]["south"]["boundary"]["id"] == "AC000E00001"
@@ -560,7 +564,7 @@ class TestARenamedArea:
     """
 
     def test_it_is_renamed_and_its_members_follow(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """A renamed area is created under its new key and the old one is reported:
         as the item's `renamed_from`, and no longer in the registry.
@@ -572,7 +576,7 @@ class TestARenamedArea:
         registry.add_member("old-north", 3)
         registry.add_member("south", 1)
 
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
 
         assert response.status_code == 200
         body = response.json()
@@ -599,7 +603,7 @@ class TestARenamedArea:
         assert node["name"] == "north"
 
     def test_it_is_one_rename_request_then_the_areas_write(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """No prune, no delete: the rename, then the area's ordinary write for its name.
 
@@ -609,7 +613,7 @@ class TestARenamedArea:
         registry.seed_area("south", "AC000E00002")
         registry.add_member("old-north", 1)
 
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
 
         base = f"/admin/communities/{COMMUNITY}"
         writes = [(m, p) for m, p, _t in registry.writes()]
@@ -620,13 +624,13 @@ class TestARenamedArea:
         assert rename < writes.index(("PUT", f"{base}/areas/north"))
         assert {t for m, _p, t in registry.writes() if m == "POST"} == {WRITE_TOKEN}
 
-    def test_an_empty_area_is_renamed_too(self, client, registry, provisioning, realm_admin):
+    def test_an_empty_area_is_renamed_too(self, client, registry, provisioning, platform_admin):
         """
         @verifies REQ-0011
         """
         registry.seed_area("old-north", "AC000E00001")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         [north] = [a for a in body["areas"] if a["key"] == "north"]
         assert north["outcome"] == "renamed" and north["members"] == 0
@@ -634,7 +638,7 @@ class TestARenamedArea:
         assert set(registry.snapshot()["areas"]) == {"north", "south"}
 
     def test_with_prune_it_is_renamed_not_deleted(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -644,7 +648,7 @@ class TestARenamedArea:
         registry.seed_area("south", "AC000E00002")
         registry.add_member("old-north", 2)
 
-        body = _sync(client, realm_admin, prune=True).json()
+        body = _sync(client, platform_admin, prune=True).json()
 
         assert _outcomes(body, "areas") == {"north": "renamed", "south": "unchanged"}
         assert body["ok"] is True
@@ -655,7 +659,7 @@ class TestARenamedArea:
         assert not any(m == "DELETE" for m, _p, _t in registry.requests)
 
     def test_a_dry_run_lists_it_and_writes_nothing(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0010
@@ -665,7 +669,7 @@ class TestARenamedArea:
         registry.add_member("old-north", 2)
         before = registry.snapshot()
 
-        body = _sync(client, realm_admin, dry_run=True).json()
+        body = _sync(client, platform_admin, dry_run=True).json()
 
         [north] = [a for a in body["areas"] if a["key"] == "north"]
         assert north["outcome"] == "renamed"
@@ -676,22 +680,22 @@ class TestARenamedArea:
         assert registry.snapshot() == before
         assert sorted(m["area"] for m in registry.members[COMMUNITY]) == ["old-north"] * 2
 
-    def test_a_second_run_changes_nothing(self, client, registry, provisioning, realm_admin):
+    def test_a_second_run_changes_nothing(self, client, registry, provisioning, platform_admin):
         """
         @verifies REQ-0011
         """
         registry.seed_area("old-north", "AC000E00001")
         registry.add_member("old-north", 1)
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         registry.requests.clear()
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert set(_outcomes(body, "areas").values()) == {"unchanged"}
         assert registry.writes() == []
 
     def test_the_old_area_keeps_what_the_template_does_not_own(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -702,14 +706,14 @@ class TestARenamedArea:
             "lon": 0.05,
         }
 
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
 
         north = registry.snapshot()["areas"]["north"]
         assert north["location"] == {"lat": 0.05, "lon": 0.05}
         assert north["name"] == "north"
 
     def test_a_key_the_registry_already_holds_is_not_renamed_onto(
-        self, client, registry, provisioning, realm_admin, template
+        self, client, registry, provisioning, platform_admin, template
     ):
         """The new key exists on another boundary: no rename, the boundary is held.
 
@@ -720,7 +724,7 @@ class TestARenamedArea:
         registry.seed_area("north", "AC000E00003")
         registry.add_member("old-north", 1)
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         [north] = [a for a in body["areas"] if a["key"] == "north"]
         assert north["outcome"] == "refused" and north["code"] == "boundary_held"
@@ -729,7 +733,7 @@ class TestARenamedArea:
         assert "old-north" in registry.snapshot()["areas"]
 
     def test_a_refused_rename_is_reported_and_the_old_area_stays(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -741,7 +745,7 @@ class TestARenamedArea:
             httpx.Response(409, json={"detail": "taken", "code": "area_key_taken"}),
         )[1]
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         [north] = [a for a in body["areas"] if a["key"] == "north"]
         assert north["outcome"] == "refused" and north["code"] == "area_key_taken"
@@ -751,21 +755,23 @@ class TestARenamedArea:
         assert body["ok"] is False
         assert "north" not in registry.snapshot()["areas"]
 
-    def test_the_audit_row_counts_the_rename(self, client, registry, provisioning, realm_admin, db):
+    def test_the_audit_row_counts_the_rename(
+        self, client, registry, provisioning, platform_admin, db
+    ):
         """
         @verifies REQ-0011
         """
         registry.seed_area("old-north", "AC000E00001")
         registry.add_member("old-north", 2)
 
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
 
         [row] = db.audit_rows
         assert "areas_renamed=1" in row.detail
         assert "Example Person" not in row.detail and "m-0000" not in row.detail
 
     def test_the_drift_check_shows_it_before_the_sync(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0015
@@ -773,7 +779,7 @@ class TestARenamedArea:
         registry.seed_area("old-north", "AC000E00001")
         registry.seed_area("south", "AC000E00002")
 
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
 
         states = {a["key"]: (a["state"], a["held_by"]) for a in body["areas"]}
         assert states["north"] == ("missing", ["old-north"])
@@ -796,14 +802,14 @@ def _named_template(seed_rec, **names: str | None) -> None:
 
 class TestAnAreasDisplayName:
     def test_it_is_written_to_the_area_and_its_node(
-        self, client, registry, provisioning, realm_admin, seed_rec
+        self, client, registry, provisioning, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0021
         """
         _named_template(seed_rec, north="North valley")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert body["ok"] is True
         community = registry.snapshot()
@@ -813,38 +819,38 @@ class TestAnAreasDisplayName:
         assert names == {"AC000E00001": "North valley", "AC000E00002": "south"}
 
     def test_a_second_run_changes_nothing(
-        self, client, registry, provisioning, realm_admin, seed_rec
+        self, client, registry, provisioning, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0021
         """
         _named_template(seed_rec, north="North valley")
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         registry.requests.clear()
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert set(_outcomes(body, "areas").values()) == {"unchanged"}
         assert set(_outcomes(body, "nodes").values()) == {"unchanged"}
         assert registry.writes() == []
 
     def test_a_changed_name_changes_the_area_and_the_node(
-        self, client, registry, provisioning, realm_admin, seed_rec
+        self, client, registry, provisioning, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0021
         """
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         _named_template(seed_rec, north="North valley")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert _outcomes(body, "areas") == {"north": "changed", "south": "unchanged"}
         assert _outcomes(body, "nodes") == {"AC000E00001": "changed", "AC000E00002": "unchanged"}
         assert registry.snapshot()["areas"]["north"]["name"] == "North valley"
 
     def test_a_renamed_area_takes_the_name(
-        self, client, registry, provisioning, realm_admin, seed_rec
+        self, client, registry, provisioning, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0021
@@ -853,22 +859,22 @@ class TestAnAreasDisplayName:
         registry.add_member("old-north", 1)
         _named_template(seed_rec, north="North valley")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert _outcomes(body, "areas")["north"] == "renamed"
         assert registry.snapshot()["areas"]["north"]["name"] == "North valley"
 
     def test_the_drift_check_compares_the_name(
-        self, client, registry, provisioning, realm_admin, seed_rec
+        self, client, registry, provisioning, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0015
         @verifies REQ-0021
         """
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         _named_template(seed_rec, north="North valley")
 
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
 
         assert {a["key"]: a["state"] for a in body["areas"]} == {
             "north": "differs",
@@ -880,14 +886,16 @@ class TestAnAreasDisplayName:
         ["", "  ", " North", "x" * 129, 7, ["North"]],
         ids=["empty", "blank", "padded", "too-long", "number", "list"],
     )
-    def test_a_bad_name_refuses_the_template(self, client, registry, realm_admin, seed_rec, name):
+    def test_a_bad_name_refuses_the_template(
+        self, client, registry, platform_admin, seed_rec, name
+    ):
         """
         @verifies REQ-0013
         @verifies REQ-0021
         """
         _named_template(seed_rec, north=name)
 
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
 
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "template_invalid"
@@ -902,14 +910,14 @@ class TestAnAreasDisplayName:
 
 class TestValidation:
     def test_an_unknown_boundary_refuses_the_template(
-        self, client, registry, provisioning, realm_admin, template
+        self, client, registry, provisioning, platform_admin, template
     ):
         """
         @verifies REQ-0013
         """
         template(north="AC000E00001", south="AC000E00009")
 
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
 
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "template_invalid"
@@ -917,21 +925,21 @@ class TestValidation:
         assert registry.requests == [] and provisioning.calls == []
 
     def test_two_areas_on_one_boundary_refuse_the_template(
-        self, client, registry, provisioning, realm_admin, template
+        self, client, registry, provisioning, platform_admin, template
     ):
         """
         @verifies REQ-0013
         """
         template(north="AC000E00001", south="AC000E00001")
 
-        response = _sync(client, realm_admin, dry_run=True)
+        response = _sync(client, platform_admin, dry_run=True)
 
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "template_invalid"
         assert registry.requests == [] and provisioning.calls == []
 
     def test_an_invalid_area_key_refuses_the_template(
-        self, client, registry, realm_admin, seed_rec
+        self, client, registry, platform_admin, seed_rec
     ):
         """
         @verifies REQ-0013
@@ -943,7 +951,7 @@ class TestValidation:
         manifest.pop("slug")
         seed_rec(REC, organization=ORG, **manifest)
 
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 422
         assert registry.requests == []
 
@@ -957,19 +965,21 @@ class TestValidation:
         ids=["coverage-rules", "no-eligibility-step", "eligibility-before-consents"],
     )
     def test_the_import_checks_apply(
-        self, client, registry, realm_admin, template, seed_rec, change
+        self, client, registry, platform_admin, template, seed_rec, change
     ):
         """
         @verifies REQ-0013
         """
         manifest = template()
         manifest.update(change)
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "template_invalid"
         assert registry.requests == []
 
-    def test_a_municipality_template_is_not_synced(self, client, registry, realm_admin, seed_rec):
+    def test_a_municipality_template_is_not_synced(
+        self, client, registry, platform_admin, seed_rec
+    ):
         """
         @verifies REQ-0013
         """
@@ -978,54 +988,54 @@ class TestValidation:
             organization=ORG,
             rec_registry={"community": COMMUNITY, "default_area": "north", "areas": {}},
         )
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "template_not_syncable"
         assert registry.requests == []
 
     def test_an_unreachable_digital_twin_stops_the_sync(
-        self, client, registry, provisioning, realm_admin, fake_dt
+        self, client, registry, provisioning, platform_admin, fake_dt
     ):
         """
         @verifies REQ-0013
         """
         fake_dt.failure = httpx.ConnectError("refused")
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 503
         assert response.json()["detail"]["code"] == "boundaries_unavailable"
         assert registry.requests == [] and provisioning.calls == []
 
     def test_a_community_the_registry_does_not_hold_stops_the_sync(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0014
         """
         del registry.communities[COMMUNITY]
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 404
         assert response.json()["detail"]["code"] == "community_not_found"
         assert registry.writes() == [] and provisioning.calls == []
 
-    def test_an_unconfigured_registry_is_503(self, client, registry, realm_admin, monkeypatch):
+    def test_an_unconfigured_registry_is_503(self, client, registry, platform_admin, monkeypatch):
         """
         @verifies REQ-0013
         """
         from celine.onboarding.config.settings import settings
 
         monkeypatch.setattr(settings, "rec_registry_url", "")
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 503
         assert response.json()["detail"]["code"] == "registry_not_configured"
 
     def test_an_unreachable_registry_is_502_and_writes_nothing(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0013
         """
         registry.failure = httpx.ConnectError("refused")
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
         assert response.status_code == 502
         assert response.json()["detail"]["code"] == "registry_unavailable"
         assert provisioning.calls == []
@@ -1038,7 +1048,7 @@ class TestValidation:
 
 class TestSetUp:
     def test_a_real_sync_reconciles_first_with_the_reconcile_scope(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0014
@@ -1059,7 +1069,7 @@ class TestSetUp:
         registry._record = _registry
         provisioning._reconcile = _reconcile
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert provisioning.calls == [(COMMUNITY, RECONCILE_TOKEN)]
         assert order[0] == "reconcile" and "registry-write" in order
@@ -1082,7 +1092,7 @@ class TestSetUp:
         ids=["error", "no-community", "no-scope", "unreachable"],
     )
     def test_a_failed_reconcile_is_reported_and_the_areas_are_still_written(
-        self, client, registry, provisioning, realm_admin, failure, code
+        self, client, registry, provisioning, platform_admin, failure, code
     ):
         """
         @verifies REQ-0014
@@ -1091,7 +1101,7 @@ class TestSetUp:
         if code:
             provisioning.code = code
 
-        response = _sync(client, realm_admin)
+        response = _sync(client, platform_admin)
 
         assert response.status_code == 200
         body = response.json()
@@ -1102,7 +1112,7 @@ class TestSetUp:
         assert set(registry.snapshot()["areas"]) == {"north", "south"}
 
     def test_no_provisioning_service_skips_the_step(
-        self, client, registry, provisioning, realm_admin, monkeypatch
+        self, client, registry, provisioning, platform_admin, monkeypatch
     ):
         """
         @verifies REQ-0014
@@ -1111,7 +1121,7 @@ class TestSetUp:
 
         monkeypatch.setattr(settings, "provisioning_url", "")
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert body["setup"]["status"] == "skipped"
         assert "PROVISIONING_URL" in body["setup"]["reason"]
@@ -1119,30 +1129,30 @@ class TestSetUp:
         assert set(registry.snapshot()["areas"]) == {"north", "south"}
 
     def test_a_rerun_completes_the_set_up_and_changes_no_area(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0014
         """
         provisioning.failure = httpx.ConnectError("refused")
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         provisioning.failure = None
         registry.requests.clear()
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert body["setup"]["status"] == "succeeded"
         assert registry.writes() == []
         assert set(_outcomes(body, "areas").values()) == {"unchanged"}
 
     def test_the_failure_is_audited_with_the_step(
-        self, client, registry, provisioning, realm_admin, db
+        self, client, registry, provisioning, platform_admin, db
     ):
         """
         @verifies REQ-0014
         """
         provisioning.failure = 500
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         [row] = db.audit_rows
         assert "setup=failed" in row.detail
 
@@ -1154,7 +1164,7 @@ class TestSetUp:
 
 class TestRegistryRefusals:
     def test_a_refused_node_refuses_its_area_and_nothing_else(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -1169,7 +1179,7 @@ class TestRegistryRefusals:
 
         registry._node = _refuse_one
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert _outcomes(body, "nodes") == {"AC000E00001": "created", "AC000E00002": "refused"}
         assert _outcomes(body, "areas") == {"north": "created", "south": "refused"}
@@ -1178,7 +1188,7 @@ class TestRegistryRefusals:
         assert body["ok"] is False
 
     def test_a_registry_that_stops_answering_leaves_the_rest_not_run(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0011
@@ -1192,14 +1202,14 @@ class TestRegistryRefusals:
 
         registry._record = _die_on_write
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert set(_outcomes(body, "nodes").values()) == {"not_run"}
         assert set(_outcomes(body, "areas").values()) == {"refused"}
         assert body["ok"] is False
 
     def test_a_write_answered_with_nothing_readable_stops_the_run(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """A `200` the SDK cannot read is a registry that stopped answering.
 
@@ -1212,7 +1222,7 @@ class TestRegistryRefusals:
 
         registry._node = _garbled
 
-        body = _sync(client, realm_admin).json()
+        body = _sync(client, platform_admin).json()
 
         assert set(_outcomes(body, "nodes").values()) == {"not_run"}
         assert body["ok"] is False
@@ -1268,14 +1278,16 @@ class TestRegistryRefusals:
 
 
 class TestDrift:
-    def test_after_a_sync_the_registry_matches(self, client, registry, provisioning, realm_admin):
+    def test_after_a_sync_the_registry_matches(
+        self, client, registry, provisioning, platform_admin
+    ):
         """
         @verifies REQ-0015
         """
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         registry.requests.clear()
 
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
 
         assert body["status"] == "matches"
         assert {a["key"]: a["state"] for a in body["areas"]} == {
@@ -1287,26 +1299,26 @@ class TestDrift:
         assert {token for _m, _p, token in registry.reads()} == {DEFAULT_TOKEN}
 
     def test_an_area_reintroduced_by_a_bundle_import_shows(
-        self, client, registry, provisioning, realm_admin
+        self, client, registry, provisioning, platform_admin
     ):
         """
         @verifies REQ-0015
         """
-        _sync(client, realm_admin)
+        _sync(client, platform_admin)
         registry.seed_area("old-east", "AC000E00003")
         registry.communities[COMMUNITY]["areas"]["south"]["name"] = "South (imported)"
 
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
 
         assert body["status"] == "drift"
         states = {a["key"]: a["state"] for a in body["areas"]}
         assert states == {"north": "matches", "south": "differs", "old-east": "undeclared"}
 
-    def test_a_missing_area_shows(self, client, registry, realm_admin, fake_dt):
+    def test_a_missing_area_shows(self, client, registry, platform_admin, fake_dt):
         """
         @verifies REQ-0015
         """
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
         assert body["status"] == "drift"
         assert {a["state"] for a in body["areas"]} == {"missing"}
         # The drift check asks the Digital Twin nothing.
@@ -1334,10 +1346,11 @@ class TestDrift:
         assert response.status_code == 403
         assert registry.requests == []
 
-    @pytest.mark.parametrize("group", ["managers", "editors", "viewers"])
-    def test_no_realm_group_but_admins_may(self, client, registry, issue_token, group):
+    @pytest.mark.parametrize("group", ["admins", "managers", "editors", "viewers"])
+    def test_no_realm_group_may(self, client, registry, issue_token, group):
         """
         @verifies REQ-0015
+        @verifies REQ-0030
         """
         token = issue_token(sub="op", email="op@example.org", groups=[f"/{group}"])
         response = client.get(DRIFT, headers={"Authorization": f"Bearer {token}"})
@@ -1354,7 +1367,7 @@ class TestDrift:
         assert response.status_code == 403
         assert registry.requests == []
 
-    def test_the_console_learns_it_from_me(self, client, registry, operator_token, realm_admin):
+    def test_the_console_learns_it_from_me(self, client, registry, operator_token, platform_admin):
         """The console shows its *Areas* page only to who holds `recs.drift`.
 
         @verifies REQ-0015
@@ -1364,7 +1377,7 @@ class TestDrift:
             [rec] = client.get("/api/admin/me", headers=headers).json()["recs"]
             return rec["capabilities"]
 
-        assert "recs.drift" in _caps(realm_admin)
+        assert "recs.drift" in _caps(platform_admin)
         manager = operator_token(ORG, "managers")
         assert "recs.drift" in _caps({"Authorization": f"Bearer {manager}"})
         viewer = operator_token(ORG, "viewers")
@@ -1378,7 +1391,9 @@ class TestDrift:
         response = client.get(DRIFT, headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 403
 
-    def test_a_municipality_template_is_not_synced(self, client, registry, realm_admin, seed_rec):
+    def test_a_municipality_template_is_not_synced(
+        self, client, registry, platform_admin, seed_rec
+    ):
         """
         @verifies REQ-0015
         """
@@ -1387,7 +1402,7 @@ class TestDrift:
             organization=ORG,
             rec_registry={"community": COMMUNITY, "default_area": "north", "areas": {}},
         )
-        body = client.get(DRIFT, headers=realm_admin).json()
+        body = client.get(DRIFT, headers=platform_admin).json()
         assert body["status"] == "not_synced"
         assert registry.requests == []
 
@@ -1397,7 +1412,7 @@ class TestDrift:
 # ---------------------------------------------------------------------------
 
 
-def test_nothing_personal_is_logged(client, registry, provisioning, realm_admin, caplog):
+def test_nothing_personal_is_logged(client, registry, provisioning, platform_admin, caplog):
     """Keys, boundary ids and counts only; a member is counted, never named.
 
     @verifies REQ-0012
@@ -1405,7 +1420,7 @@ def test_nothing_personal_is_logged(client, registry, provisioning, realm_admin,
     caplog.set_level(logging.DEBUG)
     registry.seed_area("east", "AC000E00003")
     registry.add_member("east", 2)
-    _sync(client, realm_admin, prune=True)
+    _sync(client, platform_admin, prune=True)
     assert "Example Person" not in caplog.text
     assert "m-0000" not in caplog.text
     assert "platform-admin@example.org" not in caplog.text
@@ -1477,44 +1492,44 @@ class TestTheCli:
         assert "Not permitted" in result.output
         assert registry.requests == []
 
-    def test_a_realm_admin_token_syncs(self, cli_to_app, registry, provisioning, realm_admin):
+    def test_a_platform_admin_token_syncs(self, cli_to_app, registry, provisioning, platform_admin):
         """
         @verifies REQ-0009
         """
-        token = realm_admin["Authorization"].removeprefix("Bearer ")
+        token = platform_admin["Authorization"].removeprefix("Bearer ")
         result = _cli("--token", token)
         assert result.exit_code == 0, result.output
         assert "set up community: succeeded" in result.output
         assert set(registry.snapshot()["areas"]) == {"north", "south"}
 
-    def test_a_dry_run_writes_nothing(self, cli_to_app, registry, provisioning, realm_admin):
+    def test_a_dry_run_writes_nothing(self, cli_to_app, registry, provisioning, platform_admin):
         """
         @verifies REQ-0010
         """
-        token = realm_admin["Authorization"].removeprefix("Bearer ")
+        token = platform_admin["Authorization"].removeprefix("Bearer ")
         result = _cli("--token", token, "--dry-run", "--json")
         assert result.exit_code == 0, result.output
         report = json.loads(result.output)
         assert report["dry_run"] is True
         assert registry.writes() == [] and provisioning.calls == []
 
-    def test_a_refused_area_exits_1(self, cli_to_app, registry, provisioning, realm_admin):
+    def test_a_refused_area_exits_1(self, cli_to_app, registry, provisioning, platform_admin):
         """
         @verifies REQ-0012
         """
         registry.seed_area("east", "AC000E00003")
         registry.add_member("east", 2)
-        token = realm_admin["Authorization"].removeprefix("Bearer ")
+        token = platform_admin["Authorization"].removeprefix("Bearer ")
         result = _cli("--token", token, "--prune")
         assert result.exit_code == 1
         assert "members 2" in result.output
 
-    def test_an_invalid_template_is_said(self, cli_to_app, registry, realm_admin, template):
+    def test_an_invalid_template_is_said(self, cli_to_app, registry, platform_admin, template):
         """
         @verifies REQ-0013
         """
         template(north="AC000E00009")
-        token = realm_admin["Authorization"].removeprefix("Bearer ")
+        token = platform_admin["Authorization"].removeprefix("Bearer ")
         result = _cli("--token", token)
         assert result.exit_code == 1
         assert "AC000E00009" in result.output and "[template_invalid]" in result.output

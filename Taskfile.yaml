@@ -164,6 +164,17 @@ tasks:
       # stopped running has to be visible in the output that says it passed.
       - uv run pytest ../tests/contract -rs {{.CLI_ARGS}}
 
+  test:real-tokens:
+    desc: |-
+      The admin surface against tokens a running Keycloak realm issues, verified
+      against its JWKS (REQ-0030: an organization's admins is not a platform
+      admin; the platform-admin role is; a realm group grants nothing). Skips
+      loudly when the variables are missing, and a skip is not a pass. Nothing is
+      defaulted; tests/real_tokens/conftest.py lists the variables.
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - uv run pytest ../tests/real_tokens -rs {{.CLI_ARGS}}
+
   test:e2e:
     desc: >-
       End-to-end: a real database, a real app, a real browser.

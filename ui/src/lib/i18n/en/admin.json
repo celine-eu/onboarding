@@ -236,10 +236,10 @@
 	},
 	"areas": {
 		"title": "Areas in the registry",
-		"lead": "Whether the REC registry's areas match this community's template. The template is the source of truth; a realm admin pushes it with the registry sync.",
+		"lead": "Whether the REC registry's areas match this community's template. The template is the source of truth; a platform admin pushes it with the registry sync.",
 		"community": "Registry community: {{community}}",
 		"matches": "The registry matches the template.",
-		"drift": "The registry differs from the template. A realm admin can run the registry sync (onboarding-cli registry-sync) to bring it in line.",
+		"drift": "The registry differs from the template. A platform admin can run the registry sync (onboarding-cli registry-sync) to bring it in line.",
 		"not_synced": "This community's areas are not primary-substation boundaries, so nothing of its template is synced to the registry.",
 		"col_area": "Area",
 		"col_boundary": "Primary substation",

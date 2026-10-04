@@ -13,6 +13,7 @@ which is first of all when it is decided before it is built.
 | [registry-member.md](registry-member.md) | The identity approval's registry member client authenticates as, with and without the dataspace |
 | [existing-members.md](existing-members.md) | An applicant who declares they are already a member: the template's opt-in and the steps it skips; the POD and supply address deferred to the operator and required at approval; the fiscal code and supply address revisable by an operator; the console's view of what is left, and the prefilled rejection email |
 | [registry-sync.md](registry-sync.md) | The explicit, platform-admin push of a template's areas to the REC registry (route and CLI), its dry run, prune and refusals, a renamed area moved with its members, an area's display name, the community set-up step it starts with, and the console's drift check and who sees it |
+| [platform-admin.md](platform-admin.md) | The two levels of grant: the realm role `platform-admin` as the only platform-wide one, an organization's groups inside that organization only, a realm group granting nothing, and how the policy input carries them |
 | [deployment-posture.md](deployment-posture.md) | The development-only settings refused anywhere but `CELINE_ENV=dev`, and the warning they are in dev |
 
 ## Identifiers

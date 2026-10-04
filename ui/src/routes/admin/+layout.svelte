@@ -70,7 +70,7 @@
 					</a>
 				{/if}
 				{#if currentAccess?.capabilities.includes('recs.drift')}
-					<!-- The drift check is for realm admins and the REC's own managers
+					<!-- The drift check is for platform admins and the REC's own managers
 					     and admins (`recs.drift`); the API refuses anyone else. -->
 					<a
 						href="/admin/{currentRec}/areas"

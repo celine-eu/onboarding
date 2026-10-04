@@ -6,7 +6,7 @@
 
 	const { data }: { data: PageData } = $props();
 
-	// The drift check reads the registry and writes nothing. Syncing is a realm
+	// The drift check reads the registry and writes nothing. Syncing is a platform
 	// admin's act, from the CLI or the API, so the console only shows the state.
 	let drift = $state<RegistryDrift | null>(null);
 	let errorMsg = $state('');

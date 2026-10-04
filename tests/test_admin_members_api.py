@@ -389,13 +389,30 @@ class TestWhoMayCall:
         )
         assert response.status_code == 403
 
-    def test_a_realm_manager_is_allowed(
+    def test_a_platform_admin_is_allowed(
         self, client, enabled, api, community_token, operator_token
     ):
+        """
+        @verifies REQ-0030
+        """
         api.post(UPSTREAM).mock(return_value=sent())
-        platform = operator_token("elsewhere", realm=("managers",))
+        platform = operator_token("elsewhere", roles=("platform-admin",))
         response = client.post(INVITE, headers=delegated(community_token, platform))
         assert response.status_code == 200
+
+    @pytest.mark.parametrize("group", ["admins", "managers"])
+    def test_a_realm_group_is_denied(
+        self, client, enabled, api, community_token, operator_token, group
+    ):
+        """A realm `/admins` or `/managers` acts for nobody's community any more.
+
+        @verifies REQ-0030
+        """
+        route = api.post(UPSTREAM).mock(return_value=sent())
+        legacy = operator_token("elsewhere", realm_groups=(group,))
+        response = client.post(INVITE, headers=delegated(community_token, legacy))
+        assert response.status_code == 403
+        assert route.call_count == 0
 
     def test_a_managers_own_token_is_denied(self, client, enabled, api, manager_token, db):
         route = api.post(UPSTREAM).mock(return_value=sent())

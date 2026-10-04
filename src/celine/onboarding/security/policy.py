@@ -1,16 +1,22 @@
 """OPA access policy for the onboarding admin console.
 
-Wraps `policies/celine/onboarding/access.rego`, evaluated in-process through
-`celine.sdk.policies.PolicyEngine.evaluate_decision` — the high-level API that
-builds proper ``data.{package}.allow`` / ``.reason`` queries rather than
-evaluating the package path as a raw Rego expression.
+Wraps `policies/celine/onboarding/access.rego`, evaluated in-process by
+`celine.sdk.policies.PolicyEngine`, querying ``data.{package}.allow`` and
+``.reason``.
 
-The wrapper's one job beyond plumbing is to keep realm-level and
-organization-level groups **apart** — a realm group is a platform-wide grant, so
-merging the two levels would let a `managers` badge held inside community A
-authorise an action on community B. The readers that keep them apart
-(`celine.sdk.auth.realm_groups`, `JwtUser.get_organization`) live in the SDK;
-this module used to carry private copies of them.
+The wrapper's one job beyond plumbing is to keep the two levels of grant
+**apart** (REQ-0030). The platform level is the realm role `platform-admin`,
+passed as `input.subject.roles`; the organization level is the groups held inside
+the one organization the request concerns. A realm group (the top-level `groups`
+claim) is never read: an organization's groups carry the same names, so reading
+both would let a community's own `admins` act as the platform's. The readers
+(`JwtUser.realm_roles`, `JwtUser.get_organization`) are the SDK's.
+
+The input is the SDK's: a `PolicyInput` serialised by
+`PolicyEngine.build_input_dict`, which emits `input.subject.roles` beside
+`input.subject.groups` and never merges the two (celine-sdk 2.0.0). Until that
+release this module built the mapping by hand, because the SDK's `Subject` then
+had no `roles` field and dropped one silently.
 """
 
 from __future__ import annotations
@@ -20,11 +26,14 @@ import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from celine.sdk.auth import JwtUser, realm_groups
+from celine.sdk.auth import JwtUser
 
 from celine.onboarding.config.settings import settings
+
+if TYPE_CHECKING:
+    from celine.sdk.policies import Subject
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +48,12 @@ class Capability(enum.StrEnum):
     """
 
     RECS_READ = "recs.read"
-    #: Realm-level `admins` only, and no scope: the registry sync of a REC's
-    #: template areas. See `realm_only_actions` in the rego.
+    #: The `platform-admin` role only, and no scope: the registry sync of a REC's
+    #: template areas. See `platform_only_actions` in the rego.
     RECS_WRITE = "recs.write"
-    #: The console's drift check of a REC's registry areas (D55): realm-level
-    #: `admins`, and that REC's own `managers` and `admins`; no scope. See
-    #: `realm_required_groups` and `people_only_actions` in the rego.
+    #: The console's drift check of a REC's registry areas (D55): the
+    #: `platform-admin` role, and that REC's own `managers` and `admins`; no
+    #: scope. See `people_only_actions` in the rego.
     RECS_DRIFT = "recs.drift"
     SUBMISSIONS_READ = "submissions.read"
     SUBMISSIONS_REVEAL = "submissions.reveal"
@@ -151,8 +160,12 @@ class OnboardingAccessPolicy:
 
         try:
             policy_input = self._policy_input(user, action, organization, actor=actor)
-            result = self._engine.evaluate_decision(_PACKAGE, policy_input)
-            decision = Decision(allowed=bool(result.allowed), reason=result.reason or None)
+            allowed = _value(self._engine.evaluate(f"data.{_PACKAGE}.allow", policy_input))
+            reason = _value(self._engine.evaluate(f"data.{_PACKAGE}.reason", policy_input))
+            decision = Decision(
+                allowed=allowed is True,
+                reason=reason if isinstance(reason, str) and reason else None,
+            )
         except Exception as exc:
             # Fail closed. grid answers permissively here; a policy that cannot be
             # evaluated is indistinguishable from one that would have denied, and
@@ -202,18 +215,10 @@ class OnboardingAccessPolicy:
         organization: str | None,
         *,
         actor: JwtUser | None = None,
-    ):
+    ) -> dict[str, Any]:
         from celine.sdk.policies import Action, PolicyInput, Resource, ResourceType
 
-        # The acting operator goes in `environment`, because the SDK's engine
-        # serialises a fixed shape with no top-level slot for a second principal.
-        # It is built by the same code as the subject, so the rego judges it by the
-        # same rules and it cannot carry a group from another community either.
-        environment = {}
-        if actor is not None:
-            environment["actor"] = _subject(actor, organization).model_dump(mode="json")
-
-        return PolicyInput(
+        policy_input = PolicyInput(
             subject=_subject(user, organization),
             resource=Resource(
                 # USERDATA is a generic stand-in: access.rego inspects only
@@ -224,28 +229,43 @@ class OnboardingAccessPolicy:
                 attributes={"organization": organization},
             ),
             action=Action(name=action),
-            environment=environment,
         )
 
+        # The acting operator goes in `environment`, the policy input's free-form
+        # request slot. It is built and serialised by the same code as the
+        # subject, so the rego judges it by the same rules and it cannot carry a
+        # group from another community either.
+        if actor is not None:
+            acting = policy_input.model_copy(update={"subject": _subject(actor, organization)})
+            policy_input.environment["actor"] = self._engine.build_input_dict(acting)["subject"]
 
-def _subject(user: JwtUser, organization: str | None):
-    """The policy's view of one principal, against one REC's organization."""
+        return self._engine.build_input_dict(policy_input)
+
+
+def _value(result: Any) -> Any:
+    """The value of a single-expression query result, or None when undefined."""
+    try:
+        return result["result"][0]["expressions"][0]["value"]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _subject(user: JwtUser, organization: str | None) -> Subject:
+    """The policy's view of one principal, against one REC's organization.
+
+    The two levels of grant travel apart (REQ-0030): the realm roles in `roles`,
+    the matched organization's groups in `claims.org_groups`, and `groups` always
+    empty — a realm group is not read, so it cannot grant anything.
+    """
     from celine.sdk.policies import Subject, SubjectType
 
     claims = user.claims or {}
-    aliases = user.organization_aliases
-    realm = realm_groups(claims)
 
-    # Prefer organization/group presence as the authoritative signal for
-    # "this is a human". `is_service_account()` can misfire on a user JWT
-    # that carries a `scope` claim but no `groups` — the same trap
-    # celine-grid documents.
-    if aliases or realm:
-        subject_type = SubjectType.USER
-    elif user.is_service_account:
-        subject_type = SubjectType.SERVICE
-    else:
-        subject_type = SubjectType.USER
+    # Person or service is the SDK's call, from the token's own markers. A realm
+    # group is not consulted for it: a group is not a grant, and since the realm
+    # roles moved out of groups it would decide nothing a person's token does not
+    # already say.
+    subject_type = SubjectType.SERVICE if user.is_service_account else SubjectType.USER
 
     scope_claim = claims.get("scope") or ""
     scopes = scope_claim.split() if isinstance(scope_claim, str) else list(scope_claim)
@@ -263,13 +283,14 @@ def _subject(user: JwtUser, organization: str | None):
     # carries; a policy written against `attributes.type` matches nothing.
     matched_org = user.get_organization(organization) if organization else None
     matched = matched_org.alias if matched_org else None
-    org_groups = matched_org.groups if matched_org else []
+    org_groups = list(matched_org.groups) if matched_org else []
     org_type = matched_org.type if matched_org else None
 
     return Subject(
         id=user.sub,
         type=subject_type,
-        groups=realm,
+        roles=list(user.realm_roles),
+        groups=[],
         scopes=scopes,
         claims={
             "organization": matched,

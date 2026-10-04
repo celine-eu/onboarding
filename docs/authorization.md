@@ -11,10 +11,11 @@ protection that is not there.
 The console authorises humans and machines on different evidence, the same split
 `celine-grid` makes.
 
-**Operators are authorised by group membership.** Keycloak has already verified
-which organization somebody belongs to, so the organization is the tenancy
-boundary and the group is the role. An operator carries no `onboarding.*` scope
-at all.
+**Operators are authorised by group membership, or by the platform role.**
+Keycloak has already verified which organization somebody belongs to, so the
+organization is the tenancy boundary and the group is the role. The one exception
+is the platform administrator, who holds the realm role `platform-admin`. An
+operator carries no `onboarding.*` scope at all.
 
 **Service accounts are authorised by scope.** A `client_credentials` token has no
 organization, so a scope is the only way for it to express intent — and, because
@@ -23,21 +24,37 @@ That is why a narrow scope matters more for a service than for a person.
 
 **A delegated action needs both.** See [Delegated actions](#delegated-actions).
 
-Subject type is decided by **organization/group presence first**, falling back to
-`is_service_account()`. The heuristic alone misfires on a user JWT that carries a
-`scope` claim but no `groups`.
+Subject type is decided by the SDK's `is_service_account()`, from the token's own
+markers (a `service-account-` username, a client-credentials grant recorded in
+`jti`, no person's claims). A realm group is never what decides it.
 
-## Groups
+## Two levels of grant
 
-`celine-policies` defines one hierarchy, created both at realm level and inside
-every organization: `admins > managers > editors > viewers`.
+There are exactly two, and nothing in between (REQ-0030):
 
-The two levels mean different things, and the console keeps them **apart** — it
-reads the realm level with `celine.sdk.auth.realm_groups` and the organization
-level from the `Organization` that `JwtUser.get_organization` returns, never
-through `extract_groups`, which merges them. A merged list would let a
-`managers` badge held inside community A satisfy a realm-level check and
-authorise an action on community B.
+- **The realm role `platform-admin`**, read from the access token's
+  `realm_access.roles` (`JwtUser.realm_roles`). It is the only platform-wide grant:
+  every capability on every community, `recs.write` and `recs.drift` included.
+- **An organization's own groups**, `admins > managers > editors > viewers`, read from
+  the `Organization` that `JwtUser.get_organization` returns for the organization the
+  request concerns. They are valid inside that organization only.
+
+**A realm group grants nothing.** The top-level `groups` claim is not read for
+authorization at all, whatever it holds — `/admins` included, which was the
+platform administrator before the role. No other realm role grants anything either,
+`admin` and `manager` included, and no client role does. The reason is the names:
+an organization's groups are `/admins`, `/managers`, … too, so a reader that took
+both levels together would let a community's own `admins` act as the platform's.
+The role has a name no organization group carries.
+
+The policy input keeps the levels apart: the realm roles in `input.subject.roles`,
+`input.subject.groups` always empty, and only the matched organization's groups in
+`input.subject.claims.org_groups`. `security/policy.py` builds that input through
+the SDK's `PolicyInput`, passing the realm roles as `Subject.roles`, and serialises
+it with `PolicyEngine.build_input_dict`, which emits `subject.roles` beside
+`subject.groups` (celine-sdk 2.0.0).
+
+A service account is never granted by the role: it is authorised by its scopes.
 
 | Group | May |
 |---|---|
@@ -46,46 +63,31 @@ authorise an action on community B.
 | `managers` | + approve, reject, reopen, correct a POD, name or email by revision, retry a failed enablement step, export, see whether the registry's areas match the template (organization level only; see below) |
 | `admins` | + GDPR erasure, reverse enablement |
 
-An **organization**-level group grants those for that community's RECs. A
-**realm**-level group grants them across every community — the platform operator.
+An organization group grants those for that community's RECs only. The
+`platform-admin` role grants all of them, and `recs.write`, across every community.
 
 `submissions.purge` and `enablement.revoke` are deliberately not reachable from
 `submissions.review`: rejecting somebody is recoverable, erasing them or revoking
 their credential is not, and a deployment must be able to grant one without the
 other.
 
-### Only `admins` and `managers` are platform operators
-
-A realm badge applies to every community on the deployment with no organization
-check, so the two read-only tiers do not carry one: **a realm-level `editors` or
-`viewers` grants nothing, anywhere**. A realm `viewers` used to read every REC's
-submissions and audit trail on the deployment, which is more than the name
-suggests and more than anyone intended.
-
-The tier still decides *which* actions — a realm `managers` cannot erase a
-submission or revoke a credential, because the table above names only `admins` for
-those. The two tiers keep their full meaning at organization level, which is where
-a read-only member of one REC belongs.
-
-### `recs.write` is realm `admins` only
+### `recs.write` is the platform admin's only
 
 The registry sync (`POST /api/admin/recs/{rec}/registry-sync`) writes a whole community's
 areas and topology in the REC registry and sets its Keycloak organization up, so its
-capability, `recs.write`, is granted by a **realm-level** `admins` group and nothing else:
-not an organization's own `admins` (`realm_only_actions` in the rego), not a realm
-`managers`, and no scope — it has no `onboarding.*` scope, so `onboarding.admin` does not
+capability, `recs.write`, is granted by the realm role `platform-admin` and nothing else:
+not an organization's own `admins` (`platform_only_actions` in the rego), not a realm
+group, and no scope — it has no `onboarding.*` scope, so `onboarding.admin` does not
 satisfy it either. A sync always follows a person's decision: `onboarding-cli
 registry-sync` takes that person's `--token`, or runs `--local`. See
 [ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md).
 
-### `recs.drift` is realm `admins` and the REC's own managers and admins
+### `recs.drift` is the platform admin's and the REC's own managers and admins
 
 The console's drift check (`GET /api/admin/recs/{rec}/registry-drift`, the *Areas* page)
 shows whether the registry's areas match the template. Its capability, `recs.drift`, is
-granted to the REC's own `managers` and `admins` (organization level), and at realm level to
-`admins` only: `realm_required_groups` in the rego narrows the realm grant for this action,
-so a realm `managers`, who reaches submissions everywhere, does not reach it. The REC's
-`editors` and `viewers` do not either, and no scope grants it (`people_only_actions`), so
+granted to the REC's own `managers` and `admins` (organization level) and to the
+`platform-admin` role. The REC's `editors` and `viewers` do not reach it, and no scope grants it (`people_only_actions`), so
 `onboarding.admin` does not satisfy it (D55).
 
 ### An organization grant requires a REC
@@ -114,11 +116,12 @@ the two member-keyed routes that email a registry member
 1. **The caller is a service holding `onboarding.members.invite`**, presented in
    `Authorization`.
 2. **It forwards a verified operator token** in `X-Acting-User-Token`, and that operator
-   holds `admins` or `managers` on the REC's organization, or at realm level. The rules are
-   exactly the ones above, applied to the operator instead of the caller.
+   holds `admins` or `managers` on the REC's organization, or holds the `platform-admin`
+   role. The rules are exactly the ones above, applied to the operator instead of the
+   caller.
 
 What follows from that:
-- **A manager's own token is refused**, even a realm `admins`. The community dashboard is the
+- **A manager's own token is refused**, even a platform admin's. The community dashboard is the
   one path, so its own audit row always exists.
 - **No service can send alone.** That includes `onboarding.admin`, which otherwise satisfies
   every scope. An email to a member only ever follows a person's decision.
@@ -136,8 +139,8 @@ authenticate the request as the manager and skip the scope check.
 
 In the rego the operator is `input.environment.actor`. The SDK's engine serialises a fixed
 input shape, and `environment` is its free-form slot. `security/policy.py` builds it with
-the same code that builds `input.subject`. So the realm and organization levels stay apart,
-and only the organization matching this REC is passed.
+the same code that builds `input.subject`. So the platform role and the organization groups
+stay apart, and only the organization matching this REC is passed.
 
 Two policies check the same manager: `celine-community`'s on its community, and this one on
 the REC's organization. Both read the same Keycloak organization membership. That is defence
@@ -156,8 +159,8 @@ a `dataspace:` block, `organization` is resolved from there if not stated
 separately, and `onboarding-cli import-templates` **refuses** a manifest where the
 two disagree.
 
-The key is optional. A REC without one is administrable only by realm-level
-platform operators — `admins` and `managers` — which is a coherent setup for a
+The key is optional. A REC without one is administrable only by a platform admin
+(the realm role `platform-admin`), which is a coherent setup for a
 single-community deployment. It fails closed — no organization means no organization-scoped grant can match —
 and startup logs a warning naming every affected REC.
 
@@ -165,7 +168,7 @@ and startup logs a warning naming every affected REC.
 
 For service accounts and `onboarding-cli`. Defined in `celine-policies`'
 `clients.yaml`; `onboarding.admin` satisfies all of them. None grants `recs.write` (the
-registry sync), which is a realm `admins` group's alone, or `recs.drift` (the drift check),
+registry sync), which is the `platform-admin` role's alone, or `recs.drift` (the drift check),
 which is for people only.
 
 ```

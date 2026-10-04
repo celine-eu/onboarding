@@ -72,6 +72,13 @@ capability table.
 > the refusal is no longer the only thing standing between a misconfiguration and every
 > participant reading every REC.
 
+> **Update, 2026-10-03.** Narrower again: a realm group now grants nothing at all, `admins`
+> and `managers` included. The only platform-wide grant is the realm role `platform-admin`
+> (REQ-0030), and an organization's groups grant only inside that organization. The refusal
+> is still **unchanged**, for the reason the previous update gives: a participant is not an
+> operator of any tier, and a group name shared with the operator hierarchy is one
+> organization-group membership away from meaning one.
+
 ## Consequences
 
 **Adoption is now bounded by the group.** A login this service created is found again as

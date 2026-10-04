@@ -99,8 +99,9 @@ def consent_slots(rec_slug: str) -> tuple[str, ...]:
 def validate_organization(manifest: dict[str, Any], *, where: str) -> None:
     """Reject a malformed or contradictory top-level ``organization:``.
 
-    Optional. A REC without one is administrable only by **platform** operators
-    (realm-level groups); nobody can be granted access to it per community. That
+    Optional. A REC without one is administrable only by a **platform** admin
+    (the realm role `platform-admin`); nobody can be granted access to it per
+    community. That
     is a coherent setup for a single-community deployment, and it fails closed —
     no organisation means no organisation-scoped grant matches.
     """

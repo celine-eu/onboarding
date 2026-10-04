@@ -16,19 +16,19 @@ at no other time. The reasons are in
 areas to the registry community its `rec_registry.community` names. An `onboarding-cli`
 command calls the same route.
 
-- **Capability `recs.write`**, granted to realm-level `admins` only. No organization group
-  grants it, and a realm `managers` does not: the sync writes registry data and provisioning
-  state for a whole community.
+- **Capability `recs.write`**, granted to the realm role `platform-admin` only (REQ-0030).
+  No organization group grants it, `admins` included, and no realm group does: the sync
+  writes registry data and provisioning state for a whole community.
 - **No service account holds `recs.write`.** No scope grants it, `onboarding.admin`
   included, as none grants `members.invite` alone: a sync always follows a person's decision.
 - **The CLI authenticates as that person, or runs in-process.** `onboarding-cli`'s
-  registry-sync command takes a realm admin's own token (`--token`), or runs `--local` in
+  registry-sync command takes a platform admin's own token (`--token`), or runs `--local` in
   process, through the same service layer, under the break-glass rules. Its
   `svc-onboarding-cli` client-credentials token is refused on this route.
 - **Nothing else runs it.** Loading, reloading or importing a template never writes to the
   registry.
 - **An unknown REC is `404`**; a caller without `recs.write` is `403` before anything is
-  read or written. A realm admin sees `recs.write` among the REC's capabilities in
+  read or written. A platform admin sees `recs.write` among the REC's capabilities in
   `GET /api/admin/me`; no organization group does.
 - **The CLI refuses to start without `--token` or `--local`** (exit code 2), so its
   client-credentials identity is never tried. It exits 1 when any area or node was refused
@@ -171,11 +171,9 @@ reintroduced by a bundle import is visible without running a sync.
   area included until the sync moves it), `differs` (its name, boundary or topology), or
   `undeclared` (in the registry, not in the template), with the registry areas holding its
   boundary under another key. It asks the Digital Twin nothing.
-- **Who sees it (D55): realm-level `admins`, and that REC's own `managers` and `admins`.**
-  Not the REC's `editors` or `viewers`, not a realm `managers`, `editors` or `viewers`, and
-  no service account: no scope grants `recs.drift`, `onboarding.admin` included. A realm
-  `managers` who is also a `managers` of that REC's organization sees it through the
-  organization. The console shows its *Areas* page, and the link to it, only to a caller
+- **Who sees it (D55): the `platform-admin` role, and that REC's own `managers` and
+  `admins`.** Not the REC's `editors` or `viewers`, no realm group (REQ-0030), and no
+  service account: no scope grants `recs.drift`, `onboarding.admin` included. The console shows its *Areas* page, and the link to it, only to a caller
   whose `GET /api/admin/me` lists `recs.drift` for the REC.
 
 ### REQ-0021 — a template area may carry a display name, which the sync writes as the registry area's and its node's name

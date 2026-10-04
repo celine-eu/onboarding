@@ -297,7 +297,7 @@ class LocalTransport:
             "email": None,
             "subject_type": "cli",
             "organizations": [],
-            "realm_groups": [],
+            "platform_roles": [],
             # --local has no policy to consult: the authority is database access.
             # Reporting the full set is honest about that rather than implying a
             # check that did not happen.

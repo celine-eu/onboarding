@@ -363,11 +363,11 @@ template (the drift check, [REQ-0015](specifications/registry-sync.md)). Each te
 with its primary substation is shown as *matches*, *missing from the registry* or
 *differs*, and each registry area the template does not declare as *not in the template* —
 which is how an area reintroduced by a bundle import becomes visible. It reads the registry
-and writes nothing. It is shown to realm-level `admins` and to the REC's own `managers` and
-`admins` (`recs.drift`), and the navigation offers the page only to them; the REC's editors
-and viewers, and a realm `managers`, do not see it. A community whose areas are
+and writes nothing. It is shown to a platform admin (the realm role `platform-admin`) and to
+the REC's own `managers` and `admins` (`recs.drift`), and the navigation offers the page only
+to them; the REC's editors and viewers do not see it. A community whose areas are
 municipality lists is not synced, and the page says so. Bringing the registry in line is the
-registry sync (below), which the console does not offer: it is a realm admin's act.
+registry sync (below), which the console does not offer: it is a platform admin's act.
 
 ## Language
 
@@ -424,7 +424,7 @@ talks to the database directly for a deployment with no Keycloak — see
 
 ### The registry sync
 
-A realm admin pushes a community's template areas to the REC registry, and sets the
+A platform admin pushes a community's template areas to the REC registry, and sets the
 community's Keycloak organization up on the way ([ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md),
 [ADR-0014](decisions/ADR-0014-registry-sync-sets-up-the-community-through-the-provisioning-reconcile.md)):
 
@@ -435,7 +435,7 @@ onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN" --prune     # a
 onboarding-cli registry-sync --rec my-rec --local                            # in process, break-glass
 ```
 
-It needs `recs.write`, which only a realm-level `admins` group holds, so `--token` is that
+It needs `recs.write`, which only the realm role `platform-admin` grants, so `--token` is that
 person's own access token; the CLI's service account is refused, and the command will not
 start without `--token` or `--local`. It prints the set-up step and every node and area
 with its outcome, takes `--json`, and exits 1 when anything was refused or the set-up

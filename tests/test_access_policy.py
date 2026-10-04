@@ -24,7 +24,7 @@ OTHER_ORG = "other-rec"
 VIEWER = {"recs.read", "submissions.read", "audit.read"}
 EDITOR = VIEWER | {"submissions.reveal", "submissions.write"}
 # The drift check (`recs.drift`, REQ-0015, D55): the REC's own managers and
-# admins, and realm admins; not a realm manager, and no scope.
+# admins, and the platform admin; no scope.
 DRIFT = {"recs.drift"}
 # `submissions.revise` (a correction by revision) is granted where review is.
 MANAGER = (
@@ -36,18 +36,15 @@ ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 # and no capability set below contains it.
 DELEGATED = {"members.invite"}
 
-# Granted by a realm-level `admins` group and nothing else: no organization
+# Granted by the realm role `platform-admin` and nothing else: no organization
 # group, no scope (the registry sync, REQ-0009).
-REALM_ONLY = {"recs.write"}
-REALM_ADMIN = ADMIN | REALM_ONLY
+PLATFORM_ONLY = {"recs.write"}
+# Everything a person can hold, on every community (REQ-0030).
+PLATFORM_ADMIN = ADMIN | PLATFORM_ONLY
+PLATFORM_ADMIN_ROLE = "platform-admin"
 
 TIERS = {"viewers": VIEWER, "editors": EDITOR, "managers": MANAGER, "admins": ADMIN}
-
-# Which tiers mean anything at *realm* level. A realm badge grants its actions on
-# every community with no organization check, so the two read-only tiers are
-# excluded from it — they are an organization-level role and nothing else.
-PLATFORM_TIERS = {"admins": REALM_ADMIN, "managers": MANAGER - DRIFT}
-NON_PLATFORM_TIERS = ("editors", "viewers")
+READ_ONLY_TIERS = ("editors", "viewers")
 
 
 @pytest.fixture(scope="module")
@@ -66,15 +63,18 @@ def operator(
     *,
     org: str | None = None,
     groups: tuple[str, ...] = (),
-    realm: tuple[str, ...] = (),
+    roles: tuple[str, ...] = (),
+    realm_groups: tuple[str, ...] = (),
     sub: str = "user-1",
     org_type: str | None = "rec",
 ) -> JwtUser:
     """A human, as `JwtUser.from_token` would have built one.
 
-    Realm groups stay in `claims`, because that is where the policy reads them
-    from — with Keycloak's leading slash, which the SDK's reader strips. The
-    organization is passed **parsed**, the way `from_token` parses it: the claim
+    Realm roles stay in `claims`, under `realm_access.roles`, because that is
+    where the SDK's reader takes them from. `realm_groups` writes a legacy
+    top-level `groups` claim with Keycloak's leading slash: the realm groups a
+    token may still carry, which must grant nothing. The organization is passed
+    **parsed**, the way `from_token` parses it: the claim
     shapes it can arrive in are the SDK's problem and are tested there, and
     re-testing them here would pin one service to another's parser.
 
@@ -83,8 +83,10 @@ def operator(
     organization a realm that never ran `keycloak sync-orgs` produces.
     """
     claims: dict = {"email": "operator@example.org", "preferred_username": "operator"}
-    if realm:
-        claims["groups"] = [f"/{g}" for g in realm]
+    if roles:
+        claims["realm_access"] = {"roles": list(roles)}
+    if realm_groups:
+        claims["groups"] = [f"/{g}" for g in realm_groups]
 
     organizations: list[Organization] = []
     if org:
@@ -135,7 +137,7 @@ def test_no_organization_and_no_group_grants_nothing(policy):
 
 
 def test_org_admin_is_denied_when_no_community_is_named(policy):
-    """`organization=None` cannot match an org group, so only realm grants apply."""
+    """`organization=None` cannot match an org group, so only the platform role applies."""
     user = operator(org=ORG, groups=("admins",))
     assert policy.capabilities(user, organization=None) == frozenset()
 
@@ -183,70 +185,134 @@ def test_multiple_org_memberships_are_scoped_independently(policy):
 
 
 # ---------------------------------------------------------------------------
-# Operators — realm groups are platform-wide
+# Operators — the platform-admin role is platform-wide; a realm group is nothing
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tier,expected", sorted(PLATFORM_TIERS.items()))
-def test_a_platform_realm_group_grants_its_tier_on_every_community(policy, tier, expected):
-    user = operator(realm=(tier,))
-    assert policy.capabilities(user, organization=ORG) == expected
-    assert policy.capabilities(user, organization=OTHER_ORG) == expected
-
-
-@pytest.mark.parametrize("tier", NON_PLATFORM_TIERS)
-def test_a_read_only_realm_group_grants_nothing_anywhere(policy, tier):
-    """The narrowing this suite exists to hold.
-
-    A realm badge is a grant over every community on the deployment, so the two
-    read-only tiers do not carry one — a realm `viewers` used to read every REC's
-    submissions and audit trail.
+@pytest.mark.parametrize("community", [ORG, OTHER_ORG, None])
+def test_the_platform_admin_role_grants_everything_on_every_community(policy, community):
     """
-    user = operator(realm=(tier,))
+    @verifies REQ-0030
+    """
+    user = operator(roles=(PLATFORM_ADMIN_ROLE,))
+    assert policy.capabilities(user, organization=community) == PLATFORM_ADMIN
+
+
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_a_realm_group_grants_nothing_anywhere(policy, tier):
+    """A realm group still present in a token is not a grant, `admins` included.
+
+    @verifies REQ-0030
+    """
+    user = operator(realm_groups=(tier,))
+    for community in (ORG, OTHER_ORG, None):
+        assert policy.capabilities(user, organization=community) == frozenset()
+
+
+def test_a_bare_realm_group_name_grants_nothing(policy):
+    """The client-level mapper wrote `admins` without the slash; neither form counts.
+
+    @verifies REQ-0030
+    """
+    user = operator()
+    user.claims["groups"] = ["/admins", "admins", "platform-admin", "/platform-admin"]
     assert policy.capabilities(user, organization=ORG) == frozenset()
-    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
     assert policy.capabilities(user, organization=None) == frozenset()
 
 
-def test_realm_group_applies_without_a_named_community(policy):
-    user = operator(realm=("admins",))
-    assert policy.capabilities(user, organization=None) == REALM_ADMIN
+@pytest.mark.parametrize(
+    "role", ["admin", "manager", "editor", "viewer", "admins", "default-roles-celine"]
+)
+def test_no_other_realm_role_grants_anything(policy, role):
+    """The retired realm roles named like the tiers are not platform grants either.
 
-
-def test_a_realm_manager_still_cannot_purge_or_revoke(policy):
-    """`platform_groups` decides whether the realm level applies, not what it grants.
-
-    The capability table keeps deciding the actions, so the two irreversible ones
-    stay `admins`-only at both levels.
+    @verifies REQ-0030
     """
-    user = operator(realm=("managers",))
-    caps = policy.capabilities(user, organization=ORG)
-    assert Capability.SUBMISSIONS_PURGE.value not in caps
-    assert Capability.ENABLEMENT_REVOKE.value not in caps
+    user = operator(roles=(role, "offline_access", "uma_authorization"))
+    assert policy.capabilities(user, organization=ORG) == frozenset()
+    assert policy.capabilities(user, organization=None) == frozenset()
 
 
-def test_grants_are_additive_across_the_two_levels(policy):
-    """A realm badge that grants nothing does not cap the organization one."""
-    user = operator(org=ORG, groups=("managers",), realm=("viewers",))
-    assert policy.capabilities(user, organization=ORG) == MANAGER
-    # ...and on a community they are not a member of, the realm viewer badge
-    # leaves them with nothing at all.
-    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+def test_the_role_is_read_from_realm_access_only(policy):
+    """Not a top-level `roles` claim, not `groups`, not a client's roles.
 
-
-def test_a_realm_editor_is_still_an_organization_editor(policy):
-    """The two read-only tiers keep their meaning one level down."""
-    user = operator(org=ORG, groups=("editors",), realm=("editors",))
-    assert policy.capabilities(user, organization=ORG) == EDITOR
-    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
-
-
-def test_non_platform_realm_denial_says_so(policy):
-    decision = policy.allow(
-        operator(realm=("viewers",)), Capability.SUBMISSIONS_READ, organization=ORG
+    @verifies REQ-0030
+    """
+    user = operator()
+    user.claims.update(
+        {
+            "roles": [PLATFORM_ADMIN_ROLE],
+            "groups": [PLATFORM_ADMIN_ROLE],
+            "resource_access": {"some-client": {"roles": [PLATFORM_ADMIN_ROLE]}},
+        }
     )
-    assert not decision.allowed
-    assert "not a platform-wide grant" in (decision.reason or "")
+    assert policy.capabilities(user, organization=ORG) == frozenset()
+
+
+def test_an_organization_admin_is_not_a_platform_admin(policy):
+    """An organization's own `admins` administer that REC and nothing else.
+
+    @verifies REQ-0030
+    """
+    user = operator(org=ORG, groups=("admins",))
+    assert policy.capabilities(user, organization=ORG) == ADMIN
+    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+    assert policy.capabilities(user, organization=None) == frozenset()
+    assert not policy.allow(user, Capability.RECS_WRITE, organization=ORG).allowed
+
+
+def test_a_legacy_realm_admins_group_does_not_widen_an_organization_grant(policy):
+    """The pre-role platform admin: a realm `/admins` beside an organization group.
+
+    @verifies REQ-0030
+    """
+    user = operator(org=ORG, groups=("managers",), realm_groups=("admins",))
+    assert policy.capabilities(user, organization=ORG) == MANAGER
+    assert policy.capabilities(user, organization=OTHER_ORG) == frozenset()
+
+
+def test_the_role_and_an_organization_group_are_additive(policy):
+    """A platform admin who is also a viewer of one REC is a platform admin there."""
+    user = operator(org=ORG, groups=("viewers",), roles=(PLATFORM_ADMIN_ROLE,))
+    assert policy.capabilities(user, organization=ORG) == PLATFORM_ADMIN
+    assert policy.capabilities(user, organization=OTHER_ORG) == PLATFORM_ADMIN
+
+
+def test_a_service_holding_the_role_is_still_judged_by_its_scopes(policy):
+    """The role is read for people; a service is authorised by scope alone.
+
+    @verifies REQ-0030
+    """
+    svc = service()
+    svc.claims["realm_access"] = {"roles": [PLATFORM_ADMIN_ROLE]}
+    assert policy.capabilities(svc, organization=ORG) == frozenset()
+
+
+def test_the_policy_input_keeps_the_two_levels_apart(policy):
+    """Roles in `subject.roles`; `subject.groups` empty; one organization's groups.
+
+    @verifies REQ-0030
+    """
+    user = JwtUser(
+        sub="user-3",
+        email="op@example.org",
+        claims={
+            "email": "op@example.org",
+            "groups": ["/admins"],
+            "realm_access": {"roles": [PLATFORM_ADMIN_ROLE, "offline_access"]},
+        },
+        organizations=[
+            Organization(alias=ORG, id="a", type="rec", groups=["viewers"]),
+            Organization(alias=OTHER_ORG, id="b", type="rec", groups=["admins"]),
+        ],
+    )
+    subject = policy._policy_input(user, "submissions.read", ORG)["subject"]
+    # The SDK's serialiser (celine-sdk 2.0.0): all six keys, roles beside groups.
+    assert list(subject) == ["id", "type", "roles", "groups", "scopes", "claims"]
+    assert subject["type"] == "user"
+    assert subject["groups"] == []
+    assert subject["roles"] == [PLATFORM_ADMIN_ROLE, "offline_access"]
+    assert subject["claims"] == {"organization": ORG, "org_groups": ["viewers"], "org_type": "rec"}
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +320,12 @@ def test_non_platform_realm_denial_says_so(policy):
 # ---------------------------------------------------------------------------
 
 
-def test_service_admin_scope_grants_everything_but_delegated_and_realm_only_actions(policy):
+SERVICE_ADMIN = {c.value for c in ALL_CAPABILITIES} - DELEGATED - PLATFORM_ONLY - DRIFT
+
+
+def test_service_admin_scope_grants_everything_but_delegated_and_platform_only_actions(policy):
     caps = policy.capabilities(service("onboarding.admin"), organization=ORG)
-    assert caps == {c.value for c in ALL_CAPABILITIES} - DELEGATED - REALM_ONLY - DRIFT
+    assert caps == SERVICE_ADMIN
 
 
 def test_service_with_no_scope_gets_nothing(policy):
@@ -303,39 +372,42 @@ def test_service_is_not_organization_scoped(policy):
         assert policy.allow(svc, Capability.SUBMISSIONS_REVIEW, organization=org).allowed
 
 
-def test_group_named_scope_does_not_authorise_a_service(policy):
-    """A service carrying an org-shaped group claim is still scope-checked.
+@pytest.mark.parametrize("scope,expected", [("onboarding.admin", SERVICE_ADMIN), ("", set())])
+def test_a_realm_group_on_a_service_token_grants_nothing(policy, scope, expected):
+    """A service token carrying a realm `admins` group is a service, judged by scope.
 
-    Guards the subject-typing rule: presence of groups makes a caller a *user*,
-    and a user with no matching organization gets nothing — it must not fall
-    through to the service branch and be allowed by its scopes.
+    Person or service is the SDK's `is_service_account`, never "has a group": a
+    `service-account-` username is a client-credentials token whatever else it
+    carries, and the realm group adds nothing to what its scopes grant.
+
+    @verifies REQ-0030
     """
     hybrid = JwtUser(
         sub="odd-token",
         claims={
             "preferred_username": "service-account-svc-onboarding-cli",
             "groups": ["/admins"],
-            "scope": "onboarding.admin",
+            "scope": scope,
         },
     )
-    # Typed as a user because groups are present; the realm admins group is what
-    # grants it — not the scope.
-    assert policy.capabilities(hybrid, organization=ORG) == REALM_ADMIN
+    assert policy.capabilities(hybrid, organization=ORG) == expected
 
 
 # ---------------------------------------------------------------------------
-# recs.write — the registry sync, realm admins only
+# recs.write — the registry sync, the platform admin only
 # ---------------------------------------------------------------------------
 
 SYNC = Capability.RECS_WRITE
 
 
 @pytest.mark.parametrize("community", [ORG, OTHER_ORG, None])
-def test_only_a_realm_admin_may_sync(policy, community):
+def test_only_a_platform_admin_may_sync(policy, community):
     """
     @verifies REQ-0009
+    @verifies REQ-0030
     """
-    assert policy.allow(operator(realm=("admins",)), SYNC, organization=community).allowed
+    user = operator(roles=(PLATFORM_ADMIN_ROLE,))
+    assert policy.allow(user, SYNC, organization=community).allowed
 
 
 @pytest.mark.parametrize("tier", sorted(TIERS))
@@ -348,12 +420,14 @@ def test_no_organization_group_grants_the_sync(policy, tier):
     assert not decision.allowed
 
 
-@pytest.mark.parametrize("tier", ["managers", "editors", "viewers"])
-def test_no_other_realm_group_grants_the_sync(policy, tier):
-    """
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_no_realm_group_grants_the_sync(policy, tier):
+    """A realm `admins` group, the platform admin before the role, included.
+
     @verifies REQ-0009
+    @verifies REQ-0030
     """
-    assert not policy.allow(operator(realm=(tier,)), SYNC, organization=ORG).allowed
+    assert not policy.allow(operator(realm_groups=(tier,)), SYNC, organization=ORG).allowed
 
 
 @pytest.mark.parametrize(
@@ -378,11 +452,11 @@ def test_an_org_admin_is_told_why_the_sync_is_refused(policy):
     @verifies REQ-0009
     """
     decision = policy.allow(operator(org=ORG, groups=("admins",)), SYNC, organization=ORG)
-    assert "realm-level admins" in (decision.reason or "")
+    assert decision.reason == "only the platform-admin role grants this action"
 
 
 # ---------------------------------------------------------------------------
-# recs.drift — the drift check, the REC's managers and admins and realm admins
+# recs.drift — the drift check, the REC's managers and admins and the platform admin
 # ---------------------------------------------------------------------------
 
 DRIFT_CHECK = Capability.RECS_DRIFT
@@ -416,36 +490,31 @@ def test_another_recs_manager_may_not_check_drift(policy):
 
 
 @pytest.mark.parametrize("community", [ORG, OTHER_ORG])
-def test_a_realm_admin_may_check_drift_everywhere(policy, community):
+def test_a_platform_admin_may_check_drift_everywhere(policy, community):
     """
     @verifies REQ-0015
+    @verifies REQ-0030
     """
-    assert policy.allow(operator(realm=("admins",)), DRIFT_CHECK, organization=community).allowed
+    user = operator(roles=(PLATFORM_ADMIN_ROLE,))
+    assert policy.allow(user, DRIFT_CHECK, organization=community).allowed
 
 
-@pytest.mark.parametrize("tier", ["managers", "editors", "viewers"])
-def test_no_other_realm_group_may_check_drift(policy, tier):
-    """A realm `managers` badge reaches submissions everywhere, not the drift check.
-
-    @verifies REQ-0015
-    """
-    assert not policy.allow(operator(realm=(tier,)), DRIFT_CHECK, organization=ORG).allowed
-
-
-def test_a_realm_manager_is_told_why(policy):
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_no_realm_group_may_check_drift(policy, tier):
     """
     @verifies REQ-0015
+    @verifies REQ-0030
     """
-    decision = policy.allow(operator(realm=("managers",)), DRIFT_CHECK, organization=ORG)
-    assert "at realm level only an admins group" in (decision.reason or "")
+    user = operator(realm_groups=(tier,))
+    assert not policy.allow(user, DRIFT_CHECK, organization=ORG).allowed
 
 
-def test_a_realm_manager_who_manages_the_rec_may(policy):
-    """The organization grant is not capped by the realm one.
+def test_a_manager_of_the_rec_with_a_legacy_realm_group_may(policy):
+    """The organization grant stands on its own; the realm group adds nothing.
 
     @verifies REQ-0015
     """
-    user = operator(org=ORG, groups=("managers",), realm=("managers",))
+    user = operator(org=ORG, groups=("managers",), realm_groups=("managers",))
     assert policy.allow(user, DRIFT_CHECK, organization=ORG).allowed
 
 
@@ -499,19 +568,28 @@ def test_acting_for_a_manager_of_another_organization_is_denied(policy):
     assert decision.reason == "the acting operator holds no group granting this action"
 
 
-def test_a_realm_manager_actor_is_allowed(policy):
-    actor = operator(realm=("managers",))
+def test_a_platform_admin_actor_is_allowed(policy):
+    """
+    @verifies REQ-0030
+    """
+    actor = operator(roles=(PLATFORM_ADMIN_ROLE,))
     assert policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
 
 
-@pytest.mark.parametrize("tier", NON_PLATFORM_TIERS)
+@pytest.mark.parametrize("tier", sorted(TIERS))
+def test_a_realm_group_actor_is_denied(policy, tier):
+    """
+    @verifies REQ-0030
+    """
+    actor = operator(realm_groups=(tier,))
+    decision = policy.allow(community_service(), INVITE, organization=ORG, actor=actor)
+    assert not decision.allowed
+    assert decision.reason == "the acting operator holds no group granting this action"
+
+
+@pytest.mark.parametrize("tier", READ_ONLY_TIERS)
 def test_an_org_editor_or_viewer_actor_is_denied(policy, tier):
     actor = operator(org=ORG, groups=(tier,))
-    assert not policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
-
-
-def test_a_realm_editor_actor_is_denied(policy):
-    actor = operator(realm=("editors",))
     assert not policy.allow(community_service(), INVITE, organization=ORG, actor=actor).allowed
 
 
@@ -558,9 +636,9 @@ def test_a_service_without_the_scope_is_denied_even_with_an_actor(policy):
     [
         operator(org=ORG, groups=("managers",)),
         operator(org=ORG, groups=("admins",)),
-        operator(realm=("admins",)),
+        operator(roles=(PLATFORM_ADMIN_ROLE,)),
     ],
-    ids=["org-manager", "org-admin", "realm-admin"],
+    ids=["org-manager", "org-admin", "platform-admin"],
 )
 def test_a_managers_own_token_is_denied(policy, caller):
     """The dashboard is the one path, so the community's own audit row always exists."""
@@ -576,7 +654,7 @@ def test_an_operator_acting_for_themselves_is_still_denied(policy):
 
 @pytest.mark.parametrize("tier", sorted(TIERS))
 def test_no_operator_lists_the_delegated_capability(policy, tier):
-    user = operator(org=ORG, groups=(tier,), realm=(tier,))
+    user = operator(org=ORG, groups=(tier,), roles=(PLATFORM_ADMIN_ROLE,), realm_groups=(tier,))
     assert DELEGATED.isdisjoint(policy.capabilities(user, organization=ORG))
 
 
@@ -586,7 +664,7 @@ def test_the_actor_does_not_widen_a_non_delegated_action(policy):
         community_service(),
         Capability.SUBMISSIONS_PURGE,
         organization=ORG,
-        actor=operator(realm=("admins",)),
+        actor=operator(roles=(PLATFORM_ADMIN_ROLE,)),
     )
     assert not decision.allowed
 
@@ -597,7 +675,9 @@ def test_the_actor_does_not_widen_a_non_delegated_action(policy):
 
 
 def test_unknown_capability_is_denied(policy):
-    decision = policy.allow(operator(realm=("admins",)), "submissions.teleport", organization=ORG)
+    decision = policy.allow(
+        operator(roles=(PLATFORM_ADMIN_ROLE,)), "submissions.teleport", organization=ORG
+    )
     assert not decision.allowed
     assert "unknown action" in (decision.reason or "")
 
@@ -639,11 +719,11 @@ def test_grant_reasons_name_the_level(policy):
     assert org_decision.allowed
     assert org_decision.reason == "granted by organization group"
 
-    realm_decision = policy.allow(
-        operator(realm=("admins",)), Capability.SUBMISSIONS_PURGE, organization=ORG
+    platform_decision = policy.allow(
+        operator(roles=(PLATFORM_ADMIN_ROLE,)), Capability.SUBMISSIONS_PURGE, organization=ORG
     )
-    assert realm_decision.allowed
-    assert realm_decision.reason == "granted by realm group"
+    assert platform_decision.allowed
+    assert platform_decision.reason == "granted by platform role"
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +735,7 @@ def test_missing_policy_bundle_denies_by_default(tmp_path):
     broken = OnboardingAccessPolicy(policies_dir=tmp_path / "nope")
     assert not broken.available
     decision = broken.allow(
-        operator(realm=("admins",)), Capability.SUBMISSIONS_READ, organization=ORG
+        operator(roles=(PLATFORM_ADMIN_ROLE,)), Capability.SUBMISSIONS_READ, organization=ORG
     )
     assert not decision.allowed
     assert decision.reason == "authorization unavailable"

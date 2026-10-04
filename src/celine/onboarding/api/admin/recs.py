@@ -41,8 +41,8 @@ async def reload_templates(
 ) -> dict:
     """Force a manifest cache refresh.
 
-    Deployment-wide, so it belongs to no community — only a realm-level operator
-    (or a scoped service account) satisfies it. Gated on `recs.read` rather than a
+    Deployment-wide, so it belongs to no community — only a platform admin (or a
+    scoped service account) satisfies it. Gated on `recs.read` rather than a
     write capability because the cache refreshes itself on a 5-second TTL anyway;
     this only makes an operator stop waiting.
 
@@ -149,7 +149,7 @@ async def registry_sync_route(
 ) -> RegistrySyncOut:
     """Push this REC's template areas to its registry community.
 
-    Realm-level `admins` only (`recs.write`); no service account holds it. A dry
+    The `platform-admin` role only (`recs.write`); no service account holds it. A dry
     run writes nothing — not to the registry, not to the provisioning service —
     and answers the plan. A real run first sets the community up through the
     provisioning reconcile, whose failure is reported and does not stop the
@@ -182,7 +182,7 @@ async def registry_drift_route(
 ) -> RegistryDriftOut:
     """Whether the registry's areas and topology match this REC's template.
 
-    `recs.drift`: realm-level `admins`, and that REC's own `managers` and
+    `recs.drift`: the `platform-admin` role, and that REC's own `managers` and
     `admins` (D55); not its editors or viewers, and no service account.
 
     Reads the registry community with this service's own `rec-registry.read`;

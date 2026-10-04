@@ -88,11 +88,31 @@ class TestTenancy:
         assert response.status_code == 403
         assert "different organization" in response.json()["detail"]
 
-    def test_a_realm_operator_sees_both(self, client: httpx.Client, idp):
-        body = client.get(
-            "/api/admin/me", headers=auth(idp.operator(ORG, realm=("admins",)))
-        ).json()
+    def test_a_platform_admin_sees_both(self, client: httpx.Client, idp):
+        """
+        @verifies REQ-0030
+        """
+        token = idp.operator(ORG, roles=("platform-admin",), sub="platform-1")
+        body = client.get("/api/admin/me", headers=auth(token)).json()
         assert {r["slug"] for r in body["recs"]} >= {REC, OTHER_REC}
+        assert body["platform_roles"] == ["platform-admin"]
+
+    def test_an_organization_admin_is_not_a_platform_admin(self, client: httpx.Client, idp):
+        """
+        @verifies REQ-0030
+        """
+        body = client.get("/api/admin/me", headers=auth(idp.operator(ORG, "admins"))).json()
+        assert [r["slug"] for r in body["recs"]] == [REC]
+        assert body["platform_roles"] == []
+
+    def test_a_realm_admins_group_grants_nothing(self, client: httpx.Client, idp):
+        """The platform admin before the role: a realm `/admins` and no organization.
+
+        @verifies REQ-0030
+        """
+        token = idp.operator("community-nowhere", realm_groups=("admins",), sub="legacy-1")
+        response = client.get("/api/admin/me", headers=auth(token))
+        assert response.status_code == 403
 
     def test_a_submission_is_not_reachable_across_communities(
         self, client: httpx.Client, idp, submission

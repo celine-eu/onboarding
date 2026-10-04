@@ -139,9 +139,9 @@ endpoint needs is in brackets.
 |---|---|---|
 | `GET` | `/api/admin/me` | Identity + per-community capabilities. 403 when the caller administers nothing, which is what drives the console's denied page |
 | `GET` | `/api/admin/recs` | Communities the caller may administer |
-| `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so realm `admins`/`managers` only) [`recs.read`] |
-| `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **Realm `admins` only**, no scope grants it; see below [`recs.write`] |
-| `GET` | `/api/admin/recs/{rec}/registry-drift` | Whether the registry's areas and topology match the template; a read, see below. Realm `admins` and the REC's own `managers`/`admins` only, no scope [`recs.drift`] |
+| `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so the `platform-admin` role only) [`recs.read`] |
+| `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **The `platform-admin` role only**, no scope grants it; see below [`recs.write`] |
+| `GET` | `/api/admin/recs/{rec}/registry-drift` | Whether the registry's areas and topology match the template; a read, see below. The `platform-admin` role and the REC's own `managers`/`admins` only, no scope [`recs.drift`] |
 | `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`, `declared_existing_member`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions/{id}` | One submission. `?reveal=true` unmasks, needs [`submissions.reveal`] and is audited as its own action. Carries `supply_boundary_id`, `supply_boundary_source`, `supply_boundary_area` (the key of the area of the template in force whose boundary it is, or `null`) and `supply_boundary_area_name` (that area's display name, its key when the template gives none, or `null`; REQ-0023) |
@@ -167,9 +167,9 @@ endpoint needs is in brackets.
 **Registry sync (`/api/admin/recs/{rec}/registry-sync`, ADR-0012, ADR-0014):**
 
 The template is the source of truth for a community's areas; this route is the only thing
-that writes them to the REC registry, and it runs only when a realm admin calls it (never on
+that writes them to the REC registry, and it runs only when a platform admin calls it (never on
 a template load). `onboarding-cli registry-sync --rec <slug> [--dry-run] [--prune]` calls
-the same route with a realm admin's own `--token`, or runs `--local` in process under the
+the same route with a platform admin's own `--token`, or runs `--local` in process under the
 break-glass rules; the CLI's client-credentials identity is never used for it
 ([specification](specifications/registry-sync.md)).
 
@@ -237,8 +237,8 @@ The answer, `200` whenever the sync ran:
 "matches" | "drift" | "not_synced", "areas": [{"key", "boundary_id", "state", "held_by"}],
 "nodes": [{"key", "state"}]}`, `state` being `matches`, `missing`, `differs` or
 `undeclared`. It reads with `rec-registry.read` and asks the Digital Twin nothing. It needs
-`recs.drift`: a realm `admins`, or a `managers`/`admins` of the REC's own organization; not
-its editors or viewers, not a realm `managers`, and no service account (D55).
+`recs.drift`: the `platform-admin` role, or a `managers`/`admins` of the REC's own
+organization; not its editors or viewers, no realm group, and no service account (D55).
 
 **Member-keyed, delegated (`/api/admin/communities/**`):**
 
@@ -262,8 +262,8 @@ enters through this service, so an imported member is a local-development case
 **Two tokens, both verified.** The caller is a service holding `onboarding.members.invite`,
 presented in `Authorization: Bearer`. It forwards the manager's own access token in
 `X-Acting-User-Token`. The policy allows the call only when the service holds the scope
-**and** the manager holds `admins` or `managers` on the REC's organization, or at realm
-level. A manager's token alone is refused, and so is any service alone, `onboarding.admin`
+**and** the manager holds `admins` or `managers` on the REC's organization, or holds the
+realm role `platform-admin` (a realm group grants nothing). A manager's token alone is refused, and so is any service alone, `onboarding.admin`
 included. See [authorization.md](authorization.md#delegated-actions).
 
 - A request that also carries `x-auth-request-access-token` is refused, because it came

@@ -67,13 +67,13 @@ async def _validate_dataspace_config() -> None:
 
         if not organization_for(slug):
             # Not fatal: a single-community deployment can be run entirely by
-            # platform operators holding realm-level groups. But per-community
+            # platform admins (the realm role `platform-admin`). But per-community
             # delegation is impossible without an organisation, and finding that
             # out by being denied is worse than being told at boot.
             logger.warning(
                 "REC %r declares no 'organization', so no per-community operator "
-                "can be granted access to it — only platform operators holding a "
-                "realm-level group. Add 'organization: <keycloak-org-alias>' to "
+                "can be granted access to it — only a platform admin holding the "
+                "realm role 'platform-admin'. Add 'organization: <keycloak-org-alias>' to "
                 "its manifest to delegate its review queue.",
                 slug,
             )
@@ -671,8 +671,11 @@ def create_app() -> FastAPI:
         # `renamed_from` in the sync's answer, `recs.drift`), the supply address
         # checked by boundary and find-by-address's `{matches, unchecked}` answer,
         # the eligibility answer without `lat`/`lng` and the admin read's
-        # `supply_boundary_area_name`.
-        version="0.4.0",
+        # `supply_boundary_area_name`; to 0.5.0 for `/api/admin/me`'s
+        # `platform_roles` in place of `realm_groups`, the submission revisions
+        # routes (and their retry body's own `RevisionRetryRequest` schema), the
+        # shared delivery points read and the consent fields.
+        version="0.5.0",
         lifespan=lifespan,
     )
 

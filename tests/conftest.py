@@ -182,12 +182,17 @@ def operator_token(issue_token):
     refuses an organization-scoped grant on an organization of any other type, so
     a fixture that omitted the attribute would test the refusal and nothing else.
     Pass `org_type=None` for an untyped organization, or another value for a DSO.
+
+    `roles` are realm roles, in `realm_access.roles` where Keycloak puts them
+    (`platform-admin` is the platform-wide grant). `realm_groups` writes a legacy
+    top-level `groups` claim, which must grant nothing.
     """
 
     def _issue(
         organization: str,
         *groups: str,
-        realm: tuple[str, ...] = (),
+        roles: tuple[str, ...] = (),
+        realm_groups: tuple[str, ...] = (),
         org_type: str | None = "rec",
         **extra,
     ):
@@ -202,8 +207,10 @@ def operator_token(issue_token):
             "organization": {organization: org_claim},
             **extra,
         }
-        if realm:
-            claims["groups"] = [f"/{g}" for g in realm]
+        if roles:
+            claims["realm_access"] = {"roles": list(roles)}
+        if realm_groups:
+            claims["groups"] = [f"/{g}" for g in realm_groups]
         return issue_token(**claims)
 
     return _issue

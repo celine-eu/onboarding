@@ -329,7 +329,8 @@ export interface AdminMe {
 	locale: string | null;
 	subject_type: string;
 	organizations: string[];
-	realm_groups: string[];
+	// Realm roles; `platform-admin` is the only platform-wide grant. Diagnostic only.
+	platform_roles: string[];
 	recs: AdminRecAccess[];
 }
 
@@ -624,7 +625,7 @@ export function createRecAdminApi(recSlug: string) {
 		},
 
 		// Whether the registry's areas match this community's template. A read:
-		// the sync itself is a realm admin's, from the CLI or the API.
+		// the sync itself is a platform admin's, from the CLI or the API.
 		registryDrift: () => adminRequest<RegistryDrift>(`/api/admin/recs/${recSlug}/registry-drift`),
 
 		// PODs more than one active member holds, from the registry's report.

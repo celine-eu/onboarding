@@ -56,7 +56,9 @@ The requirement is [REQ-0014](../specifications/registry-sync.md), planned.
 
 - **ADR-0004's worry is answered by who can press, not by what the client holds.** The
   reconcile runs only inside a sync, which only a realm `admins` may start (`recs.write`). No
-  unattended job and no organization-level operator reaches it.
+  unattended job and no organization-level operator reaches it. (Update, 2026-10-03: the
+  sync is now started by the realm role `platform-admin` only, and a realm `admins` group
+  grants nothing; REQ-0030.)
 - **The reconcile provisions every active member it finds.** On a community set up clean that
   is nobody, and later every member already has the account approval gave them. On a
   community seeded from a bundle, a sync creates accounts for its members — which is what the

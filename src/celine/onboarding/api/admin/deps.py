@@ -91,8 +91,8 @@ async def valid_admin_rec(rec_slug: str) -> str:
 def organization_of(rec_slug: str) -> str | None:
     """The Keycloak organization owning *rec_slug*, or None if it declares none.
 
-    None is not an error: such a REC is administrable only by platform operators
-    holding a realm-level group, and the policy resolves that correctly.
+    None is not an error: such a REC is administrable only by a platform admin
+    (the realm role `platform-admin`), and the policy resolves that correctly.
     """
     return template_service.organization_for(rec_slug) or None
 
@@ -115,7 +115,7 @@ def require(capability: Capability):
 def require_global(capability: Capability):
     """A dependency for deployment-wide actions, which belong to no community.
 
-    Only a *realm*-level group satisfies these for an operator — an
+    Only the realm role `platform-admin` satisfies these for an operator — an
     organization-scoped grant has no community to match against. Service accounts
     are unaffected: they are authorised by scope and never by organization.
     """

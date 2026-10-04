@@ -172,7 +172,7 @@ async def test_malformed_organization_refuses_to_start(seed_rec, monkeypatch):
 
 
 async def test_rec_without_an_organization_warns_but_starts(seed_rec, monkeypatch, caplog):
-    """Not fatal: platform operators with a realm group can still run it.
+    """Not fatal: a platform admin (the realm role `platform-admin`) can still run it.
 
     But per-community delegation is impossible, and being told at boot beats
     finding out by being denied.

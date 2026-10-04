@@ -169,8 +169,8 @@ def whoami(
             typer.echo(f"subject   {payload['sub']} ({payload['subject_type']})")
             if payload.get("email"):
                 typer.echo(f"email     {payload['email']}")
-            if payload.get("realm_groups"):
-                typer.echo(f"realm     {', '.join(payload['realm_groups'])}")
+            if payload.get("platform_roles"):
+                typer.echo(f"platform  {', '.join(payload['platform_roles'])}")
             for rec in payload["recs"]:
                 typer.echo(
                     f"  {rec['slug']:<20} org={rec['organization'] or '-':<20} "
