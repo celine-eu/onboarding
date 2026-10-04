@@ -39,12 +39,15 @@ tasks:
   migrate:
     desc: Run Alembic migrations
     cmds:
-      - uv run --project src alembic upgrade head
+      # Every Python task uses the prepared virtualenv (`uv sync` first), like
+      # run:api: `uv run` re-syncs the lockfile and would replace an editable
+      # celine-sdk link with the locked wheel.
+      - .venv/bin/alembic upgrade head
 
   migration:
     desc: Create a new Alembic migration
     cmds:
-      - uv run --project src alembic revision --autogenerate -m "{{.CLI_ARGS}}"
+      - .venv/bin/alembic revision --autogenerate -m "{{.CLI_ARGS}}"
 
   init-db:
     desc: >-
@@ -70,7 +73,7 @@ tasks:
       exist under src — so running it there collected nothing and reported
       success, which is the one way a test task can be worse than absent.
     cmds:
-      - uv run pytest
+      - .venv/bin/pytest
 
   test:frontend:
     desc: >-
@@ -91,8 +94,8 @@ tasks:
     desc: Lint backend code
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run ruff check .
-      - uv run ruff format --check .
+      - ../.venv/bin/ruff check .
+      - ../.venv/bin/ruff format --check .
 
   lint:frontend:
     desc: Lint frontend code
@@ -104,7 +107,7 @@ tasks:
     desc: Import template manifests into database
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run onboarding-cli import-templates {{.CLI_ARGS}}
+      - ../.venv/bin/onboarding-cli import-templates {{.CLI_ARGS}}
 
   admin:
     desc: >-
@@ -114,19 +117,19 @@ tasks:
       Talks to the API by default; add --local for the no-Keycloak break-glass.
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run onboarding-cli admin {{.CLI_ARGS}}
+      - ../.venv/bin/onboarding-cli admin {{.CLI_ARGS}}
 
   export-csv:
     desc: "Export a community's register, via the admin API (-- --rec <slug>)"
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run onboarding-cli export-csv {{.CLI_ARGS}}
+      - ../.venv/bin/onboarding-cli export-csv {{.CLI_ARGS}}
 
   export-pod-list:
     desc: "The community's supply-point evidence for one offer — authorised and withdrawn — via the admin API (snapshot; not a disclosure)"
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run onboarding-cli export-pod-list {{.CLI_ARGS}}
+      - ../.venv/bin/onboarding-cli export-pod-list {{.CLI_ARGS}}
 
   test:contract:
     desc: |-
@@ -162,7 +165,7 @@ tasks:
     cmds:
       # `-rs` so the skip reasons are printed rather than counted. A check that
       # stopped running has to be visible in the output that says it passed.
-      - uv run pytest ../tests/contract -rs {{.CLI_ARGS}}
+      - ../.venv/bin/pytest ../tests/contract -rs {{.CLI_ARGS}}
 
   test:real-tokens:
     desc: |-
@@ -173,7 +176,7 @@ tasks:
       defaulted; tests/real_tokens/conftest.py lists the variables.
     dir: "{{.SRC_DIR}}"
     cmds:
-      - uv run pytest ../tests/real_tokens -rs {{.CLI_ARGS}}
+      - ../.venv/bin/pytest ../tests/real_tokens -rs {{.CLI_ARGS}}
 
   test:e2e:
     desc: >-

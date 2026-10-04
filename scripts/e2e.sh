@@ -20,6 +20,13 @@ WHAT="${1:-all}"
 : "${E2E_UI_PORT:=13000}"
 : "${E2E_REC:=e2e-rec}"
 
+# The prepared virtualenv, not `uv run`: that re-syncs the lockfile and would
+# replace an editable celine-sdk link with the locked wheel.
+BIN="$PWD/.venv/bin"
+# A local test harness with dev settings (encryption off, a test issuer): only
+# CELINE_ENV=dev lets the app start with them (celine.sdk.posture).
+export CELINE_ENV=dev
+
 export ONBOARDING_E2E_DATABASE_URL="${ONBOARDING_E2E_DATABASE_URL:-postgresql+asyncpg://postgres:securepassword123@localhost:${E2E_PG_PORT}/${E2E_DB}}"
 
 # Refuse to run against ports somebody else is holding: otherwise a leftover
@@ -83,21 +90,21 @@ psql_q -c "SELECT 1 FROM pg_database WHERE datname='${E2E_DB}'" | grep -q 1 || \
 # It boots and tears down its own API, so it needs nothing else running.
 if [ "$WHAT" = all ] || [ "$WHAT" = api ]; then
   echo "==> API and CLI end-to-end"
-  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" uv run --project src pytest tests/e2e -q
+  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" "$BIN/pytest" tests/e2e -q
 fi
 
 # --- browser suite ------------------------------------------------------------
 if [ "$WHAT" = all ] || [ "$WHAT" = ui ]; then
   echo "==> issuer on :$E2E_IDP_PORT"
-  uv run --project src python tests/e2e/idp.py "$E2E_IDP_PORT" community-a admins > /tmp/onb-e2e-tokens &
+  "$BIN/python" tests/e2e/idp.py "$E2E_IDP_PORT" community-a admins > /tmp/onb-e2e-tokens &
   PIDS+=($!)
   for _ in $(seq 1 30); do [ -s /tmp/onb-e2e-tokens ] && break; sleep 0.5; done
   OPERATOR_TOKEN="$(python3 -c "import json;print(json.load(open('/tmp/onb-e2e-tokens'))['operator'])")"
   DENIED_TOKEN="$(python3 -c "import json;print(json.load(open('/tmp/onb-e2e-tokens'))['denied'])")"
 
   echo "==> migrating and seeding"
-  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" uv run --project src alembic upgrade head >/dev/null
-  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" uv run --project src python - <<'PY'
+  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" "$BIN/alembic" upgrade head >/dev/null
+  DATABASE_URL="$ONBOARDING_E2E_DATABASE_URL" "$BIN/python" - <<'PY'
 import asyncio, os, uuid
 from sqlalchemy import select
 from celine.onboarding.models.database import async_session
@@ -148,7 +155,7 @@ PY
   OIDC_JWKS_URI="http://127.0.0.1:$E2E_IDP_PORT/certs" \
   REQUIRE_ENCRYPTION=false EXTRACTION_ENABLED=false LLM_BASE_URL= DPA_SIGNED= OPENAI_API_KEY= SMS_PROVIDER=brevo DPA_SMS_SIGNED=false ADMIN_TOKEN= \
   DS_NS_URL= DS_CONNECTOR_URL= REC_REGISTRY_URL= DATASPACE_ENABLED=false \
-    uv run --project src uvicorn celine.onboarding.main:app --port "$E2E_API_PORT" --log-level warning &
+    "$BIN/uvicorn" celine.onboarding.main:app --port "$E2E_API_PORT" --log-level warning &
   PIDS+=($!)
   for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$E2E_API_PORT/api/health" >/dev/null && break; sleep 0.5; done
 
