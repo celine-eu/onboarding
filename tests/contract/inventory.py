@@ -29,10 +29,6 @@ class Call:
     service: str  # "ir" | "connector" | "provenance"
     method: str
     path: str  # the OpenAPI path template, not a formatted URL
-    #: A method the code falls back to when ds does not publish ``method`` yet.
-    #: Accepted by the contract check **only under CELINE_ENV=dev**, and
-    #: announced in the summary; anywhere else ``method`` is required.
-    fallback_method: str | None = None
     sends: frozenset[str] = field(default_factory=frozenset)
     #: For an endpoint whose body is a `oneOf` union, the schema this call means.
     #: `/prov/events` is the shape that broke us: its top-level schema has no
@@ -56,12 +52,10 @@ CALLS: tuple[Call, ...] = (
         "ir",
         "post",
         "/users/resolve",
-        fallback_method="get",
         sends=frozenset({"realm", "user_id", "email"}),
         why=(
             "Reuse an existing subject DID before minting a new one. A body, so "
-            "no identifier is in a URL; the deprecated GET only as the dev "
-            "fallback against an older registry."
+            "no identifier is in a URL; ds serves no GET."
         ),
     ),
     Call(

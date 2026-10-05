@@ -19,6 +19,7 @@ import pytest
 
 import celine.onboarding.services.dataspace_identity as di
 import celine.onboarding.services.member_sharing as ms
+from celine.onboarding.config.settings import Settings
 from celine.onboarding.services import template_service
 
 _OriginalAsyncClient = httpx.AsyncClient
@@ -702,6 +703,39 @@ class TestTheSecondDoor:
 
         assert bodies[0]["verification_method"] == "submission-review"
         assert bodies[0]["verified_by"] == "did:web:rec.example"
+
+    async def test_an_unset_ttl_leaves_the_lifetime_to_the_registry(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        default = Settings.model_fields["dataspace_vc_ttl_days"].default
+        monkeypatch.setattr(ms.settings, "dataspace_vc_ttl_days", default)
+        bodies: list[dict] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                bodies.append(json.loads(req.content))
+            return _handler(resolve=_resolves_after_provisioning())(req)
+
+        _patch_httpx(monkeypatch, handle)
+        await ms.get_data_sharing(_member())
+
+        assert "ttl_days" not in bodies[0]
+
+    async def test_a_set_ttl_is_sent_for_the_registry_to_clamp(
+        self, monkeypatch, bind_rec, _dataspace
+    ):
+        monkeypatch.setattr(ms.settings, "dataspace_vc_ttl_days", 365)
+        bodies: list[dict] = []
+
+        def handle(req: httpx.Request) -> httpx.Response:
+            if "/admin/credentials/data-subject" in str(req.url):
+                bodies.append(json.loads(req.content))
+            return _handler(resolve=_resolves_after_provisioning())(req)
+
+        _patch_httpx(monkeypatch, handle)
+        await ms.get_data_sharing(_member())
+
+        assert bodies[0]["ttl_days"] == 365
 
     async def test_the_did_is_bound_to_the_realm_that_authenticated_them(
         self, monkeypatch, bind_rec, _dataspace

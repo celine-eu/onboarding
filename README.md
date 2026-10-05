@@ -304,7 +304,7 @@ After approval a participant manages and withdraws their sharing decisions in th
 | `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret, for the same transition |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
-| `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |
+| `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. Unset: the registry's default (30 days, renewed automatically); a value is clamped to the registry's maximum |
 
 Which organization a community's members join, its DID, the linked participant and **which connector holds each offer's data** are **per community**, in that template's `manifest.yaml` under `dataspace:` — there is no deployment-wide equivalent, because one would file every community's members into a single organization.
 | `DS_CONNECTOR_URL` | *(none)* | The community's **own** connector: its members' decisions about its own data. Empty disables share provisioning. A decision about data another participant holds is recorded at that participant's connector instead, named in the manifest's `dataspace.connectors` |

@@ -889,8 +889,8 @@ async def resolve_subject(
 
     **In order, and the first answer wins:**
 
-    1. the registry's mapping — ``derive=false``, so a 404 means *no mapping*
-       and is not an error. A person who already has a DID keeps it; minting
+    1. the registry's mapping — a 404 means *no mapping* and is not an
+       error. A person who already has a DID keeps it; minting
        beside it would split their consent records and provenance in two;
     2. ``recorded``, an id this service already minted for them and wrote down
        (the funnel's ``Submission.dataspace_subject_id``). It covers the case
@@ -910,7 +910,7 @@ async def resolve_subject(
     cannot leak from a caller that did not need it — see
     :func:`resolve_subject_credential` for the path that does need it.
     """
-    params: dict[str, str] = {"derive": "false"}
+    params: dict[str, str] = {}
     if email:
         params["email"] = email
     if username:
@@ -964,7 +964,7 @@ async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any] 
 
     ``None`` when the registry holds no mapping for this person.
     """
-    return await _resolve_raw_with_params(access, {"email": email, "derive": "false"})
+    return await _resolve_raw_with_params(access, {"email": email})
 
 
 #: What ``POST /users/resolve`` accepts; ds rejects any other field.
@@ -975,8 +975,8 @@ def _resolve_route_missing(resp: httpx.Response) -> bool:
     """The registry has no ``POST /users/resolve`` — not "no mapping".
 
     405 is the method missing on a path that exists. A 404 counts only with the
-    router's own ``Not Found``: the route's 404 says ``No mapping found…``, and
-    falling back on it would send the identifiers again, in a URL, for nothing.
+    router's own ``Not Found``: the route's 404 says ``No mapping found…``, which
+    is the ordinary *nobody* answer.
     """
     if resp.status_code == 405:
         return True
@@ -993,45 +993,36 @@ async def _resolve_raw_with_params(
 ) -> dict[str, Any] | None:
     """The ``/users/resolve`` body, or ``None`` for the registry's 404.
 
-    A 404 is *no mapping for this user*: the answer ``derive=false`` gives for
-    somebody the registry has never been told about, and the ordinary first-time
-    case rather than a failure.
+    A 404 is *no mapping for this user*: the answer for somebody the registry
+    has never been told about, and the ordinary first-time case rather than a
+    failure.
 
-    **``POST`` with a JSON body**, never the query form: an email in a URL is
-    recorded by every access log, proxy and trace on the path, and ds withdraws
-    ``GET /users/resolve`` (410 after its sunset, outside dev). The body takes
-    only ``realm``, ``user_id``, ``username`` and ``email`` (ds forbids extras),
-    so ``derive`` — meaningful only to the GET — is not sent.
+    **``POST`` with a JSON body**, the only form the registry serves: an email
+    in a URL is recorded by every access log, proxy and trace on the path, so
+    ds answers ``GET /users/resolve`` with 405. The body takes only ``realm``,
+    ``user_id``, ``username`` and ``email`` (ds forbids extras); the POST never
+    derives an id.
 
-    A registry too old to have the POST answers 405, or the router's own 404
-    (``Not Found``, distinct from the mapping 404 above). Under ``CELINE_ENV=dev``
-    — the local stack runs this service against whichever ds it has — the GET
-    is tried once, with a warning; anywhere else that is a refusal, because the
-    fallback would put the identifiers back into a URL.
+    A 405, or the router's own 404 (``Not Found``, distinct from the mapping 404
+    above), means the registry has no ``POST /users/resolve``. That is an error
+    in every posture, logged with the status only; the request is never retried
+    in another form.
     """
-    from celine.sdk.posture import is_dev
-
     body = {k: v for k, v in params.items() if k in _RESOLVE_BODY_FIELDS and v}
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             f"{access.base_url}/users/resolve", json=body, headers=access.headers
         )
-        if _resolve_route_missing(resp):
-            if not is_dev():
-                raise ValueError(
-                    "Subject resolution failed: the identity registry has no "
-                    f"POST /users/resolve (HTTP {resp.status_code}). Upgrade ds; "
-                    "the GET form puts identifiers in a URL and is used only "
-                    "under CELINE_ENV=dev."
-                )
-            logger.warning(
-                "identity registry has no POST /users/resolve (HTTP %d); falling "
-                "back to the deprecated GET under CELINE_ENV=dev. Upgrade ds.",
-                resp.status_code,
-            )
-            resp = await client.get(
-                f"{access.base_url}/users/resolve", params=params, headers=access.headers
-            )
+
+    if _resolve_route_missing(resp):
+        logger.error(
+            "identity registry has no POST /users/resolve (HTTP %d); upgrade ds",
+            resp.status_code,
+        )
+        raise ValueError(
+            "Subject resolution failed: the identity registry has no "
+            f"POST /users/resolve (HTTP {resp.status_code}). Upgrade ds."
+        )
 
     if resp.status_code == 409:
         # Loud, because nobody else will look. The member gets a terminal
@@ -1041,7 +1032,7 @@ async def _resolve_raw_with_params(
         # not belong in a log (R21); the operator finds the person by the id.
         logger.error(
             "Identity conflict resolving subject (identifiers: %s; keycloak user id: %s): %s",
-            ", ".join(k for k in params if k != "derive") or "none",
+            ", ".join(params) or "none",
             params.get("user_id") or "unknown",
             resp.text,
         )

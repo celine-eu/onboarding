@@ -1,14 +1,12 @@
-"""`/users/resolve` is a POST with a JSON body; the GET is a dev-only fallback.
+"""`/users/resolve` is a POST with a JSON body, the only form ds serves.
 
 An email in a query string is recorded by every access log, proxy and trace on
-the path, so ds moved the lookup to ``POST /users/resolve`` and withdraws the GET
-(410 after its sunset, outside dev). This service asks with the POST.
+the path, so ds resolves a person only by ``POST /users/resolve`` and answers a
+GET with 405. This service asks with the POST and nothing else.
 
-The local stack runs this service from source against whichever ds it has, and
-an older registry has no POST: it answers 405 (or the router's own 404). Under
-``CELINE_ENV=dev`` the GET is tried once, with a warning; anywhere else that is a
-refusal, because the fallback would put the identifiers back into a URL. The
-registry's *mapping* 404 is "no such person", never a reason to fall back.
+A registry without the POST (a 405, or the router's own 404) is an error in
+every posture, never retried in another form. The registry's *mapping* 404 is
+"no such person".
 """
 
 from __future__ import annotations
@@ -41,22 +39,6 @@ def _patch_httpx(monkeypatch, handler):
 
 def _access() -> di.RegistryAccess:
     return di.RegistryAccess(base_url="http://ir:30005", headers={"authorization": "Bearer t"})
-
-
-class _OldRegistry:
-    """An identity registry from before ``POST /users/resolve``."""
-
-    def __init__(self, post_status: int = 405, get_answer: httpx.Response | None = None):
-        self.post_status = post_status
-        self.get_answer = get_answer or httpx.Response(200, json=FOUND)
-        self.seen: list[httpx.Request] = []
-
-    def __call__(self, req: httpx.Request) -> httpx.Response:
-        self.seen.append(req)
-        if req.method == "POST":
-            detail = "Method Not Allowed" if self.post_status == 405 else "Not Found"
-            return httpx.Response(self.post_status, json={"detail": detail})
-        return self.get_answer
 
 
 # ── the POST ──────────────────────────────────────────────────────────────
@@ -122,55 +104,40 @@ async def test_the_mapping_404_is_no_person_and_is_not_retried_as_a_get(monkeypa
     assert [r.method for r in seen] == ["POST"]
 
 
-# ── an older registry: dev falls back once, elsewhere refuses ─────────────
+# ── a registry without the POST ──────────────────────────────────────────
 
 
-@pytest.mark.parametrize("post_status", [405, 404])
-async def test_dev_falls_back_to_the_get_once_with_a_warning(monkeypatch, caplog, post_status):
-    monkeypatch.setenv("CELINE_ENV", "dev")
-    registry = _OldRegistry(post_status)
-    _patch_httpx(monkeypatch, registry)
-
-    with caplog.at_level(logging.WARNING, logger=di.logger.name):
-        resolved = await di.resolve_subject(
-            _access(), email=EMAIL, keycloak_realm="celine", keycloak_user_id="kc-1"
-        )
-
-    assert resolved.subject_id == "sub-1"
-    assert [r.method for r in registry.seen] == ["POST", "GET"]
-    get = registry.seen[1]
-    assert get.url.params["email"] == EMAIL
-    assert get.url.params["derive"] == "false"
-    assert get.url.params["user_id"] == "kc-1"
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "POST /users/resolve" in warnings[0].getMessage()
-    assert EMAIL not in warnings[0].getMessage()
-
-
-async def test_the_dev_fallback_still_reads_no_mapping_as_none(monkeypatch):
-    monkeypatch.setenv("CELINE_ENV", "dev")
-    registry = _OldRegistry(get_answer=httpx.Response(404, json=NO_MAPPING))
-    _patch_httpx(monkeypatch, registry)
-
-    resolved = await di.resolve_subject(_access(), email=EMAIL)
-
-    assert resolved.did is None
-    assert [r.method for r in registry.seen] == ["POST", "GET"]
-
-
-@pytest.mark.parametrize("env", ["prod", "staging", ""])
-@pytest.mark.parametrize("post_status", [405, 404])
-async def test_outside_dev_an_old_registry_is_refused(monkeypatch, env, post_status):
+@pytest.mark.parametrize("env", ["dev", "prod", ""])
+async def test_a_405_is_an_error_logged_without_identifiers(monkeypatch, caplog, env):
+    """No posture retries in another form; the log names the status only."""
     monkeypatch.setenv("CELINE_ENV", env)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
-    registry = _OldRegistry(post_status)
-    _patch_httpx(monkeypatch, registry)
+    seen: list[httpx.Request] = []
 
-    with pytest.raises(ValueError, match="no POST /users/resolve"):
-        await di.resolve_subject(_access(), email=EMAIL)
+    def handler(req):
+        seen.append(req)
+        if req.method != "POST":
+            return httpx.Response(200, json=FOUND)
+        return httpx.Response(405, json={"detail": "Method Not Allowed"})
 
-    assert [r.method for r in registry.seen] == ["POST"], "the GET must never be sent"
+    _patch_httpx(monkeypatch, handler)
+
+    with caplog.at_level(logging.DEBUG, logger=di.logger.name):
+        with pytest.raises(ValueError, match="no POST /users/resolve") as raised:
+            await di.resolve_subject(
+                _access(),
+                email=EMAIL,
+                username="member-1",
+                keycloak_realm="celine",
+                keycloak_user_id="kc-1",
+            )
+
+    assert [r.method for r in seen] == ["POST"], "nothing is sent after the 405"
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors and "405" in errors[0]
+    text = "\n".join(r.getMessage() for r in caplog.records) + str(raised.value)
+    for value in (EMAIL, "member-1", "kc-1"):
+        assert value not in text
 
 
 # ── what reaches the log ─────────────────────────────────────────────────

@@ -205,7 +205,10 @@ class Settings(BaseSettings):
     ds_onboarding_client_secret: str = ""
     dataspace_user_role: str = "DataSubject"
     dataspace_allowed_actions: str = "consent.manage,data.share"
-    dataspace_vc_ttl_days: int = 365
+    # Unset, the request carries no `ttl_days` and the identity registry applies
+    # its own lifetime for a person credential (30 days, renewed automatically).
+    # A value is still sent, and the registry clamps it to its maximum.
+    dataspace_vc_ttl_days: int | None = Field(default=None, ge=1)
     # `DATASPACE_SUBJECT_SOURCE` chose where a subject id came from — the
     # registry's HMAC of the email, or the submission's date-bearing ref — and is
     # gone (the maintainer, 2026-09-21). A person the registry already maps keeps

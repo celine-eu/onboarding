@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 import celine.onboarding.services.dataspace_identity as di
+from celine.onboarding.config.settings import Settings
 
 _OriginalAsyncClient = httpx.AsyncClient
 
@@ -46,6 +48,7 @@ CREDENTIAL_RESPONSE = {
 }
 
 DERIVE_RESPONSE = {"subject_id": "email-derived123456789012"}
+NO_MAPPING = {"detail": "No mapping found for this user"}
 
 
 def _default_handler(req: httpx.Request) -> httpx.Response:
@@ -146,6 +149,37 @@ async def test_request_body_contents(monkeypatch, submission, _enable_vc):
     assert body["ttl_days"] == 365
     assert body["linked_participant_did"] == "did:web:rec.example"
     assert body["allowed_actions"] == ["consent.manage", "data.share"]
+
+
+def _default_ttl_days():
+    """The value a deployment that sets nothing runs with."""
+    return Settings.model_fields["dataspace_vc_ttl_days"].default
+
+
+async def test_an_unset_ttl_leaves_the_lifetime_to_the_registry(
+    monkeypatch, submission, _enable_vc
+):
+    """No `ttl_days` at all: the registry's own default applies (30 days)."""
+    monkeypatch.setattr(di.settings, "dataspace_vc_ttl_days", _default_ttl_days())
+    di._token_provider = _mock_token_provider()
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=DERIVE_RESPONSE)
+        if "credentials/data-subject" in str(req.url):
+            bodies.append(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert "ttl_days" not in bodies[0]
+
+
+def test_a_ttl_below_one_day_is_refused():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, dataspace_vc_ttl_days=0)
 
 
 async def test_generated_at_parsed(monkeypatch, submission, _enable_vc):
@@ -1078,7 +1112,7 @@ def _access() -> di.RegistryAccess:
 class TestResolveSubject:
     async def test_a_new_person_gets_a_minted_id_and_no_did(self, monkeypatch):
         """The ordinary first-time answer. The registry's 404 is not an error."""
-        _patch_httpx(monkeypatch, lambda req: httpx.Response(404))
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(404, json=NO_MAPPING))
 
         resolved = await di.resolve_subject(_access(), email="a@example.org")
 
@@ -1086,7 +1120,7 @@ class TestResolveSubject:
         assert resolved.did is None
 
     async def test_an_id_already_recorded_is_reused_when_nothing_is_mapped(self, monkeypatch):
-        _patch_httpx(monkeypatch, lambda req: httpx.Response(404))
+        _patch_httpx(monkeypatch, lambda req: httpx.Response(404, json=NO_MAPPING))
 
         resolved = await di.resolve_subject(
             _access(), email="a@example.org", recorded="0b9c3a2e-6f1d-4e8a-9c7b-2d5e1f0a3b4c"

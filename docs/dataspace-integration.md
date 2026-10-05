@@ -46,7 +46,7 @@ sequenceDiagram
     Note over Onboarding: provision_user_identity()
 
     Note over Onboarding: as svc-ds-onboarding (this service)
-    Onboarding->>IdRegistry: GET /users/resolve?email=…&derive=false
+    Onboarding->>IdRegistry: POST /users/resolve {realm, user_id, username, email}
     IdRegistry-->>Onboarding: {subject_id, did} or 404 (no mapping)
     Note over Onboarding: no mapping: reuse the id the submission recorded,<br/>else mint uuid4, and record it before issuing
 
@@ -88,7 +88,7 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 1. **Login provisioning** -- `provision_participant()` calls `PUT /participants/{community}/{key}` on the provisioning service, which ensures the account, its REC organization and its org group, and returns the Keycloak `user_id` and the `username` the account authenticates as. The body always carries `invite: false` and, when there is one, the participant's `locale`, which the account keeps for the invitation sent later (see [The invitation](#the-invitation)). Nothing here touches Keycloak; see [Participant login settings](#participant-login-settings). This runs before identity provisioning so the user id is available for the sync step.
 
-2. **Subject resolution** -- `GET /users/resolve?email=…&derive=false` asks the identity-registry whether it already maps this person. If it does, that `subject_id` is reused: one human keeps one DID, and minting beside it would split their consent records and provenance in two. A `404` is the registry's answer for *no mapping* and is not an error. Then onboarding reuses the id the submission already recorded, if it has one, and otherwise mints a random **UUIDv4**. The id is written onto the submission **before** issuance. The registry is never asked to derive one.
+2. **Subject resolution** -- `POST /users/resolve`, with the identifiers in a JSON body (`realm`, `user_id`, `username`, `email`; never in the URL), asks the identity-registry whether it already maps this person. If it does, that `subject_id` is reused: one human keeps one DID, and minting beside it would split their consent records and provenance in two. A `404` is the registry's answer for *no mapping* and is not an error. Then onboarding reuses the id the submission already recorded, if it has one, and otherwise mints a random **UUIDv4**. The id is written onto the submission **before** issuance. The registry is never asked to derive one. It is the only form ds serves: a `405` (the registry has no such POST) is an error, and the request is never retried in another form.
 
     **Why a random id, and why it is recorded first.** The subject id becomes the `<id>` of the person's DID verbatim, and ds's rule `D-22c` puts the obligation on whoever generates it: it must not reveal the person. A UUID is derived from nothing, so it reveals nothing. It also cannot be derived again, so an id that is minted and not recorded is lost, and the next attempt gives the same person a second DID. Issuance creates the DID but no mapping; only the Keycloak sync in step 6 writes the mapping. So if the step fails between the two, enablement commits the failed step together with the submission, and the retry finds the id there. A revocation clears the credential columns and keeps this one.
 
@@ -343,7 +343,7 @@ These settings control what goes into the issued credential:
 |---|---|---|
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential (e.g. `member`). |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated actions the user is authorized for. |
-| `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. |
+| `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days. Unset: the registry's default (30 days, renewed automatically); a value is clamped to the registry's maximum. |
 
 ### The per-community binding lives in the manifest
 
