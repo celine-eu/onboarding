@@ -291,11 +291,13 @@ class TestEachCallSiteAsksForItsScope:
             ("POST", "/users/resolve", "Bearer service"),
             ("POST", "/admin/credentials/data-subject", _bearer(service_auth.CREDENTIALS_WRITE)),
             ("POST", "/admin/memberships", _bearer(service_auth.MEMBERSHIPS_WRITE)),
-            ("POST", "/admin/keycloak/sync", "Bearer service"),
+            # The community's act since ds ADR-0026's amendment (2026-10-05).
+            ("POST", "/admin/keycloak/sync", _bearer(service_auth.KEYCLOAK_SYNC)),
         ]
         assert {(c, s) for c, _, s in tokens} == {
             (CLIENT_ID, service_auth.CREDENTIALS_WRITE),
             (CLIENT_ID, service_auth.MEMBERSHIPS_WRITE),
+            (CLIENT_ID, service_auth.KEYCLOAK_SYNC),
         }
 
     async def test_revocation_removes_as_the_collector(
@@ -706,6 +708,7 @@ class TestTheInventory:
                 "delete",
                 "/admin/memberships/{user_did}/{organization_alias}",
             ): service_auth.MEMBERSHIPS_WRITE,
+            ("post", "/admin/keycloak/sync"): service_auth.KEYCLOAK_SYNC,
             ("post", "/consent/admin/shares"): service_auth.CONSENT_PROVISION,
             ("get", "/consent/admin/subject-shares"): service_auth.CONSENT_COLLECTOR_READ,
             ("get", "/consent/admin/decisions"): service_auth.CONSENT_COLLECTOR_READ,

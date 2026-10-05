@@ -249,7 +249,8 @@ async def _identity_mapping(ctx: RunContext) -> StepResult:
     if not settings.dataspace_enabled:
         return StepResult(StepStatus.SKIPPED, reason="This deployment is not in a dataspace.")
     await template_service.ensure_fresh()
-    if not template_service.dataspace_binding(submission.rec_slug).enabled:
+    binding = template_service.dataspace_binding(submission.rec_slug)
+    if not binding.enabled:
         return StepResult(StepStatus.SKIPPED, reason="This community is not in a dataspace.")
     if not submission.dataspace_did:
         return StepResult(StepStatus.SKIPPED, reason="This member has no dataspace identity.")
@@ -273,9 +274,11 @@ async def _identity_mapping(ctx: RunContext) -> StepResult:
 
     access = await dataspace_identity.registry_access()
     try:
+        # The community's act, as its collector client (ds ADR-0026, amended
+        # 2026-10-05): the mapping binds a member's login to their DID.
         await dataspace_identity.sync_keycloak_mapping(
             access.base_url,
-            access.headers,
+            await dataspace_identity.keycloak_sync_headers(binding.organization),
             did=submission.dataspace_did,
             keycloak_user_id=ctx.keycloak_user_id,
             keycloak_realm=provisioning.keycloak_realm(),

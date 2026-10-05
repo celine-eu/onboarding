@@ -19,6 +19,7 @@ from celine.onboarding.services.service_auth import (
     CONSENT_COLLECTOR_READ,
     CONSENT_PROVISION,
     CREDENTIALS_WRITE,
+    KEYCLOAK_SYNC,
     MEMBERSHIPS_WRITE,
     organisation_auth_headers,
     service_token_provider,
@@ -94,6 +95,19 @@ async def _collector_headers(organization_alias: str, scope: str) -> dict[str, s
         return await _auth_headers()
     token = await provider.get_token()
     return {"Authorization": f"Bearer {token.access_token}"}
+
+
+async def keycloak_sync_headers(organization_alias: str) -> dict[str, str]:
+    """``Authorization`` for ``POST /admin/keycloak/sync``, as the community.
+
+    The mapping from a member's login to their DID is what a person route's
+    login binding reads (ds ADR-0024), so ds made writing it the community's
+    act (ADR-0026, amended 2026-10-05): its collector client, asking for
+    ``identity-registry.keycloak.sync`` alone, for a DID holding a credential
+    linked to that community. Under ``CELINE_ENV=dev`` without a collector
+    secret, this service's own client, warned (:func:`_collector_headers`).
+    """
+    return await _collector_headers(organization_alias, KEYCLOAK_SYNC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1179,11 +1193,18 @@ async def provision_subject(
     are fetched before anything is written, so a missing one leaves nothing
     half-issued.
     """
-    base_url, headers = access.base_url, access.headers
+    base_url = access.base_url
     org_alias = binding.organization
     credential_headers = await _collector_headers(org_alias, CREDENTIALS_WRITE)
     membership_headers = (
         await _collector_headers(org_alias, MEMBERSHIPS_WRITE) if org_alias else None
+    )
+    # Fetched before anything is issued, like the two above: a realm that does
+    # not grant the scope yet answers `invalid_scope` here, not after issuance.
+    sync_headers = (
+        await keycloak_sync_headers(org_alias)
+        if facts.keycloak_user_id and facts.keycloak_realm
+        else None
     )
 
     body: dict[str, Any] = {"subject_id": facts.subject_id, "role": facts.role}
@@ -1217,10 +1238,10 @@ async def provision_subject(
     if org_alias and membership_headers is not None:
         await _register_membership(base_url, membership_headers, did, org_alias)
 
-    if facts.keycloak_user_id and facts.keycloak_realm:
+    if sync_headers is not None and facts.keycloak_user_id and facts.keycloak_realm:
         await _sync_keycloak(
             base_url,
-            headers,
+            sync_headers,
             did=did,
             keycloak_user_id=facts.keycloak_user_id,
             keycloak_realm=facts.keycloak_realm,
@@ -2694,8 +2715,33 @@ async def _register_membership(
         raise ValueError(f"Membership registration failed ({resp.status_code}): {resp.text}")
 
 
+def _log_misalignment(what: str, org_alias: str, subject_ref: str | None) -> None:
+    """A 404 on a delete: the end state holds, the belief that led here did not.
+
+    Onboarding removed something it recorded as existing and the registry holds
+    no such thing — a row removed behind its back (an operator cleaning up a
+    suspended organisation, a registry restored from backup) or never written.
+    The delete has its end state, so it is not a failure; it is a misalignment
+    between the two records, and an operator reconciling them needs to see it.
+    **Named by the submission reference, never by email or DID**: the log
+    leaves this service, and the reference is meaningful only in its database.
+    """
+    logger.warning(
+        "MISALIGNMENT: onboarding recorded %s for subject %s in %r, but the identity "
+        "registry holds none (404); treated as removed. Reconcile the two records.",
+        what,
+        subject_ref or "<unreferenced>",
+        org_alias,
+    )
+
+
 async def _delete_membership(
-    base_url: str, headers: dict[str, str], did: str, org_alias: str
+    base_url: str,
+    headers: dict[str, str],
+    did: str,
+    org_alias: str,
+    *,
+    subject_ref: str | None = None,
 ) -> None:
     """Remove the user DID's membership of the organisation, or raise.
 
@@ -2705,6 +2751,8 @@ async def _delete_membership(
     success, and the connector kept counting the person as a member. Now any
     answer of 400 or more raises, except 404: the row is not there, which is
     the state a delete wants (as for the credential, in :func:`revoke_user_identity`).
+    The 404 is logged as a **misalignment** (:func:`_log_misalignment`), naming
+    ``subject_ref`` — the submission reference — rather than the person.
     """
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -2716,7 +2764,7 @@ async def _delete_membership(
             f"Membership deletion for {did} in {org_alias!r} could not reach the registry: {exc}"
         ) from exc
     if resp.status_code == 404:
-        logger.info("Membership for %s in %s was already gone", did, org_alias)
+        _log_misalignment("a membership", org_alias, subject_ref)
         return
     if resp.status_code >= 400:
         raise ValueError(
@@ -2874,6 +2922,7 @@ async def _sync_keycloak(
                 await _collector_headers(organization_alias, MEMBERSHIPS_WRITE),
                 did,
                 organization_alias,
+                subject_ref=f"credential {credential_id}",
             )
         except Exception as exc:  # noqa: BLE001 — reported below, beside the cause
             logger.exception(
@@ -2891,7 +2940,12 @@ async def _sync_keycloak(
                 f"{base_url}/admin/credentials/{credential_id}",
                 headers=credential_headers,
             )
-        if resp.status_code >= 400 and resp.status_code != 404:
+        if resp.status_code == 404:
+            # Just issued and already gone: the same misalignment as revocation's.
+            _log_misalignment(
+                f"credential {credential_id}", organization_alias, f"credential {credential_id}"
+            )
+        elif resp.status_code >= 400:
             raise ValueError(f"the registry answered {resp.status_code}: {resp.text}")
     except Exception as exc:  # noqa: BLE001 — reported below, beside the cause
         logger.exception("Failed to revoke credential %s during rollback", credential_id)
@@ -2944,6 +2998,7 @@ async def revoke_user_identity(submission: Submission) -> str:
             await _collector_headers(binding.organization, MEMBERSHIPS_WRITE),
             did,
             binding.organization,
+            subject_ref=submission.ref,
         )
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -2952,7 +3007,10 @@ async def revoke_user_identity(submission: Submission) -> str:
         )
         # 404 is success for this purpose: the credential is gone either way, and
         # refusing to clear the local columns would make the state unrepairable.
-        if resp.status_code >= 400 and resp.status_code != 404:
+        # It is still a misalignment with what this service recorded, so it says so.
+        if resp.status_code == 404:
+            _log_misalignment(f"credential {credential_id}", binding.organization, submission.ref)
+        elif resp.status_code >= 400:
             raise ValueError(f"Credential revocation failed ({resp.status_code}): {resp.text}")
 
     submission.dataspace_vc_id = None

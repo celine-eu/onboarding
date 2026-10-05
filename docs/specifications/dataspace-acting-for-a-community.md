@@ -13,16 +13,20 @@ it may ask for adds exactly one audience.
 ### REQ-0035 — every act for a community is made as that community's collector client, with its own secret
 
 Issuing and revoking a member's data-subject credential, registering and removing their
-membership, registering a consent decision, reading decisions back (per subject and per
-offer), and reading an offer's audience are made as `svc-ds-collector-<alias>`, where
+membership, writing the DID <-> Keycloak mapping that binds their login to their DID,
+registering a consent decision, reading decisions back (per subject and per offer), and
+reading an offer's audience are made as `svc-ds-collector-<alias>`, where
 `<alias>` is the REC manifest's `dataspace.organization`. Its secret is read from
 `SVC_DS_COLLECTOR_<ALIAS>_SECRET` — the alias upper-cased, `-` replaced by `_` — in the
 process environment first, then in `.env` / `.env.local`, where such a name does not refuse
 boot as an unknown setting. A deployment serving several communities holds one secret per
 community, and no community's act is made with another's.
 
-Resolving an organisation or a subject and writing the DID <-> Keycloak mapping stay this
-service's own (`svc-ds-onboarding`).
+Resolving an organisation or a subject stays this service's own (`svc-ds-onboarding`).
+The mapping moved to the collector client with ds ADR-0026's amendment (2026-10-05): ds
+accepts it from a community only for a DID holding a credential linked to that community,
+and only rebinding the same login. Approval asks for its token before issuing anything,
+so a realm that does not grant the scope yet stops the approval before a credential exists.
 
 ### REQ-0036 — each collector token asks for exactly one scope, the one its route requires, and is cached per community and scope
 
@@ -30,12 +34,13 @@ service's own (`svc-ds-onboarding`).
 |---|---|
 | `POST /admin/credentials/data-subject`, `DELETE /admin/credentials/{id}` | `identity-registry.credentials.write` |
 | `POST /admin/memberships`, `DELETE /admin/memberships/{did}/{alias}` | `identity-registry.memberships.write` |
+| `POST /admin/keycloak/sync` (approval, and an email correction's re-sync) | `identity-registry.keycloak.sync` |
 | `POST /consent/admin/shares` | `connector.consent.provision` |
 | `GET /consent/admin/subject-shares`, `GET /consent/admin/decisions` | `connector.consent.collector.read` |
 | `GET /consent/admin/shares` | `connector.consent.audience` |
 
 A token request names exactly one of `identity-registry.memberships.write`,
-`identity-registry.credentials.write`, `connector.consent.provision`,
+`identity-registry.credentials.write`, `identity-registry.keycloak.sync`, `connector.consent.provision`,
 `connector.consent.collector.read`, `connector.consent.audience`,
 `connector.disclosure.record`, `provenance.write`; anything else — a space- or
 comma-joined list included — is refused before a token is requested. The contract
@@ -69,3 +74,13 @@ the error names every undo that failed, and the Keycloak failure remains its cau
 credential (`X-Subject-Id`, `X-User-VC`) and, as `Authorization: Bearer`, the token the
 member called this service with (ds ADR-0024). This service's own token is never sent to
 these routes; a request carrying no member token sends none.
+
+### REQ-0040 — a 404 on a membership delete or a credential revocation succeeds, and is logged as a misalignment
+
+`DELETE /admin/memberships/{did}/{alias}` and `DELETE /admin/credentials/{id}` answered 404
+leave the state a delete wants, so revocation (and the rollback after a failed Keycloak
+sync) carries on. Each such 404 is one `WARNING` starting `MISALIGNMENT`: this service
+recorded a membership or a credential that the identity registry does not hold — removed
+behind its back, by an operator cleaning up a suspended organisation say, or never
+written. The line names the community alias and the submission reference (in the rollback,
+the credential id), never the member's email or DID.

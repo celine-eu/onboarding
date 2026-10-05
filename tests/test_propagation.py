@@ -218,6 +218,9 @@ def world(monkeypatch, trail):
     async def _access():
         return SimpleNamespace(base_url="http://ir:30005", headers={"Authorization": "Bearer t"})
 
+    async def _sync_headers(alias):
+        return {"Authorization": "Bearer t"}
+
     def _factory(**kw):
         kw.pop("transport", None)
         return _OriginalAsyncClient(transport=httpx.MockTransport(idreg.handle), **kw)
@@ -229,7 +232,9 @@ def world(monkeypatch, trail):
         lambda slug: SimpleNamespace(enabled=True, community=COMMUNITY),
     )
     monkeypatch.setattr(
-        template_service, "dataspace_binding", lambda slug: SimpleNamespace(enabled=True)
+        template_service,
+        "dataspace_binding",
+        lambda slug: SimpleNamespace(enabled=True, organization="example-rec"),
     )
     monkeypatch.setattr(enablement, "load_steps", _steps)
     monkeypatch.setattr(provisioning, "_get_client", lambda: prov)
@@ -237,6 +242,9 @@ def world(monkeypatch, trail):
     monkeypatch.setattr(provisioning, "keycloak_realm", lambda: "celine")
     monkeypatch.setattr(rec_registry, "_get_client", lambda: registry)
     monkeypatch.setattr(dataspace_identity, "registry_access", _access)
+    # The re-sync is the community's act (its collector client); which token it
+    # carries is `test_keycloak_sync_and_misalignment.py`'s business.
+    monkeypatch.setattr(dataspace_identity, "keycloak_sync_headers", _sync_headers)
     monkeypatch.setattr(dataspace_identity, "_KC_SYNC_MAX_RETRIES", 1)
     monkeypatch.setattr(httpx, "AsyncClient", _factory)
     monkeypatch.setattr(settings, "provisioning_url", "http://provisioning:8010")

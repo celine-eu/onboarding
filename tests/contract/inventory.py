@@ -105,8 +105,12 @@ CALLS: tuple[Call, ...] = (
         why=(
             "Put the dataspace DID on the Keycloak user, and the username beside "
             "it — the connector reads that back to name a consenting subject to "
-            "the data plane, which joins it against the registry's Member.user_id."
+            "the data plane, which joins it against the registry's Member.user_id. "
+            "The community's act (ds ADR-0026, amended 2026-10-05): only for a DID "
+            "holding a credential linked to it."
         ),
+        acts_as="collector",
+        scope="identity-registry.keycloak.sync",
     ),
     Call("ir", "get", "/admin/credentials/{cred_id}", why="Read a credential back when revoking."),
     Call(

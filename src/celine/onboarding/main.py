@@ -132,26 +132,35 @@ async def _validate_dataspace_config() -> None:
                 f"═══════════════════════════════════════════════════════════════\n"
             )
 
-        # Registering a consent is an act of an organisation: the connector reads
-        # which one from the caller's token and refuses a plain service client.
-        # Without the community's own client there is nothing to register with,
-        # and every approval would leave `share_provisioned=false`. A warning
-        # rather than a refusal — onboarding somebody without recording their
-        # sharing consent is degraded, not broken, and the wizard, the login and
-        # the registry all still work.
-        if declares_sharing and settings.ds_connector_url and not settings.ds_org_client_secret:
-            logger.warning(
-                "REC %r collects data-sharing consent and DS_ORG_CLIENT_SECRET is not "
-                "set, so no decision can be registered: a consent is written as the "
-                "community's own client (%s), and the connector refuses a service token.",
-                slug,
-                f"svc-ds-connector-{binding.organization}"
-                if binding.organization
-                else "svc-ds-connector-<alias>",
-            )
-
         if not (binding.enabled and settings.dataspace_enabled):
             continue
+
+        # Registering a consent is an act of the community's organisation, made
+        # as its collector client (ds ADR-0026). A missing collector secret is
+        # `enforce_collector_posture`'s: it refuses boot outside dev and warns in
+        # dev, where the transition falls back to the connector client
+        # (DS_ORG_CLIENT_SECRET). What it cannot see is that fallback missing
+        # too — then no decision can be registered and every approval leaves
+        # `share_provisioned=false`. Warned, not refused: onboarding somebody
+        # without their sharing consent is degraded, not broken.
+        if declares_sharing and settings.ds_connector_url:
+            from celine.onboarding.services import service_auth
+
+            if (
+                service_auth.is_dev()
+                and not service_auth.collector_secret(binding.organization)
+                and not settings.ds_org_client_secret
+            ):
+                logger.warning(
+                    "REC %r collects data-sharing consent, and neither %s nor "
+                    "DS_ORG_CLIENT_SECRET is set, so no decision can be registered: "
+                    "a consent is written as %s (or, in the development transition, "
+                    "as %s), and the connector refuses a service token.",
+                    slug,
+                    service_auth.collector_secret_env(binding.organization),
+                    service_auth.collector_client_id(binding.organization),
+                    service_auth.organisation_client_id(binding.organization),
+                )
 
         from celine.onboarding.services.dataspace_identity import check_organization
 

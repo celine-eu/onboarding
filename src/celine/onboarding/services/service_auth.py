@@ -10,12 +10,13 @@ people for different things:
 
 ``svc-ds-onboarding`` — ``DS_ONBOARDING_CLIENT_ID`` / ``DS_ONBOARDING_CLIENT_SECRET``
     the dataspace's client, for what this service does as itself there: resolve
-    an organisation, resolve a subject, write the DID <-> Keycloak mapping.
+    an organisation, resolve a subject.
 
 ``svc-ds-collector-<alias>`` — derived per REC / ``SVC_DS_COLLECTOR_<ALIAS>_SECRET``
     **a community's own collector client, not this service's.** Every act done
-    *for* a community — its members' memberships and credentials, their consent
-    registrations and read-backs, the audience read — is that organisation's act,
+    *for* a community — its members' memberships and credentials, the binding of
+    their login to their DID, their consent registrations and read-backs, the
+    audience read — is that organisation's act,
     and the receiver binds it to the organisation the token's ``sub`` names. One
     secret per community, so a deployment serving several holds several, and no
     secret is shared across onboarding operators. See :func:`collector_token_provider`.
@@ -163,6 +164,9 @@ MEMBERSHIPS_WRITE = "identity-registry.memberships.write"
 #: ``POST /admin/credentials/data-subject`` (and ``/transition``),
 #: ``DELETE /admin/credentials/{id}`` (IR).
 CREDENTIALS_WRITE = "identity-registry.credentials.write"
+#: ``POST /admin/keycloak/sync`` (IR): the (realm, Keycloak user id) -> DID
+#: mapping, for the community's own members only (ds ADR-0026, amended 2026-10-05).
+KEYCLOAK_SYNC = "identity-registry.keycloak.sync"
 #: ``POST /consent/admin/shares``, ``POST /consent/request`` (connector).
 CONSENT_PROVISION = "connector.consent.provision"
 #: ``GET /consent/admin/subject-shares``, ``GET /consent/admin/decisions`` (connector).
@@ -182,6 +186,7 @@ COLLECTOR_SCOPES: frozenset[str] = frozenset(
     {
         MEMBERSHIPS_WRITE,
         CREDENTIALS_WRITE,
+        KEYCLOAK_SYNC,
         CONSENT_PROVISION,
         CONSENT_COLLECTOR_READ,
         CONSENT_AUDIENCE,

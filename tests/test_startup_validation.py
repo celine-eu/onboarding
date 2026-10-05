@@ -596,58 +596,6 @@ async def test_malformed_sharing_texts_refuse_to_start(seed_rec, monkeypatch):
         await app_main._validate_dataspace_config()
 
 
-# ── the client a consent is registered as ─────────────────────────────────────
-
-
-async def test_collecting_consent_without_the_organisation_secret_warns(
-    seed_rec, monkeypatch, caplog
-):
-    """A missing credential that only shows up at the first approval, said at boot.
-
-    A consent is registered as the community's own client; the connector refuses
-    a plain service token. Without the secret every approval leaves
-    `share_provisioned=false`, which is visible in one submission at a time and
-    nowhere in aggregate.
-
-    A warning and not a refusal: onboarding somebody without recording their
-    sharing consent is degraded, not broken.
-    """
-    seed_rec(
-        "rec-a",
-        organization="community-a",
-        dataspace={"organization": "community-a"},
-        consent={"data_sharing": {}},
-    )
-    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
-    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
-    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "")
-
-    with caplog.at_level("WARNING"):
-        await app_main._validate_dataspace_config()
-
-    assert "DS_ORG_CLIENT_SECRET" in caplog.text
-    # Names the client to create, because the id is derivable and the operator
-    # should not have to find the convention.
-    assert "svc-ds-connector-community-a" in caplog.text
-
-
-async def test_the_secret_being_set_says_nothing(seed_rec, monkeypatch, caplog):
-    seed_rec(
-        "rec-a",
-        organization="community-a",
-        dataspace={"organization": "community-a"},
-        consent={"data_sharing": {}},
-    )
-    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
-    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
-    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "org-secret")
-
-    with caplog.at_level("WARNING"):
-        await app_main._validate_dataspace_config()
-
-    assert "DS_ORG_CLIENT_SECRET" not in caplog.text
-
-
 # ---------------------------------------------------------------------------
 # Boundary areas need the Digital Twin, and the checks import applies
 # ---------------------------------------------------------------------------
@@ -721,3 +669,74 @@ async def test_a_municipality_template_needs_no_digital_twin(seed_rec, monkeypat
     monkeypatch.setattr(app_main.settings, "digital_twin_url", "")
 
     await app_main._validate_dataspace_config()
+
+
+# ── the consent client warning (ds ADR-0026) ──────────────────────────────────
+
+_COLLECTOR_ENV = "SVC_DS_COLLECTOR_ORG_A_SECRET"
+_STALE = "no decision can be registered"
+
+
+@pytest.fixture()
+def _sharing_rec(bind_rec, monkeypatch, _registry_says):
+    """A bound REC asking for sharing consent, in dev, with no client secrets."""
+    manifest = bind_rec("rec-a", organization="org-a")
+    manifest["consent"] = {"data_sharing": {"required": False}}
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    monkeypatch.setattr(ts.settings, "ds_ns_url", "")
+    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
+    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "")
+    monkeypatch.setattr(app_main.settings, "ds_collector_secrets", {})
+    monkeypatch.delenv(_COLLECTOR_ENV, raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv("CELINE_ENV", "dev")
+    _registry_says(True)
+
+
+async def test_a_collector_secret_alone_is_enough(_sharing_rec, monkeypatch, caplog):
+    """The collector client writes the consent; DS_ORG_CLIENT_SECRET is not needed.
+
+    @verifies REQ-0037
+    """
+    monkeypatch.setenv(_COLLECTOR_ENV, "a-real-secret")
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+    assert _STALE not in caplog.text
+
+
+async def test_the_old_client_alone_is_enough_in_dev(_sharing_rec, monkeypatch, caplog):
+    """The development transition's fallback is configured: nothing to warn here."""
+    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "org-secret")
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+    assert _STALE not in caplog.text
+
+
+async def test_neither_client_in_dev_warns(_sharing_rec, caplog):
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+    assert _STALE in caplog.text
+    assert _COLLECTOR_ENV in caplog.text
+
+
+async def test_outside_dev_it_is_the_posture_check_not_this_warning(
+    _sharing_rec, monkeypatch, caplog
+):
+    """`enforce_collector_posture` refuses that boot already; no second message."""
+    monkeypatch.setenv("CELINE_ENV", "prod")
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+    assert _STALE not in caplog.text
+
+
+async def test_an_unbound_rec_is_not_warned(bind_rec, monkeypatch, caplog):
+    """No organisation, no consent registration to make."""
+    manifest = bind_rec("rec-a")
+    manifest["consent"] = {"data_sharing": {"required": False}}
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", True)
+    monkeypatch.setattr(app_main.settings, "ds_connector_url", "http://connector:30001")
+    monkeypatch.setattr(app_main.settings, "ds_org_client_secret", "")
+    monkeypatch.setenv("CELINE_ENV", "dev")
+    with caplog.at_level("WARNING"):
+        await app_main._validate_dataspace_config()
+    assert _STALE not in caplog.text
