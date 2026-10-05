@@ -553,8 +553,8 @@ async def test_a_new_grant_without_a_pod_is_still_refused(submission, holder):
 
 async def test_an_unreadable_registry_never_empties_the_keys(submission, holder, monkeypatch):
     """Only the registry's own answer may empty a holder's keys: with the
-    registry down the declared POD stands in, and with none declared the
-    standing grant is refused rather than emptied."""
+    registry down the standing grant is refused rather than emptied (and the
+    declared POD never stands in for it, REQ-0046)."""
     assert await di.provision_user_shares(submission) is True
     submission.pod_code = None
 
@@ -564,7 +564,7 @@ async def test_an_unreadable_registry_never_empties_the_keys(submission, holder,
     monkeypatch.setattr(rec_registry, "supply_points_by_did", _down)
     holder.requests.clear()
 
-    with pytest.raises(ValueError, match="no supply point is recorded"):
+    with pytest.raises(ValueError, match="registry could not be read"):
         await di.refresh_keys(submission, report=[])
 
     assert holder.posts() == []

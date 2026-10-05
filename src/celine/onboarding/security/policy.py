@@ -72,6 +72,10 @@ class Capability(enum.StrEnum):
     #: person evaluating it alone is always denied and `/api/admin/me` never lists
     #: it. See `delegated_actions` in the rego.
     MEMBERS_INVITE = "members.invite"
+    #: Delegated like `members.invite`, and REC `admins` only: the release of a
+    #: registry member, which the community dashboard asks for on a REC admin's
+    #: behalf (`api/admin/members.py`).
+    MEMBERS_RELEASE = "members.release"
 
 
 ALL_CAPABILITIES: tuple[Capability, ...] = tuple(Capability)

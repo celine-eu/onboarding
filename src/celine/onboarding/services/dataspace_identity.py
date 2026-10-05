@@ -924,9 +924,34 @@ async def resolve_subject(
 
 
 def _resolved_from(body: dict[str, Any] | None, *, recorded: str | None = None) -> ResolvedSubject:
-    if body is not None:
+    if body is not None and not _spent(body):
         return ResolvedSubject(subject_id=body["subject_id"], did=body.get("did") or None)
-    return ResolvedSubject(subject_id=(recorded or "").strip() or new_subject_id())
+    kept = (recorded or "").strip()
+    if body is not None and kept == body.get("subject_id"):
+        # The spent DID's own id, recorded before releases cleared it.
+        kept = ""
+    return ResolvedSubject(subject_id=kept or new_subject_id())
+
+
+def _spent(body: dict[str, Any]) -> bool:
+    """Whether the mapped DID holds no active credential: a member a REC released.
+
+    **A new DID per REC** (requester, 2026-10-05; ds ADR-0028). A released
+    person's DID is spent, and their next community mints a new identifier: never
+    the old one, which in the same REC is a ``409`` and in another would share
+    its suffix and so link the two DIDs. The mapping is still found and still
+    names the old DID; ds moves the login to the new one at the Keycloak sync.
+
+    ``credentials`` lists the active, unexpired credentials of every role, so an
+    empty list is "spent" for this purpose. A ``recorded`` id (one this service
+    minted and wrote down before issuing, see :func:`resolve_subject`) still wins,
+    because a retry after a failed sync must not mint a second DID; a release
+    clears it.
+    """
+    if "credentials" not in body:
+        # An older registry that does not list them: keep the mapping.
+        return False
+    return not body.get("credentials") and not body.get("vc_jws")
 
 
 async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any] | None:
@@ -1587,6 +1612,9 @@ class _Held:
     #: registered them (``_keys_for``, ADR-0022), so these are the keys this
     #: community sent; a grant another party wrote shows none and is not here.
     keys: tuple[frozenset[str], ...] = ()
+    #: The keys the holder suspended (a holder change, ds contract R4 v1.1):
+    #: still on the grant, released for nobody until the community verifies anew.
+    suspended: frozenset[str] = frozenset()
 
 
 async def _subject_rows(
@@ -1687,6 +1715,12 @@ async def _read_connector(
                     r["keys"] or (collector_did is not None and r.get("collector") == collector_did)
                 )
             ),
+            suspended=frozenset(
+                str(k)
+                for r in offer_rows
+                if r.get("status") == "granted" and isinstance(r.get("suspended_keys"), list)
+                for k in r["suspended_keys"]
+            ),
         )
     return held
 
@@ -1735,8 +1769,10 @@ async def subject_supply_keys(
     running system is the one that is right. A community with no
     ``REC_REGISTRY_URL`` (or no ``rec_registry`` block) has only the declared
     value, which is better than nothing and is why the fallback exists at all.
-    A registry that cannot be read falls back to the declared value too
-    (:func:`_supply_keys` says when it did).
+    **A registry that is configured and cannot be read gives no keys** (R4,
+    REQ-0046): the declared value may be the very POD a correction replaced, and
+    the community would be asserting it to a holder on no current record. The
+    callers refuse the grant then (:func:`_supply_keys` says when).
 
     An empty answer is an answer: the member holds nothing the registry knows of,
     and the caller refuses the registration rather than recording a consent that
@@ -1746,26 +1782,31 @@ async def subject_supply_keys(
     return keys
 
 
+#: Why a grant at a holder was refused when the registry could not be read.
+_REGISTRY_UNREADABLE = (
+    "the community's member registry could not be read, so the member's supply points "
+    "are unknown and nothing was granted at {} — retry once the registry answers"
+)
+
+
 async def _supply_keys(
     rec_slug: str, did: str, *, declared_pod: str | None = None
 ) -> tuple[list[str], bool]:
     """:func:`subject_supply_keys`, and whether they are the system's own answer.
 
     The flag is ``False`` only when a registry is configured and could not be
-    read, so the keys are the declared value standing in for it. Good enough to
-    grant with — the existing behaviour — and not good enough to *replace* keys a
-    holder already holds: those may be a correction the declared value predates.
+    read. The keys are then empty — never the declared value standing in for the
+    registry — and the caller refuses to grant (fail closed, REQ-0046): neither a
+    new grant nor a re-sent one may carry a POD no current record backs.
     """
     from celine.onboarding.services import rec_registry
 
     pods: list[str] | None = None
-    authoritative = True
     try:
         found = await rec_registry.supply_points_by_did([did], rec_slug=rec_slug)
     except Exception as exc:  # noqa: BLE001 — reported by the caller as a refusal
         logger.warning("Could not read supply points for %s from the registry: %s", did, exc)
-        found = None
-        authoritative = False
+        return [], False
     else:
         if found is not None:
             pods = found.get(did, [])
@@ -1775,7 +1816,7 @@ async def _supply_keys(
         # is `[]` and stands.
         pods = [declared_pod.strip()] if declared_pod and declared_pod.strip() else []
 
-    return [f"pod:{pod}" for pod in dict.fromkeys(pods) if pod], authoritative
+    return [f"pod:{pod}" for pod in dict.fromkeys(pods) if pod], True
 
 
 async def register_share(
@@ -1788,6 +1829,7 @@ async def register_share(
     legal_basis: dict[str, Any] | None = None,
     keys: list[str] | None = None,
     reason: str | None = None,
+    key_assertion: dict[str, Any] | None = None,
 ) -> ShareRegistration:
     """Register one standing decision at the connector that holds the data.
 
@@ -1818,6 +1860,12 @@ async def register_share(
     and a grant has no cause. Refused here before anything is sent, and passed
     through :func:`withdrawal_reason` by the one caller that sends it. There is
     no ``message``: ds never accepted one on this route.
+
+    ``key_assertion`` is the community's assertion that the member holds the
+    ``pod:`` keys (R4, :mod:`key_assertion`). It travels inside ``legal_basis``
+    and with a grant only. The holder's refusals of it (409 held by another
+    subject, 409 suspended, 422 not accepted) come back as a sentence for the
+    community's operator.
     """
     if reason is not None and (enabled or decided_by != "collector"):
         raise ValueError(
@@ -1832,6 +1880,10 @@ async def register_share(
     }
     if legal_basis is not None:
         body["legal_basis"] = legal_basis
+    if key_assertion is not None:
+        if not enabled or legal_basis is None:
+            raise ValueError("a key assertion travels only inside a grant's legal basis")
+        body["legal_basis"] = {**legal_basis, "key_assertion": key_assertion}
     if reason:
         body["reason"] = reason
     # `None` is "not sent": ds leaves a standing grant's keys alone. An empty
@@ -1880,10 +1932,13 @@ async def register_share(
             resp.status_code,
             resp.text,
         )
+        from celine.onboarding.services import key_assertion as assertion
+
+        explained = assertion.explain_refusal(resp.status_code, resp.text, where=route.where)
         return ShareRegistration(
             route.offer_id,
             ok=False,
-            detail=f"{route.where}: {resp.status_code} {resp.text}",
+            detail=explained or f"{route.where}: {resp.status_code} {resp.text}",
         )
 
     missing: tuple[str, ...] = ()
@@ -1943,9 +1998,22 @@ async def relay_member_decision(
     if not routes:
         return []
 
+    from celine.onboarding.services import key_assertion as assertion
+
     keys: list[str] | None = None
+    claim: dict[str, Any] | None = None
+    claim_ref: Any = None
     if enabled:
-        keys = await subject_supply_keys(rec_slug, subject_id)
+        keys, keys_known = await _supply_keys(rec_slug, subject_id)
+        if not keys_known:
+            # Fail closed (REQ-0046): the registry is configured and could not
+            # say what the member holds.
+            return [
+                ShareRegistration(
+                    offer_id, ok=False, detail=_REGISTRY_UNREADABLE.format(route.where)
+                )
+                for route in routes
+            ]
         if not keys:
             return [
                 ShareRegistration(
@@ -1958,9 +2026,17 @@ async def relay_member_decision(
                 )
                 for route in routes
             ]
+        if assertion.enabled() and assertion.carries_pod_keys(keys):
+            try:
+                claim, claim_ref = await assertion.for_subject(rec_slug, subject_id)
+            except assertion.AssertionUnavailableError as exc:
+                return [
+                    ShareRegistration(offer_id, ok=False, detail=f"{route.where}: {exc}")
+                    for route in routes
+                ]
 
     async with httpx.AsyncClient(timeout=30) as client:
-        return [
+        registrations = [
             await register_share(
                 client,
                 route,
@@ -1969,9 +2045,13 @@ async def relay_member_decision(
                 decided_by="subject",
                 legal_basis=legal_basis,
                 keys=keys,
+                key_assertion=claim if legal_basis is not None else None,
             )
             for route in routes
         ]
+    if claim_ref is not None and any(r.ok for r in registrations):
+        await assertion.mark_accepted(claim_ref)
+    return registrations
 
 
 async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[dict[str, Any]]:
@@ -2017,7 +2097,10 @@ async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[d
                 # in one list. Never the keys: they are on the row and this is
                 # rendered to the member's own page.
                 decisions.append(
-                    {**{k: v for k, v in row.items() if k != "keys"}, "holder": connector.holder}
+                    {
+                        **{k: v for k, v in row.items() if k not in ("keys", "suspended_keys")},
+                        "holder": connector.holder,
+                    }
                 )
     return decisions
 
@@ -2083,8 +2166,8 @@ async def provision_user_shares(
     points now (:func:`subject_supply_keys`) is sent again with the current keys:
     a POD changed in the registry, outside onboarding's revisions, reaches the
     holder on the next retry. Equal keys are agreement and nothing is written.
-    Keys are compared only against the registry's own answer, never against the
-    declared POD standing in for a registry that cannot be read. With
+    Keys are compared only against the registry's own answer; while a configured
+    registry cannot be read nothing is granted at a holder (REQ-0046). With
     ``force_key_refresh``, every grant the member holds at another participant is
     sent again on the first pass whatever it carries (:func:`refresh_keys`). The
     holder updates the row's keys in place and records the change (ds ADR-0022).
@@ -2192,8 +2275,8 @@ async def provision_user_shares(
 
         Compared as sets, per row. Only rows whose keys the holder returned —
         the ones this community registered — and only against keys the registry
-        answered: a declared POD standing in for a registry that cannot be read
-        may be the very value a correction replaced, so it never replaces keys.
+        answered: while a configured registry cannot be read there are no keys to
+        compare, and the grant is refused rather than re-sent (REQ-0046).
         """
         if not standing.keys:
             return False
@@ -2205,6 +2288,29 @@ async def provision_user_shares(
             )
             return False
         return any(held_keys != current for held_keys in standing.keys)
+
+    # The community's assertion that the member holds the keys (R4): built once,
+    # from the verification in force, and only when a grant with `pod:` keys is
+    # about to go to a holder. Why it cannot be built is kept, for every route
+    # that would need it.
+    from celine.onboarding.services import key_assertion as assertion
+
+    claim: dict[str, Any] | None = None
+    claim_error: str | None = None
+    claim_ref: Any = None
+    claimed = False
+
+    def build_claim() -> None:
+        nonlocal claim, claim_error, claim_ref
+        if claim is not None or claim_error is not None:
+            return
+        try:
+            claim, claim_ref = assertion.for_submission(submission)
+        except assertion.AssertionUnavailableError as exc:
+            claim_error = str(exc)
+
+    #: Keys a holder suspended, by (connector, offer): reported, never a key.
+    suspensions: dict[tuple[str, str], tuple[str, int]] = {}
 
     # What ds stamps as `collector` on the rows this community writes. Only the
     # manifest's value, never a lookup: it only lets a keyless grant of our own
@@ -2246,6 +2352,14 @@ async def provision_user_shares(
                 for line in unreadable:
                     failures[("read", line)] = line
                 break
+
+            for route in routes:
+                there_now = held[route.connector_url].get(route.offer_id)
+                key = (route.connector_url, route.offer_id)
+                if route.is_holder and there_now is not None and there_now.suspended:
+                    suspensions[key] = (route.where, len(there_now.suspended))
+                else:
+                    suspensions.pop(key, None)
 
             writes: list[tuple[ConsentRoute, _Decision]] = []
             #: (connector, offer) of the writes that re-send a standing grant.
@@ -2310,6 +2424,8 @@ async def provision_user_shares(
 
             if any(r.is_holder and d.granted for r, d in writes):
                 await supply_keys()
+                if assertion.enabled() and keys_known and assertion.carries_pod_keys(keys):
+                    build_claim()
 
             refused = False
             for route, decision in writes:
@@ -2323,6 +2439,8 @@ async def provision_user_shares(
                     keys=keys,
                     standing=resend,
                     keys_known=keys_known,
+                    key_assertion=claim,
+                    key_assertion_error=claim_error,
                 )
                 if problem is not None:
                     failures[(route.connector_url, route.offer_id)] = f"{route.offer_id}: {problem}"
@@ -2330,6 +2448,8 @@ async def provision_user_shares(
                     continue
                 failures.pop((route.connector_url, route.offer_id), None)
                 written.add((route.connector_url, route.offer_id, decision.granted, decision.at))
+                if route.is_holder and decision.granted and claim is not None and keys:
+                    claimed = True
                 if report is not None:
                     keyless = resend and route.is_holder and decision.granted and not keys
                     report.append(
@@ -2346,6 +2466,18 @@ async def provision_user_shares(
                 # Not looped on: a connector refusing will refuse again, and a
                 # member's decision is not re-sent until an operator asks.
                 break
+
+    if claimed and claim_ref is not None:
+        # A holder holds an assertion citing this verification now: an erasure
+        # keeps the row for the retention period (REQ-0045).
+        await assertion.mark_accepted(claim_ref)
+    if report is not None:
+        for (_, offer_id), (where, count) in sorted(suspensions.items()):
+            report.append(assertion.suspension_line(where, offer_id, count))
+    for (_, offer_id), (where, count) in sorted(suspensions.items()):
+        logger.warning(
+            "%s: %s suspended %d of %s's supply points", offer_id, where, count, submission.ref
+        )
 
     ok = not failures
     if accepted:
@@ -2389,13 +2521,16 @@ async def _redrive(
     keys: list[str] | None,
     standing: bool = False,
     keys_known: bool = True,
+    key_assertion: dict[str, Any] | None = None,
+    key_assertion_error: str | None = None,
 ) -> str | None:
     """Carry one of the member's decisions to a connector that lacks it.
 
     ``standing`` says the holder already holds this grant and it is being sent
-    again (stale keys, or a forced refresh). ``keys_known`` says the keys are the
-    registry's own answer rather than the declared POD standing in for a registry
-    that could not be read.
+    again (stale keys, or a forced refresh). ``keys_known`` is false when a
+    configured registry could not be read: a grant at a holder is then refused
+    (REQ-0046). ``key_assertion`` is the community's assertion for a grant with
+    ``pod:`` keys, or ``key_assertion_error`` why there is none.
 
     Returns why it did not land, or ``None``. Always ``decided_by="subject"``:
     it is the member's decision, relayed. A withdrawal relayed as the
@@ -2414,6 +2549,22 @@ async def _redrive(
             # when it still sent `message` and got a 422).
         )
         return None if registration.ok else registration.detail
+
+    if route.is_holder and not keys_known:
+        # Fail closed (REQ-0046): a registry is configured and could not say what
+        # the member holds. Neither a new grant nor a re-sent one goes out on the
+        # declared value standing in for it.
+        return _REGISTRY_UNREADABLE.format(route.where)
+
+    from celine.onboarding.services import key_assertion as assertion
+
+    send_claim = route.is_holder and assertion.enabled() and assertion.carries_pod_keys(keys)
+    if send_claim and key_assertion is None:
+        # Refused here rather than sent bare: the holder would refuse it too, and
+        # this says what the community's operator can do about it.
+        return f"{route.where}: " + (
+            key_assertion_error or "the community's assertion could not be built"
+        )
 
     keyless = False
     if route.is_holder and not keys:
@@ -2463,6 +2614,7 @@ async def _redrive(
         decided_by="subject",
         legal_basis=evidence,
         keys=([] if keyless else keys) if route.is_holder else None,
+        key_assertion=key_assertion if send_claim and not keyless else None,
     )
     return None if registration.ok else registration.detail
 

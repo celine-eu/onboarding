@@ -334,6 +334,12 @@ def collector_posture_guard(env: str | None = None) -> PostureGuard:
             )
         else:
             guard.forbid_secret_equal_to_client_id(name, client_id, secret)
+
+    # A community granting members' supply points at a holder asserts that they
+    # hold them (R4): the assertion on, and its own pseudonym key.
+    from celine.onboarding.services import key_assertion
+
+    key_assertion.add_posture(guard, collecting_organisations())
     return guard
 
 

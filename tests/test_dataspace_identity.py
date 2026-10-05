@@ -647,8 +647,67 @@ RESOLVE_EXISTING_RESPONSE = {
     "did": "did:web:users.example:email-abc123",
     "subject_id": "email-oldsha256hash12345678",
     "roles": ["DataSubject"],
+    # A live identity: an active credential of some role. With none the DID is
+    # spent (a released member) and is not reused; see the tests below.
+    "credentials": [{"role": "DataSubject", "vc_jws": "header.payload.sig"}],
+}
+
+#: The mapping of a person a REC released: every credential revoked.
+RESOLVE_SPENT_RESPONSE = {
+    "did": "did:web:rec-a.example:users:old-id",
+    "subject_id": "old-id",
+    "roles": [],
     "credentials": [],
 }
+
+
+@pytest.mark.parametrize("recorded", [None, "old-id"])
+async def test_a_released_person_gets_a_new_subject_id_never_the_old_one(
+    monkeypatch, submission, _enable_vc, recorded
+):
+    """A new DID per REC (requester, 2026-10-05; ds ADR-0028). The mapping still
+    names the spent DID; reusing its id is a 409 in the same REC and would link
+    the two DIDs by their suffix in another. A release clears the recorded id; one
+    revoked before that (the old id still recorded) is refused all the same."""
+    di._token_provider = _mock_token_provider()
+    submission.dataspace_subject_id = recorded
+    captured_body = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=RESOLVE_SPENT_RESPONSE)
+        if "credentials/data-subject" in str(req.url):
+            captured_body.update(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert captured_body["subject_id"] != "old-id"
+    assert uuid.UUID(captured_body["subject_id"]).version == 4
+    assert submission.dataspace_subject_id == captured_body["subject_id"]
+
+
+async def test_a_retry_after_a_failed_sync_keeps_the_id_it_recorded(
+    monkeypatch, submission, _enable_vc
+):
+    """Issued under a new id, then the login sync failed: the mapping still names
+    the spent DID, and the retry must reuse the recorded id, not mint a third."""
+    di._token_provider = _mock_token_provider()
+    submission.dataspace_subject_id = "new-id-recorded-before-issuing"
+    captured_body = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "users/resolve" in str(req.url):
+            return httpx.Response(200, json=RESOLVE_SPENT_RESPONSE)
+        if "credentials/data-subject" in str(req.url):
+            captured_body.update(json.loads(req.content))
+        return httpx.Response(201, json=CREDENTIAL_RESPONSE)
+
+    _patch_httpx(monkeypatch, handler)
+    await di.provision_user_identity(submission)
+
+    assert captured_body["subject_id"] == "new-id-recorded-before-issuing"
 
 
 async def test_a_person_with_no_mapping_is_issued_a_minted_id(monkeypatch, submission, _enable_vc):
@@ -1288,3 +1347,23 @@ async def test_a_decisions_list_that_repeats_its_cursor_is_not_read_as_complete(
 
     with pytest.raises(RuntimeError, match="already issued"):
         await di.get_offer_decisions("o", [OWN_ROUTE])
+
+
+async def test_the_preregistration_door_also_gets_a_new_id_for_a_spent_did(monkeypatch):
+    """A member imported into the registry has no submission: their sharing page
+    provisions them from the id this resolve answers. Released by one REC and
+    preregistered by the next, they get a new id, and no credential to present."""
+
+    async def resolve(access, params):
+        return RESOLVE_SPENT_RESPONSE
+
+    monkeypatch.setattr(di, "_resolve_raw_with_params", resolve)
+    access = di.RegistryAccess(base_url="http://ir", headers={})
+
+    resolved, credential = await di.resolve_subject_and_credential(
+        access, email="ex-person@example.org"
+    )
+
+    assert credential is None
+    assert resolved.subject_id != "old-id"
+    assert uuid.UUID(resolved.subject_id).version == 4

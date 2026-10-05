@@ -227,12 +227,27 @@ class SubmissionCreatedRead(SubmissionRead):
     session_token: str
 
 
+class EvidenceDigest(BaseModel):
+    """One evidence digest: the kind of document and the sha256 of its file."""
+
+    kind: str
+    sha256: str
+
+
 class VerificationCreate(BaseModel):
-    """How the REC verified the participant's identity and that they hold the POD."""
+    """How the REC verified the participant's identity and that they hold the POD.
+
+    `offline-with-evidence` takes `evidence`: the digests of the files the
+    community keeps, hashed on the operator's side (`onboarding-cli`). The console
+    sends the file to `.../verifications/evidence` instead, which hashes it and
+    stores nothing of it.
+    """
 
     method: VerificationMethod
     # Required for `uploaded-document`, refused for `offline`.
     document_id: uuid.UUID | None = None
+    # Required for `offline-with-evidence`, refused for every other method.
+    evidence: list[EvidenceDigest] | None = Field(None, max_length=5)
     note: str | None = Field(None, max_length=1000)
 
 
@@ -240,6 +255,11 @@ class VerificationRead(BaseModel):
     id: uuid.UUID
     method: VerificationMethod
     document_id: uuid.UUID | None
+    # The digests the verification rests on (REQ-0041). Pseudonymised personal
+    # data, shown to the operators who can read the queue anyway.
+    evidence: list[EvidenceDigest] | None = None
+    # When a holder last accepted the community's assertion citing this row.
+    last_asserted_at: datetime | None = None
     note: str | None
     actor_type: str
     actor_sub: str | None
@@ -316,6 +336,11 @@ class SubmissionAdminRead(SubmissionRead):
     # The REC's verification in force, if any. Approval refuses without one; the
     # full history is at `.../verifications`.
     verification: VerificationRead | None = None
+    # Whether a verification here must carry an evidence digest: the community
+    # shares members' supply points with another participant and asserts that
+    # they hold them (REQ-0042). The console then offers no plain offline check.
+    # Set by the admin API.
+    verification_needs_evidence: bool = False
     # The primary-substation boundary the supply address resolved to, and the
     # area of the template in force whose boundary it is (None when none is).
     # Resolved by the service, never sent by a client, and deliberately absent

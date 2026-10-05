@@ -53,6 +53,8 @@ class Transport(Protocol):
         method: str,
         document_id: str | None,
         note: str | None,
+        *,
+        evidence: list[dict[str, str]] | None = None,
     ) -> dict: ...
 
     async def enablement(self, rec: str, submission_id: str) -> dict: ...
@@ -170,7 +172,21 @@ class ApiTransport:
             )
         ).json()
 
-    async def verify(self, rec, submission_id, method, document_id, note):
+    async def verify(self, rec, submission_id, method, document_id, note, *, evidence=None):
+        if evidence:
+            # The API hashes what it is sent; the CLI already hashed the file and
+            # sends only the digest, so no evidence file ever leaves the operator's
+            # machine. Recorded through the JSON route, which takes digests.
+            body_e: dict[str, Any] = {"method": method, "evidence": evidence}
+            if note:
+                body_e["note"] = note
+            return (
+                await self._request(
+                    "POST",
+                    f"/api/admin/{rec}/submissions/{submission_id}/verifications",
+                    json=body_e,
+                )
+            ).json()
         body: dict[str, Any] = {"method": method}
         if document_id:
             body["document_id"] = document_id
@@ -391,7 +407,7 @@ class LocalTransport:
                 raise CliError(str(exc)) from exc
             return await self._render_enablement(submission.id, rows)
 
-    async def verify(self, rec, submission_id, method, document_id, note):
+    async def verify(self, rec, submission_id, method, document_id, note, *, evidence=None):
         from celine.onboarding.models.schemas import VerificationRead
         from celine.onboarding.models.verification import VerificationMethod
         from celine.onboarding.services import verification
@@ -404,6 +420,7 @@ class LocalTransport:
                     submission,
                     method=VerificationMethod(method),
                     document_id=uuid.UUID(document_id) if document_id else None,
+                    evidence=evidence,
                     note=note,
                     actor=self._actor,
                     rec_slug=rec,
@@ -423,13 +440,16 @@ class LocalTransport:
     async def purge(self, rec, submission_id) -> None:
         from pathlib import Path
 
-        from celine.onboarding.services import audit_service
+        from celine.onboarding.services import audit_service, verification
 
         async with await self._session() as db:
             submission = await self._load(db, rec, submission_id)
             ref = submission.ref
             for doc in submission.documents:
                 (Path(settings.data_dir) / doc.file_path).unlink(missing_ok=True)
+            # Same rule as the API's erasure (REQ-0045).
+            kept = verification.retain_on_erasure(submission)
+            await verification.purge_expired(db)
             await db.delete(submission)
             await db.commit()
             await audit_service.record_and_commit(
@@ -439,7 +459,8 @@ class LocalTransport:
                 entity_id=str(submission_id),
                 actor=self._actor,
                 rec_slug=rec,
-                detail=f"ref={ref} — GDPR erasure (local CLI)",
+                detail=f"ref={ref} — GDPR erasure (local CLI)"
+                + (f" (kept {kept} verification(s) backing a grant)" if kept else ""),
             )
 
     async def audit(self, rec, *, limit, action, actor):

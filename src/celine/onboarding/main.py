@@ -628,6 +628,32 @@ def _validate_admin_config() -> None:
         )
 
 
+def _warn_draft_assertion_terms() -> None:
+    """Say so when a community asserts to a holder under the shipped draft terms."""
+    from celine.onboarding.services import key_assertion, template_service
+
+    if not key_assertion.enabled():
+        return
+    if not any(key_assertion.grants_at_a_holder(slug) for slug in template_service.get_slugs()):
+        return
+    try:
+        statement = key_assertion.terms()
+    except key_assertion.AssertionUnavailableError:
+        logger.error(
+            "REC_ASSERTION_TERMS_FILE cannot be read; every grant of a member's supply "
+            "points at a holder will be refused until it can"
+        )
+        return
+    if statement.is_draft:
+        logger.warning(
+            "Communities assert members' supply points to holders under the generic DRAFT "
+            "statement %s (sha256 %s), which has not been reviewed by legal counsel. Set "
+            "REC_ASSERTION_TERMS_FILE to the text agreed with the holder.",
+            statement.id,
+            statement.sha256,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # First, before the database is touched: outside CELINE_ENV=dev every
@@ -641,6 +667,7 @@ async def lifespan(app: FastAPI):
 
     await load_recs_from_db()
     enforce_collector_posture()
+    _warn_draft_assertion_terms()
 
     _warn_document_processing()
     _warn_phone_verification()

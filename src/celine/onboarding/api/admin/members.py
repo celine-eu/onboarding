@@ -32,6 +32,7 @@ from typing import Annotated, Any, Literal
 
 import httpx
 import jwt as pyjwt
+from celine.sdk.audit import audit_access
 from celine.sdk.auth import JwtUser
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
@@ -41,9 +42,15 @@ from celine.onboarding.api.admin.deps import DbDep, IpDep, organization_of
 from celine.onboarding.config.settings import settings
 from celine.onboarding.security.oidc import is_configured, oidc_settings
 from celine.onboarding.security.policy import Capability, get_policy
-from celine.onboarding.services import audit_service, provisioning, template_service
+from celine.onboarding.services import (
+    audit_service,
+    member_release,
+    provisioning,
+    template_service,
+)
 from celine.onboarding.services.audit_service import Actor
 from celine.onboarding.services.errors import ConfigurationError
+from celine.onboarding.services.rec_registry import RegistryUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +132,28 @@ async def require_delegated_invite(
     request: Request,
     community: Annotated[str, Path(min_length=1, max_length=100)],
 ) -> Delegation:
-    """Authenticate both tokens, resolve the REC, and evaluate `members.invite`.
+    """Authenticate both tokens, resolve the REC, and evaluate `members.invite`."""
+    return await _delegation(request, community, Capability.MEMBERS_INVITE, needs_provisioning=True)
+
+
+async def require_delegated_release(
+    request: Request,
+    community: Annotated[str, Path(min_length=1, max_length=100)],
+) -> Delegation:
+    """Authenticate both tokens, resolve the REC, and evaluate `members.release`.
+
+    No provisioning service is required: a deployment without one has no login
+    to release, and the other steps still run.
+    """
+    return await _delegation(
+        request, community, Capability.MEMBERS_RELEASE, needs_provisioning=False
+    )
+
+
+async def _delegation(
+    request: Request, community: str, capability: Capability, *, needs_provisioning: bool
+) -> Delegation:
+    """Authenticate both tokens, resolve the REC, and evaluate ``capability``.
 
     Reads `Authorization` and `X-Acting-User-Token` explicitly, never the shared
     `_extract_token`, which prefers oauth2-proxy's header. A delegated call carrying
@@ -156,7 +184,7 @@ async def require_delegated_invite(
     operator = _verify(acting_token, code="actor_token_invalid", what=ACTING_USER_HEADER)
 
     # Before the policy: no evaluation is spent on a call that cannot go anywhere.
-    if not provisioning.provisioning_enabled():
+    if needs_provisioning and not provisioning.provisioning_enabled():
         raise _refusal(
             503,
             "provisioning_not_configured",
@@ -168,7 +196,7 @@ async def require_delegated_invite(
 
     decision = get_policy().allow(
         service,
-        Capability.MEMBERS_INVITE,
+        capability,
         organization=organization_of(rec_slug),
         actor=operator,
     )
@@ -179,6 +207,7 @@ async def require_delegated_invite(
 
 
 DelegationDep = Annotated[Delegation, Depends(require_delegated_invite)]
+ReleaseDelegationDep = Annotated[Delegation, Depends(require_delegated_release)]
 MemberKey = Annotated[str, Path(min_length=1, max_length=100)]
 
 
@@ -374,3 +403,121 @@ async def send_member_password_reset(
     is then the one to call.
     """
     return await _email_member(delegation, member_key, "password_reset", db, ip)
+
+
+# ---------------------------------------------------------------------------
+# Releasing a member (REC admins only)
+# ---------------------------------------------------------------------------
+
+
+class ReleaseStep(BaseModel):
+    """One step of a release, always in the same order (see `services/member_release`)."""
+
+    step: str
+    #: `done`, `skipped` (nothing to do here), `failed` (call again) or `blocked`
+    #: (not attempted: the step it waits for failed).
+    status: str
+    #: Machine-readable; the dashboard translates it. New codes may be added.
+    code: str
+    #: English, for logs and the CLI. Not for display.
+    detail: str
+
+
+class MemberReleased(BaseModel):
+    community: str
+    member_key: str = Field(serialization_alias="memberKey")
+    #: `released` when every step's end state holds, `partial` when one failed or
+    #: was blocked: calling again is the retry.
+    state: str
+    #: `submission` when an onboarding submission backs the member, else `registry`.
+    source: str
+    steps: list[ReleaseStep]
+
+
+_RELEASE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"description": "`invalid_token`, `actor_token_invalid`, `proxy_token_refused`"},
+    403: {"description": "`forbidden`: the policy's reason is the message"},
+    404: {"description": "`community_not_served`, `member_not_found`"},
+    409: {"description": "`community_ambiguous`"},
+    502: {"description": "`registry_unavailable`: the member could not be read; nothing changed"},
+    503: {"description": "`admin_not_configured`"},
+}
+
+
+@router.post("/release", response_model=MemberReleased, responses=_RELEASE_RESPONSES)
+async def release_member(
+    request: Request,
+    member_key: MemberKey,
+    delegation: ReleaseDelegationDep,
+    db: DbDep,
+    ip: IpDep,
+) -> JSONResponse:
+    """Release the member from the REC, on a REC admin's behalf.
+
+    Withdraws every standing grant the community collected, deletes the identity
+    registry membership and revokes the credential, releases the login (disabled,
+    out of the REC's Keycloak organization and its groups, sessions ended) and
+    sets the registry member inactive. Nothing is deleted. The next community's
+    approval enables the same login again.
+
+    `200` whenever the release ran, failed steps included: `state` is `partial`
+    and calling again is the retry. Every step is idempotent. Keyed on the
+    registry's pair, so a member imported into the registry, with no submission,
+    is released like one onboarded here.
+    """
+    try:
+        released = await member_release.release(
+            db,
+            community=delegation.community,
+            rec_slug=delegation.rec_slug,
+            member_key=member_key,
+        )
+    except member_release.MemberNotFoundError:
+        raise _refusal(
+            404,
+            "member_not_found",
+            f"Registry community {delegation.community!r} has no member {member_key!r}.",
+        )
+    except RegistryUnavailableError as exc:
+        logger.warning(
+            "Release of %s/%s: registry unavailable: %s", delegation.community, member_key, exc
+        )
+        raise _refusal(
+            502,
+            "registry_unavailable",
+            "The REC registry could not be read; nothing was changed.",
+        )
+
+    await audit_service.record_and_commit(
+        db,
+        action="member_release",
+        entity_type="registry_member",
+        entity_id=member_key,
+        actor=Actor.delegated(delegation.operator, delegation.service),
+        rec_slug=delegation.rec_slug,
+        ip=ip,
+        detail=(
+            f"community={delegation.community} state={released.state} source={released.source} "
+            + " ".join(f"{s.step}={s.status}:{s.code}" for s in released.steps)
+        )[:4000],
+    )
+    audit_access(
+        "members.release",
+        caller=delegation.operator,
+        resource=f"{delegation.community}/{member_key}",
+        reason=released.state,
+        service="onboarding",
+        request=request,
+    )
+
+    body = MemberReleased(
+        community=released.community,
+        member_key=released.member_key,
+        state=released.state,
+        source=released.source,
+        steps=[
+            ReleaseStep(step=s.step, status=s.status, code=s.code, detail=s.detail)
+            for s in released.steps
+        ],
+    )
+    return JSONResponse(body.model_dump(by_alias=True))

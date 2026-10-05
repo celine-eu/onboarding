@@ -17,6 +17,7 @@ which is first of all when it is decided before it is built.
 | [data-protection.md](data-protection.md) | Submission emails (a receipt for the applicant, one console link per operator, no link to the documents); encryption key lists, rotation and loud decrypt failures; the OTP hashes' own key; scanned values the applicant cannot change |
 | [deployment-posture.md](deployment-posture.md) | The development-only settings refused anywhere but `CELINE_ENV=dev`, and the warning they are in dev |
 | [dataspace-acting-for-a-community.md](dataspace-acting-for-a-community.md) | Who each dataspace call is made as: a community's own collector client with one scope per token and one secret per community, the login binding as the community's act, the boot refusal outside dev and the development transition, a refused membership delete, a 404 on a delete logged as a misalignment, and the member's own login token on their own calls |
+| [pod-ownership-assertion.md](pod-ownership-assertion.md) | The community's assertion that a member holds their supply points: evidence digests at upload and on the verification, no plain offline check where grants carry `pod:` keys, the `key_assertion` sent to a holder and its refusals explained, a renewal after approval, retention past an erasure, and a grant refused when the registry cannot be read |
 
 ## Identifiers
 

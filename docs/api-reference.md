@@ -302,3 +302,75 @@ service refused:
 
 A denied request is logged and is not audited.
 
+### `POST /api/admin/communities/{community}/members/{member_key}/release`
+
+A REC **admin** releases a member from the REC, through the community dashboard
+(requester, 2026-10-05). After a release the person can join another community. The call
+is keyed on the registry's pair, so a member imported into the registry with no submission
+is released the same way as one onboarded here.
+
+**Delegated, like the email routes, and admins only.** The service presents
+`onboarding.members.release` (the invite scope does not suffice). The forwarded operator
+must hold `admins` on the REC's organization or the realm role `platform-admin`. A manager
+gets `403 forbidden`. `{community}`, the refused proxy header and the error shape are the
+same as above. There is no request body. A deployment without a provisioning service can
+still release; the login step is then `skipped`.
+
+The release runs four steps in the revocation's order. Each step acts on its end state, so
+calling again is the retry and repeating a release changes nothing:
+
+| `step` | What it does | Waits for |
+|---|---|---|
+| `dataspace_share` | At every connector the manifest names, withdraws each standing grant the community collected, as the community's decision (`decided_by: collector`) | — |
+| `dataspace_identity` | Deletes the identity-registry membership, then revokes **every** credential this community linked to the DID, whatever its role (the status-list bit; the rows are kept). They are found through the registry by the member's login, so a member with no submission is covered too. ds moves the login to the next community's new DID only once the old DID holds no active credential (ds ADR-0028), so the step reads back what remains. The recorded subject id is cleared, so a re-approval mints a new DID | `dataspace_share` |
+| `keycloak_user` | Through provisioning: disables the account, takes it out of the REC's organization and its groups, and ends every session. The account is moved, not closed: the next community's approval enables it again | — |
+| `rec_registry_member` | Sets the registry member to `inactive` (never purged) | `keycloak_user` |
+
+A step whose predecessor failed in this call is `blocked` and is not attempted. When a
+submission backs the member, it supplies the DID and the credential id, and each step's
+outcome is written on its enablement row as the console's revoke writes it. Nothing is
+deleted: consents, provenance, the DID and its Keycloak mapping, and the submission all
+stay for the retention period.
+
+A `200` means the release ran, **including when a step failed**:
+
+```json
+{
+  "community": "example-rec",
+  "memberKey": "ex-00001",
+  "state": "released",
+  "source": "registry",
+  "steps": [
+    {"step": "dataspace_share", "status": "done", "code": "withdrawn", "detail": "…"},
+    {"step": "dataspace_identity", "status": "done", "code": "revoked", "detail": "…"},
+    {"step": "keycloak_user", "status": "done", "code": "released", "detail": "…"},
+    {"step": "rec_registry_member", "status": "done", "code": "deactivated", "detail": "…"}
+  ]
+}
+```
+
+- `state` is `released` or `partial`. `partial` means a step failed or was blocked, and the
+  caller should call again.
+- `source` is `submission` or `registry`.
+- `status` is `done`, `skipped`, `failed` or `blocked`.
+- `code` is what the dashboard translates. `detail` is English for logs and is not for
+  display. New codes may be added.
+
+| `step` | `code` |
+|---|---|
+| `dataspace_share` | `withdrawn`, `nothing_standing`, `no_connector`, `no_dataspace_identity`, `withdrawal_failed` |
+| `dataspace_identity` | `revoked`, `no_credential`, `held_elsewhere` (done: a credential another organisation linked stays active on the DID, so the next community's login sync is refused until that organisation revokes it), `no_dataspace_identity`, `credential_remains` (failed: one of this community's is still active), `revocation_failed`, `waits_for_dataspace_share` |
+| `keycloak_user` | `released`, `already_released`, `no_account`, `no_provisioning`, `release_failed` |
+| `rec_registry_member` | `deactivated`, `deactivation_failed`, `waits_for_keycloak_user` |
+
+Refusals: `401` and `403` as above; `404 community_not_served` or `member_not_found` (the
+registry has no member under that key, whatever its status); `409 community_ambiguous`;
+`502 registry_unavailable` (the member could not be read, and nothing changed);
+`503 admin_not_configured`.
+
+Two audit records are written:
+- one audit row with `action` `member_release`, `entity_type` `registry_member` and
+  `entity_id` the member key. `actor_*` holds the admin and the calling service's client id,
+  and `detail` holds the state and each step's `status:code`;
+- one `celine.audit` access record, `members.release`, on `{community}/{member_key}`.
+

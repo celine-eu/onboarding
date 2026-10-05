@@ -148,6 +148,16 @@
 		"verification_record_new": "Registra una nuova verifica",
 		"verification_recorded": "Verifica registrata.",
 		"verification_needed_to_approve": "Registra come è stato verificato il partecipante prima di approvare.",
+		"verification_offline_with_evidence": "Verificato dalla comunità fuori dalla piattaforma, con il documento allegato",
+		"verification_evidence_why": "Questa comunità condivide i punti di prelievo (POD) dei suoi membri con il distributore. Ogni volta dichiara, sotto la propria responsabilità, che il membro è titolare del POD e indica il documento che ha controllato. Per questo una verifica fatta fuori dalla piattaforma vale qui solo se alleghi il documento controllato, per esempio la bolletta o il documento d'identità.",
+		"verification_evidence_keep": "Il file non viene conservato sulla piattaforma. Si conserva solo la sua impronta: un codice calcolato dal file, che in seguito mostra esattamente quale file è stato controllato. Conserva il file negli archivi della comunità per il periodo concordato con il distributore. Al richiedente non viene chiesto nulla in più.",
+		"verification_evidence_file_hint": "Allega il documento che hai controllato. Viene letto solo per calcolarne l'impronta, poi viene scartato.",
+		"verification_evidence_file": "Documento di verifica",
+		"verification_evidence_kind": "Che documento è?",
+		"verification_evidence_digest": "Impronta del documento",
+		"verification_uploaded_keep": "Scarica questo documento e conservalo negli archivi della comunità: la piattaforma cancella i documenti caricati quando l'account del membro è attivo, e ne conserva solo l'impronta.",
+		"verification_renew_hint": "Questo membro è già approvato. Registra una nuova verifica con documento solo se il distributore ha sospeso uno dei suoi POD (per esempio dopo un cambio di intestatario), o se la verifica registrata non ha documenti. Il distributore rilascia di nuovo i dati del membro solo con una verifica più recente della sospensione.",
+		"verification_asserted": "Dichiarato al distributore il",
 		"revisions": "Correzioni",
 		"revisions_hint": "Dopo l'invio, POD, nome, cognome, email, codice fiscale e indirizzo di fornitura si correggono qui, non si modificano. Ogni correzione conserva il valore che sostituisce, come è stato verificato il nuovo e perché. Il valore più vecchio di un campo è quello dichiarato dalla persona.",
 		"revisions_none": "Nessuna correzione registrata.",
@@ -182,6 +192,11 @@
 		"existing_member_complete": "POD e indirizzo di fornitura completati dal registro dei soci.",
 		"existing_member_reject_hint": "Non è nel registro dei soci? Puoi anche avvisarlo/a con un'email già compilata, da rivedere prima dell'invio:",
 		"existing_member_reject_email": "apri l'email"
+	},
+	"evidence_kind": {
+		"utility_bill": "Bolletta",
+		"id_document": "Documento d'identità",
+		"other": "Altro documento"
 	},
 	"enablement_state": {
 		"not_started": "non avviata",

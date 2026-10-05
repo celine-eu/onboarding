@@ -313,7 +313,27 @@ async def _accept_conflict(community: str, *, key: str, user_id: str, detail: st
             "to resolve the conflict in the registry before this step is retried"
         )
 
-    holder = await _get_client().lookup_member_by_user_id(user_id)
+    from celine.sdk.openapi.rec_registry.errors import UnexpectedStatus
+
+    try:
+        holder = await _get_client().lookup_member_by_user_id(user_id)
+    except UnexpectedStatus as exc:
+        # The registry's lookups answer from **active** members only
+        # (rec-registry REQ-0097..0099).
+        if exc.status_code == 404:
+            # No active member logs in as this person: nothing contradicts the
+            # retry, and it reads as the lookup finding nobody.
+            holder = None
+        elif exc.status_code == 409:
+            raise ValueError(
+                f"REC registry holds user_id {user_id!r} as an active member of more than "
+                f"one community (409 ambiguous_member), so member {key!r} in "
+                f"{community!r} cannot be confirmed as this participant's. An operator "
+                "has to release the person from the other community before this step is "
+                "retried"
+            ) from exc
+        else:
+            raise
     if holder is not None and holder.community_key == community and holder.key != key:
         raise ValueError(
             f"REC registry already holds member {key!r} in community {community!r}, but "
@@ -434,8 +454,17 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
     if not binding.enabled:
         return "this community declares no rec_registry binding"
 
+    return await deactivate_registry_member(binding.community, member_key)
+
+
+async def deactivate_registry_member(community: str, member_key: str) -> str:
+    """:func:`deactivate_member` for a caller holding the registry's own pair.
+
+    A member imported into the registry has no submission, so the release keys on
+    ``(community, member_key)``. Same reading: ``purge=False``, a ``404`` is done.
+    """
     response = await _registry_response(
-        _get_client().delete_member(binding.community, member_key, purge=False)
+        _get_client().delete_member(community, member_key, purge=False)
     )
     status = getattr(response, "status_code", None)
     status_value = int(status) if status is not None else 0
@@ -445,10 +474,10 @@ async def deactivate_member(submission: Submission, *, member_key: str) -> str:
         detail = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
         raise ValueError(
             f"REC registry refused to deactivate member {member_key!r} in "
-            f"community {binding.community!r} ({status_value}): {detail}"
+            f"community {community!r} ({status_value}): {detail}"
         )
 
-    logger.info("Deactivated member %s in community %s", member_key, binding.community)
+    logger.info("Deactivated member %s in community %s", member_key, community)
     return f"deactivated registry member {member_key}"
 
 
@@ -602,6 +631,34 @@ async def replace_delivery_point(
         " (replacing the previous one)" if replaces else "",
     )
     return f"registry member {member_key} holds the corrected supply point"
+
+
+class RegistryUnavailableError(RuntimeError):
+    """The registry could not be read: an outage, not an answer."""
+
+
+async def registry_member(community: str, member_key: str) -> Any | None:
+    """The member row ``(community, member_key)``, whatever its status, or ``None``.
+
+    ``rec-registry.read`` (``GET /admin/communities/{c}/members/{k}``). ``None``
+    for the registry's ``404``; any other failure raises
+    :class:`RegistryUnavailableError`, because "nobody there" and "could not ask"
+    must not read alike. The row carries ``user_id`` (the Keycloak username),
+    ``did`` and ``status``.
+    """
+    try:
+        response = await _registry_response(_get_client().get_member(community, member_key))
+    except Exception as exc:  # noqa: BLE001 — transport or token: the registry cannot say
+        raise RegistryUnavailableError(f"{type(exc).__name__}: {exc}") from exc
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status == 404:
+        return None
+    parsed = getattr(response, "parsed", None)
+    if status != 200 or parsed is None:
+        raise RegistryUnavailableError(
+            f"REC registry answered {status} reading member {member_key!r} of {community!r}"
+        )
+    return parsed
 
 
 class RegistryNotConfiguredError(LookupError):

@@ -183,13 +183,17 @@ class Submission(Base):
 
     # How the REC verified the person and their POD, oldest first; the last is in
     # force. Loaded with every submission (`selectin`) because approval checks it
-    # synchronously and an async session cannot lazy-load. Cascade-deleted with the
-    # submission, like the rest of what is known about the person.
+    # synchronously and an async session cannot lazy-load. Deleted with the
+    # submission, like the rest of what is known about the person — except a row
+    # that backs an assertion sent to a holder, which an erasure first takes out
+    # of this collection and keeps for the retention period
+    # (`verification.retain_on_erasure`). No `delete-orphan` for that reason: a
+    # row leaving the collection is detached, not deleted.
     verifications: Mapped[list["SubmissionVerification"]] = relationship(  # noqa: F821
         back_populates="submission",
         order_by="SubmissionVerification.created_at",
         lazy="selectin",
-        cascade="all, delete-orphan",
+        cascade="all",
         passive_deletes=True,
     )
 

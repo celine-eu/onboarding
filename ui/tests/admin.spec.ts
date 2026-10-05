@@ -204,7 +204,9 @@ test.describe('Operator console', () => {
 		// the participant's verification: a revision's form repeats the same labels.
 		const participant = page.getByRole('group', { name: 'Come è stato verificato il partecipante?' });
 		await expect(participant.getByLabel('Verificato su un documento caricato qui')).toBeDisabled();
-		await participant.getByLabel('Verificato dalla comunità fuori dalla piattaforma').check();
+		await participant
+			.getByLabel('Verificato dalla comunità fuori dalla piattaforma', { exact: true })
+			.check();
 		await page.getByLabel('Nota (facoltativa)').first().fill('Documento visto in sede');
 		await page.getByRole('button', { name: 'Registra verifica' }).click();
 
@@ -214,8 +216,15 @@ test.describe('Operator console', () => {
 
 		await approve.click();
 		await expect(page.locator('.status')).toHaveText('Approvata');
-		// Decided: the verification can no longer change.
-		await expect(page.getByRole('button', { name: /Registra (una nuova )?verifica/ })).toHaveCount(0);
+		// Decided: only a renewal with evidence is offered now (REQ-0044), never a
+		// plain offline check.
+		const renewal = page.getByRole('group', { name: 'Come è stato verificato il partecipante?' });
+		await expect(
+			renewal.getByLabel('Verificato dalla comunità fuori dalla piattaforma', { exact: true })
+		).toHaveCount(0);
+		await expect(
+			renewal.getByLabel('Verificato dalla comunità fuori dalla piattaforma, con il documento allegato')
+		).toBeVisible();
 	});
 
 	test('the audit trail lists this community only', async ({ page }) => {

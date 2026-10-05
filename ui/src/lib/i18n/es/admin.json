@@ -148,6 +148,16 @@
 		"verification_record_new": "Registrar una nueva verificación",
 		"verification_recorded": "Verificación registrada.",
 		"verification_needed_to_approve": "Registra cómo se verificó al participante antes de aprobar.",
+		"verification_offline_with_evidence": "Comprobado por la comunidad fuera de la plataforma, con el documento adjunto",
+		"verification_evidence_why": "Esta comunidad comparte los puntos de suministro (POD) de sus miembros con el distribuidor. Cada vez declara, bajo su propia responsabilidad, que el miembro es titular del POD e indica el documento que comprobó. Por eso una comprobación hecha fuera de la plataforma solo cuenta aquí si adjuntas el documento comprobado, por ejemplo la factura o el documento de identidad.",
+		"verification_evidence_keep": "El archivo no se guarda en la plataforma. Solo se guarda su huella: un código calculado a partir del archivo, que más adelante muestra exactamente qué archivo se comprobó. Guarda el archivo en los registros de la comunidad durante el plazo acordado con el distribuidor. Al solicitante no se le pide nada más.",
+		"verification_evidence_file_hint": "Adjunta el documento que comprobaste. Solo se lee para calcular su huella y después se descarta.",
+		"verification_evidence_file": "Documento de comprobación",
+		"verification_evidence_kind": "¿Qué documento es?",
+		"verification_evidence_digest": "Huella del documento",
+		"verification_uploaded_keep": "Descarga este documento y guárdalo en los registros de la comunidad: la plataforma borra los documentos subidos cuando la cuenta del miembro está activa, y solo guarda su huella.",
+		"verification_renew_hint": "Este miembro ya está aprobado. Registra una nueva comprobación con documento solo si el distribuidor suspendió uno de sus POD (por ejemplo tras un cambio de titular), o si la comprobación registrada no tiene documentos. El distribuidor vuelve a entregar los datos del miembro solo con una comprobación más reciente que la suspensión.",
+		"verification_asserted": "Declarado al distribuidor el",
 		"revisions": "Correcciones",
 		"revisions_hint": "Tras el envío, el POD, el nombre, los apellidos, el email, el código fiscal y la dirección de suministro se corrigen aquí, no se editan. Cada corrección conserva el valor que sustituye, cómo se comprobó el nuevo y por qué. El valor más antiguo de un campo es el que declaró la persona.",
 		"revisions_none": "No hay correcciones registradas.",
@@ -182,6 +192,11 @@
 		"existing_member_complete": "POD y dirección de suministro completados desde el registro de socios.",
 		"existing_member_reject_hint": "¿No está en el registro de socios? También puedes avisarle con un correo ya redactado, para revisar antes de enviarlo:",
 		"existing_member_reject_email": "abrir el correo"
+	},
+	"evidence_kind": {
+		"utility_bill": "Factura",
+		"id_document": "Documento de identidad",
+		"other": "Otro documento"
 	},
 	"enablement_state": {
 		"not_started": "no iniciada",

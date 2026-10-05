@@ -1036,3 +1036,91 @@ class TestTheRealClientRaisesForUndeclaredStatuses:
         self._raising_client(monkeypatch, 404, b'{"detail":"Member not found"}')
 
         assert "deactivated" in await rr.deactivate_member(_sub(), member_key="20260727-abcd")
+
+
+# ── the release reads and deactivates by the registry's own pair ────────────────
+
+
+def _member_client(monkeypatch, *, get=None, get_error=None, delete_status=200):
+    calls: list = []
+
+    class _Client:
+        async def get_member(self, community, member_key):
+            calls.append(("get", community, member_key))
+            if get_error:
+                raise get_error
+            return get
+
+        async def delete_member(self, community, member_key, *, purge):
+            calls.append(("delete", community, member_key, purge))
+            return SimpleNamespace(status_code=delete_status, content=b"refused")
+
+    monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+    return calls
+
+
+class TestTheRegistrysOwnPair:
+    async def test_a_member_is_read_whatever_its_status(self, monkeypatch):
+        row = SimpleNamespace(user_id="ex-person@example.org", did=None, status="inactive")
+        _member_client(monkeypatch, get=SimpleNamespace(status_code=200, parsed=row))
+        assert await rr.registry_member("example-rec", "ex-00001") is row
+
+    async def test_a_404_is_no_member(self, monkeypatch):
+        _member_client(monkeypatch, get=SimpleNamespace(status_code=404, parsed=None))
+        assert await rr.registry_member("example-rec", "nobody") is None
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"get": SimpleNamespace(status_code=503, parsed=None)},
+            {"get_error": OSError("connection refused")},
+        ],
+        ids=["status", "transport"],
+    )
+    async def test_an_outage_is_not_no_member(self, monkeypatch, kwargs):
+        _member_client(monkeypatch, **kwargs)
+        with pytest.raises(rr.RegistryUnavailableError):
+            await rr.registry_member("example-rec", "ex-00001")
+
+    async def test_deactivation_never_purges_and_a_404_is_done(self, monkeypatch):
+        calls = _member_client(monkeypatch, delete_status=404)
+        detail = await rr.deactivate_registry_member("example-rec", "ex-00001")
+        assert calls == [("delete", "example-rec", "ex-00001", False)]
+        assert "ex-00001" in detail
+
+    async def test_a_refused_deactivation_raises(self, monkeypatch):
+        _member_client(monkeypatch, delete_status=409)
+        with pytest.raises(ValueError, match="refused to deactivate"):
+            await rr.deactivate_registry_member("example-rec", "ex-00001")
+
+
+
+class TestTheKeyRetryLookupAnswersFromActiveMembersOnly:
+    """rec-registry REQ-0097..0099: `member-by-user-id` answers 404 for a person
+    whose only rows are released, and 409 when they are active in two communities.
+    The SDK raises `UnexpectedStatus` for both."""
+
+    def _lookup_raises(self, monkeypatch, status: int):
+        from celine.sdk.openapi.rec_registry.errors import UnexpectedStatus
+
+        class _Client:
+            async def lookup_member_by_user_id(self, user_id):
+                raise UnexpectedStatus(status, b'{"detail": "..."}')
+
+        monkeypatch.setattr(rr, "_get_client", lambda: _Client())
+
+    async def test_a_404_is_nobody_and_the_retry_is_accepted(self, monkeypatch):
+        self._lookup_raises(monkeypatch, 404)
+        await rr._accept_conflict(
+            "c", key="k-1", user_id="ex-person@example.org", detail="Member 'k-1' already exists"
+        )
+
+    async def test_a_409_fails_closed_for_an_operator(self, monkeypatch):
+        self._lookup_raises(monkeypatch, 409)
+        with pytest.raises(ValueError, match="more than one community"):
+            await rr._accept_conflict(
+                "c",
+                key="k-1",
+                user_id="ex-person@example.org",
+                detail="Member 'k-1' already exists",
+            )

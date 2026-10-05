@@ -1174,6 +1174,9 @@ class TestRevoke:
             return True
 
         monkeypatch.setattr(dataspace_identity, "withdraw_user_shares", _withdraw)
+        # No identity registry to sweep for further credentials: the recorded one
+        # is the whole of it here (the sweep has its own test below).
+        monkeypatch.setattr(dataspace_identity.settings, "identity_registry_url", "")
         monkeypatch.setattr(provisioning, "disable_participant", _disable_kc)
         monkeypatch.setattr(rec_registry, "deactivate_member", _deactivate)
         monkeypatch.setattr(dataspace_identity, "revoke_user_identity", _revoke_identity)
@@ -1454,6 +1457,118 @@ class TestRevoke:
         rows = await enablement.revoke(db, submission)
         assert enablement.state_of(rows) == "not_started"
         assert revocations == []
+
+    async def test_the_member_waits_for_a_login_release_that_failed(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """Releasing the login resolves the member through the registry. A member
+        deactivated while that failed was a login nobody here could release any
+        more; so the member waits, and revoking again releases both, in order."""
+        calls: list[str] = []
+
+        async def _disable(sub):
+            calls.append(sub.ref)
+            if len(calls) == 1:
+                raise ValueError("Provisioning refused revoking a login (502 provisioning_failed)")
+            return "released login member@example.org"
+
+        monkeypatch.setattr(provisioning, "disable_participant", _disable)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.revoke(db, submission)
+
+        assert not any(d.startswith("rec_registry_member") for d in revocations)
+        assert rows[EnablementStep.REC_REGISTRY_MEMBER].status == EnablementStatus.SUCCEEDED
+        assert rows[EnablementStep.KEYCLOAK_USER].status == EnablementStatus.FAILED
+
+        rows = await enablement.revoke(db, submission)
+
+        assert len(calls) == 2
+        assert rows[EnablementStep.KEYCLOAK_USER].status == EnablementStatus.PENDING
+        assert "rec_registry_member:member-key-1" in revocations
+        assert enablement.revoked(rows)
+
+    async def test_a_step_whose_revocation_failed_is_revoked_again(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """Revoking again is the retry for a failed revocation too:
+        the row is `failed`, not `succeeded`, and used to be skipped for good."""
+        attempts: list[str] = []
+
+        async def _deactivate(sub, *, member_key):
+            attempts.append(member_key)
+            if len(attempts) == 1:
+                raise ValueError("REC registry refused to deactivate member (503)")
+            return "deactivated"
+
+        monkeypatch.setattr(rec_registry, "deactivate_member", _deactivate)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.revoke(db, submission)
+        assert rows[EnablementStep.REC_REGISTRY_MEMBER].status == EnablementStatus.FAILED
+
+        rows = await enablement.revoke(db, submission)
+
+        assert attempts == ["member-key-1", "member-key-1"]
+        assert rows[EnablementStep.REC_REGISTRY_MEMBER].status == EnablementStatus.PENDING
+
+    async def test_every_credential_the_community_linked_is_revoked_and_the_id_forgotten(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """ds moves the login to the next community's DID only once the old one
+        holds no active credential (ADR-0028); the sharing page may have issued
+        one after approval. And a re-approval mints a new subject id."""
+        from celine.onboarding.services import member_release, template_service
+
+        monkeypatch.setattr(dataspace_identity.settings, "identity_registry_url", "http://ir")
+        held = [["urn:uuid:recorded", "urn:uuid:later"], []]
+        swept: list[tuple] = []
+
+        async def _held(identifiers, did, binding):
+            swept.append((tuple(identifiers.items()), did))
+            return member_release.HeldCredentials(ours=held.pop(0))
+
+        async def _revoke_credential(credential_id, binding):
+            revocations.append(f"credential:{credential_id}")
+
+        async def _fresh():
+            pass
+
+        monkeypatch.setattr(member_release, "held_credentials", _held)
+        monkeypatch.setattr(member_release, "revoke_credential", _revoke_credential)
+        monkeypatch.setattr(template_service, "ensure_fresh", _fresh)
+        monkeypatch.setattr(
+            template_service,
+            "dataspace_binding",
+            lambda slug: SimpleNamespace(organization="rec-a", linked_participant_did=""),
+        )
+
+        await enablement.enable(db, submission)
+        submission.dataspace_vc_id = "urn:uuid:recorded"
+        submission.dataspace_subject_id = "old-id"
+        rows = await enablement.revoke(db, submission)
+
+        assert "credential:urn:uuid:later" in revocations
+        assert "credential:urn:uuid:recorded" not in revocations  # the recorded path did it
+        assert swept[0] == ((("email", "member@example.org"),), "did:web:member")
+        assert submission.dataspace_subject_id is None
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.PENDING
+
+    async def test_a_step_that_failed_to_run_is_not_revoked(
+        self, db, submission, happy_path, revocations, monkeypatch
+    ):
+        """Only a failed *revocation* is retried; a run that failed undid nothing
+        to begin with, and its reason stays on the row."""
+        await enablement.enable(db, submission)
+        rows = await enablement.load_steps(db, submission.id)
+        row = rows[EnablementStep.REC_REGISTRY_MEMBER]
+        row.status = EnablementStatus.FAILED
+        row.last_error = "ValueError: REC registry refused member (409)"
+
+        await enablement.revoke(db, submission)
+
+        assert not any(d.startswith("rec_registry_member") for d in revocations)
+        assert row.last_error == "ValueError: REC registry refused member (409)"
 
 
 # ---------------------------------------------------------------------------

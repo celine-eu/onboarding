@@ -456,8 +456,16 @@ holder the next time the step runs; equal keys are agreement, and nothing is
 written. Only a grant at a holder is compared: a withdrawal is never re-sent, the
 community's own connector is never sent keys, and a grant whose keys the holder
 does not return (another party registered it) is left as it is. While the
-registry cannot be read the keys are not compared: the declared POD that stands
-in for it may be the very value a correction replaced.
+registry cannot be read nothing is granted at a holder at all (REQ-0046): the
+declared POD never stands in for it, since it may be the very value a correction
+replaced, and the community would be asserting it on no current record.
+
+**The community asserts that the member holds the keys** (R4). With `DS_KEY_ASSERTION`
+on (the default outside `CELINE_ENV=dev`), a grant carrying `pod:` keys to a holder
+carries `legal_basis.key_assertion`: the terms version and the sha256 of their text, the
+verification's method, id and time, an HMAC pseudonym of the verifying operator, and the
+evidence digests. A grant whose verification has no evidence digest is refused here. See
+[specifications/pod-ownership-assertion.md](specifications/pod-ownership-assertion.md).
 
 **No POD left, the grant waits** (R19). When the registry, asked, holds no supply
 point for a member whose grant stands at a holder, the grant is **kept** and sent
@@ -471,8 +479,8 @@ sent again and again. When a POD is added later, the next run sees the keyless
 grant (the community's own row, by its `collector`) differ from the registry and
 sends the keys: on a retry of the `dataspace_share` step for a POD added in the
 registry, and at once for a POD added by revision. Only the registry's own
-answer empties keys: while it cannot be read, a standing grant is refused as
-before ("no supply point is recorded") rather than emptied. A **new** grant
+answer empties keys: while it cannot be read, a standing grant is refused
+("the community's member registry could not be read") rather than emptied. A **new** grant
 without a POD is still refused: there is nothing to keep. "Releases nothing"
 holds for a holder dataset filtered by `subject_key_match`, as the grid
 operator's readings are; a dataset filtered on principals would release a granted

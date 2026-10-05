@@ -265,6 +265,7 @@ def test_the_console_is_told(sms, phone_rec):
         data_sharing_issues=[],
         existing_member_pending=[],
         phone_verification_waived=False,
+        verification_needs_evidence=False,
     )
 
     assert _read(SimpleNamespace(**row)).phone_verification_waived is True

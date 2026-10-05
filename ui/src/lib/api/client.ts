@@ -48,6 +48,10 @@ export interface AdminSubmission extends SubmissionResponse {
 	/** Admin reads only: what the operator must still complete from the member
 	 *  register before approval, `pod_code` and `supply_address` (REQ-0025). */
 	existing_member_pending?: Array<'pod_code' | 'supply_address'>;
+	/** The community shares members' supply points with another participant and
+	 *  asserts that they hold them, so a verification must carry evidence: no plain
+	 *  offline check is offered (REQ-0042). */
+	verification_needs_evidence?: boolean;
 	/** The language the applicant last used in the wizard. */
 	locale?: string | null;
 }
@@ -379,11 +383,17 @@ export interface RecStats {
 	submissions_with_failed_steps: number;
 }
 
+export type EvidenceKind = 'utility_bill' | 'id_document' | 'other';
+
 /** How the REC verified the participant's identity and POD. The newest is in force. */
 export interface AdminVerification {
 	id: string;
-	method: 'offline' | 'uploaded-document';
+	method: 'offline' | 'uploaded-document' | 'offline-with-evidence';
 	document_id: string | null;
+	/** Digests of the evidence the verification rests on; the files are not here. */
+	evidence?: Array<{ kind: EvidenceKind; sha256: string }> | null;
+	/** When the grid operator last accepted the community's declaration citing it. */
+	last_asserted_at?: string | null;
 	note: string | null;
 	actor_type: string;
 	actor_sub: string | null;
@@ -492,6 +502,15 @@ async function adminFetch(path: string, options?: RequestInit): Promise<Response
 	return res;
 }
 
+/** A multipart admin request: the browser sets the boundary, so no JSON header. */
+async function adminUpload<T>(path: string, form: FormData): Promise<T> {
+	const res = await fetch(path, { method: 'POST', credentials: 'include', body: form });
+	if (res.status === 401) signIn();
+	if (res.status === 403) throw new AdminDeniedError(await detailOf(res));
+	if (!res.ok) throw new Error(await detailOf(res));
+	return res.json() as Promise<T>;
+}
+
 async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
 	const res = await adminFetch(path, options);
 	if (res.status === 204) return undefined as T;
@@ -569,6 +588,21 @@ export function createRecAdminApi(recSlug: string) {
 				method: 'POST',
 				body: JSON.stringify(body)
 			}),
+
+		/** An offline check with its evidence file: hashed by the service, not stored. */
+		recordVerificationWithEvidence: (
+			id: string,
+			body: { file: File; kind: EvidenceKind; note?: string }
+		) => {
+			const form = new FormData();
+			form.append('files', body.file);
+			form.append('kinds', body.kind);
+			if (body.note) form.append('note', body.note);
+			return adminUpload<AdminVerification>(
+				`${base}/submissions/${id}/verifications/evidence`,
+				form
+			);
+		},
 
 		revisions: (id: string, reveal = false) =>
 			adminRequest<AdminRevision[]>(`${base}/submissions/${id}/revisions?reveal=${reveal}`),

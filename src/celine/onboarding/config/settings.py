@@ -260,6 +260,34 @@ class Settings(BaseSettings):
     ds_org_client_id: str = ""
     ds_org_client_secret: str = ""
 
+    # --- the community's assertion that a member holds their supply points ----
+    # (R4, REQ-0043.) A grant carrying a member's `pod:` keys to another
+    # participant's connector carries the community's `key_assertion`: which
+    # terms it asserts under, how and when it verified, a pseudonym of who
+    # verified, and the digests of the evidence. Codes and hashes only.
+    #
+    # `DS_KEY_ASSERTION`: unset means **on**, except under `CELINE_ENV=dev`, where
+    # it means off — a connector older than the assertion refuses the unknown
+    # field (`extra="forbid"`), and the local stacks pin such a ds. Set it `true`
+    # in dev against a connector that has it. Outside dev, `false` is refused at
+    # boot while a community grants at a holder (`service_auth.collector_posture_guard`).
+    ds_key_assertion: bool | None = None
+    # The key of `verified_by` = HMAC-SHA256(key, operator's subject): a pseudonym
+    # only this deployment can resolve. Its own secret. Required outside dev while
+    # the assertion is on and a community grants at a holder.
+    rec_assertion_hmac_key: str = ""
+    # The responsibility statement the community asserts under: its version id,
+    # and the file holding its exact text, whose sha256 travels as `terms_sha256`.
+    # Empty file: the generic draft shipped with the service
+    # (`celine/onboarding/terms/rec-pod-assertion-1.md`, a draft for legal review).
+    rec_assertion_terms_id: str = "rec-pod-assertion/1"
+    rec_assertion_terms_file: str = ""
+    # How long a verification that backed a grant, and its evidence digests, are
+    # kept after the submission is erased: the civil limitation period (Italian
+    # ordinary limitation, art. 2946 c.c.: 10 years), kept under GDPR Art.
+    # 17(3)(e). Pending legal counsel; per deployment.
+    assertion_retention_years: int = Field(default=10, ge=1)
+
     # Provenance, for `GET /api/me/data-sharing/history` and **nothing else**.
     #
     # This setting was removed when `DataDisclosed` moved to the connector's

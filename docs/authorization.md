@@ -109,7 +109,11 @@ attribute would make the check bypassable by leaving it off.
 
 ## Delegated actions
 
-`members.invite` is the one capability that neither subject type reaches alone. It covers
+`members.invite` and `members.release` are the capabilities that neither subject type
+reaches alone. `members.release` follows the same rules with its own scope,
+`onboarding.members.release`. Its operator must hold `admins` (not `managers`) or the
+`platform-admin` role: releasing a member is `enablement.revoke`'s grant. The rest of this
+section describes `members.invite`, which covers
 the two member-keyed routes that email a registry member
 ([api-reference.md](api-reference.md)). It is allowed only when **both** of these hold:
 
@@ -178,6 +182,7 @@ onboarding.submissions.reveal   onboarding.audit.read
 onboarding.submissions.write    onboarding.export
 onboarding.submissions.review   onboarding.submissions.purge
 onboarding.submissions.revise   onboarding.members.invite
+                                onboarding.members.release
 ```
 
 `onboarding.submissions.revise` (correcting a POD, name or email by revision,
@@ -185,7 +190,8 @@ onboarding.submissions.revise   onboarding.members.invite
 client: no service holds `onboarding.submissions.review` either.
 
 `onboarding.members.invite` is for `celine-community` alone, and it is useless without a
-manager's token. See [Delegated actions](#delegated-actions).
+manager's token. `onboarding.members.release` is the same, with a REC admin's token. See
+[Delegated actions](#delegated-actions).
 
 ## How a request is decided
 

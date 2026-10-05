@@ -8,7 +8,8 @@
 		type AdminSubmission,
 		type AdminVerification,
 		type AuditEntry,
-		type Enablement
+		type Enablement,
+		type EvidenceKind
 	} from '$lib/api/client';
 	import { intlLocale, locale, t } from '$lib/i18n';
 	import { rejectionMailto } from '$lib/rejection-email';
@@ -54,6 +55,8 @@
 	let verifyMethod = $state<AdminVerification['method']>('offline');
 	let verifyDocument = $state('');
 	let verifyNote = $state('');
+	let verifyEvidence = $state<File | null>(null);
+	let verifyEvidenceKind = $state<EvidenceKind>('utility_bill');
 	let revisions = $state<AdminRevision[]>([]);
 	let reviseField = $state<AdminRevision['field']>('pod_code');
 	let reviseValue = $state('');
@@ -113,10 +116,18 @@
 		})).filter((group) => group.rows.length > 0)
 	);
 
-	// A verification is evidence for a pending decision; the API refuses one after.
+	// A verification is evidence for a pending decision; the API refuses one after
+	// a rejection. After approval only a renewal with evidence is taken (REQ-0044).
+	const renewing = $derived(submission?.status === 'approved');
 	const verifiable = $derived(
-		submission?.status === 'submitted' || submission?.status === 'under_review'
+		submission?.status === 'submitted' || submission?.status === 'under_review' || renewing
 	);
+	// Plain offline is not offered where the community declares the member's POD
+	// to the grid operator, nor for a renewal (REQ-0042).
+	const offlineAllowed = $derived(!submission?.verification_needs_evidence && !renewing);
+	$effect(() => {
+		if (!offlineAllowed && verifyMethod === 'offline') verifyMethod = 'offline-with-evidence';
+	});
 
 	async function refresh() {
 		submission = await api.getSubmission(id, revealed);
@@ -209,13 +220,23 @@
 
 	const recordVerification = () =>
 		act('verify', async () => {
-			await api.recordVerification(id, {
-				method: verifyMethod,
-				...(verifyMethod === 'uploaded-document' ? { document_id: verifyDocument } : {}),
-				...(verifyNote.trim() ? { note: verifyNote.trim() } : {})
-			});
+			if (verifyMethod === 'offline-with-evidence') {
+				if (!verifyEvidence) return;
+				await api.recordVerificationWithEvidence(id, {
+					file: verifyEvidence,
+					kind: verifyEvidenceKind,
+					...(verifyNote.trim() ? { note: verifyNote.trim() } : {})
+				});
+			} else {
+				await api.recordVerification(id, {
+					method: verifyMethod,
+					...(verifyMethod === 'uploaded-document' ? { document_id: verifyDocument } : {}),
+					...(verifyNote.trim() ? { note: verifyNote.trim() } : {})
+				});
+			}
 			await refresh();
 			verifyNote = '';
+			verifyEvidence = null;
 			successMsg = $t('admin.detail.verification_recorded');
 		});
 
@@ -465,6 +486,13 @@
 			<section class="panel verification">
 				<h2>{$t('admin.detail.verification')}</h2>
 				<p class="hint">{$t('admin.detail.verification_hint')}</p>
+				{#if submission.verification_needs_evidence}
+					<!-- Operator-facing only: the applicant's wizard is unchanged (R4). -->
+					<div class="hint evidence-explained">
+						<p>{$t('admin.detail.verification_evidence_why')}</p>
+						<p>{$t('admin.detail.verification_evidence_keep')}</p>
+					</div>
+				{/if}
 
 				{#if verifications.length === 0}
 					<p class="muted">{$t('admin.detail.verification_none')}</p>
@@ -472,13 +500,24 @@
 					<ol class="verifications">
 						{#each [...verifications].reverse() as v, i (v.id)}
 							<li data-current={i === 0}>
-								<strong>{$t(`admin.detail.verification_${v.method.replace('-', '_')}`)}</strong>
+								<strong>{$t(`admin.detail.verification_${v.method.replaceAll('-', '_')}`)}</strong>
 								{#if i > 0}<span class="muted small">{$t('admin.detail.verification_superseded')}</span>{/if}
 								<span class="muted small">
 									{v.actor_email ?? v.actor_sub ?? v.actor_type} · {formatDate(v.created_at)}
 								</span>
 								{#if v.document_id}
 									<span class="small">{$t('admin.detail.verification_document')}: {documentName(v.document_id)}</span>
+								{/if}
+								{#each v.evidence ?? [] as e (e.sha256)}
+									<span class="small" title={e.sha256}>
+										{$t('admin.detail.verification_evidence_digest')}
+										({label('evidence_kind', e.kind)}): <code>{e.sha256.slice(0, 12)}…</code>
+									</span>
+								{/each}
+								{#if v.last_asserted_at}
+									<span class="small">
+										{$t('admin.detail.verification_asserted')} {formatDate(v.last_asserted_at)}
+									</span>
 								{/if}
 								{#if v.note}<span class="small">{v.note}</span>{/if}
 							</li>
@@ -494,11 +533,20 @@
 							void recordVerification();
 						}}
 					>
+						{#if renewing}
+							<p class="hint">{$t('admin.detail.verification_renew_hint')}</p>
+						{/if}
 						<fieldset>
 							<legend>{$t('admin.detail.verification_method')}</legend>
+							{#if offlineAllowed}
+								<label>
+									<input type="radio" bind:group={verifyMethod} value="offline" />
+									{$t('admin.detail.verification_offline')}
+								</label>
+							{/if}
 							<label>
-								<input type="radio" bind:group={verifyMethod} value="offline" />
-								{$t('admin.detail.verification_offline')}
+								<input type="radio" bind:group={verifyMethod} value="offline-with-evidence" />
+								{$t('admin.detail.verification_offline_with_evidence')}
 							</label>
 							<label>
 								<input
@@ -510,6 +558,27 @@
 								{$t('admin.detail.verification_uploaded_document')}
 							</label>
 						</fieldset>
+						{#if verifyMethod === 'offline-with-evidence'}
+							<p class="hint">{$t('admin.detail.verification_evidence_file_hint')}</p>
+							<label>
+								<span>{$t('admin.detail.verification_evidence_kind')}</span>
+								<select bind:value={verifyEvidenceKind}>
+									<option value="utility_bill">{label('evidence_kind', 'utility_bill')}</option>
+									<option value="id_document">{label('evidence_kind', 'id_document')}</option>
+									<option value="other">{label('evidence_kind', 'other')}</option>
+								</select>
+							</label>
+							<label>
+								<span>{$t('admin.detail.verification_evidence_file')}</span>
+								<input
+									type="file"
+									required
+									onchange={(e) => {
+										verifyEvidence = (e.currentTarget as HTMLInputElement).files?.[0] ?? null;
+									}}
+								/>
+							</label>
+						{/if}
 						{#if verifyMethod === 'uploaded-document'}
 							<label>
 								<span>{$t('admin.detail.verification_document')}</span>
@@ -520,6 +589,9 @@
 									{/each}
 								</select>
 							</label>
+							{#if submission.verification_needs_evidence}
+								<p class="hint">{$t('admin.detail.verification_uploaded_keep')}</p>
+							{/if}
 						{/if}
 						<label>
 							<span>{$t('admin.detail.verification_note')}</span>
@@ -529,7 +601,8 @@
 							type="submit"
 							class="secondary small"
 							disabled={busy !== null ||
-								(verifyMethod === 'uploaded-document' && !verifyDocument)}
+								(verifyMethod === 'uploaded-document' && !verifyDocument) ||
+								(verifyMethod === 'offline-with-evidence' && !verifyEvidence)}
 						>
 							{busy === 'verify'
 								? '…'

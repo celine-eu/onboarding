@@ -37,6 +37,12 @@ class Document(Base):
     original_filename: Mapped[str] = mapped_column(String(255))
     mime_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int] = mapped_column(Integer)
+    # The sha256 of the file as uploaded — the plaintext bytes, before encryption —
+    # in hex. What a verification copies as its evidence digest (REQ-0041), so the
+    # fact of *which* file was checked outlives the file. NULL only on a document
+    # uploaded before the column existed; recording a verification against one
+    # computes it then (`services/verification.py`).
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     submission: Mapped["Submission"] = relationship(back_populates="documents")

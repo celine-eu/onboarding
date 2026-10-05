@@ -25,6 +25,7 @@ from celine.onboarding.services.audit_service import Actor
 ORG = "community-a"
 SUBMISSION_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 OPERATOR = Actor(type="user", sub="op-1", email="operator@example.org")
+DOC_SHA256 = "ab" * 32
 
 
 def make_submission(status: SubmissionStatus = SubmissionStatus.UNDER_REVIEW) -> Submission:
@@ -85,7 +86,12 @@ def documents(monkeypatch):
         from types import SimpleNamespace
 
         doc_id = uuid.uuid4()
-        stored[doc_id] = SimpleNamespace(id=doc_id, submission_id=submission_id)
+        stored[doc_id] = SimpleNamespace(
+            id=doc_id,
+            submission_id=submission_id,
+            doc_type="utility_bill",
+            sha256=DOC_SHA256,
+        )
         return doc_id
 
     return _add
@@ -172,7 +178,9 @@ async def test_a_new_verification_supersedes_and_both_stay(trail, documents):
     assert submission.verifications == [first, second]
     assert submission.verification is second
     assert trail[1]["action"] == "verification_superseded"
-    assert trail[1]["detail"] == f"method=uploaded-document document={doc} supersedes={first.id}"
+    assert trail[1]["detail"] == (
+        f"method=uploaded-document document={doc} evidence=1 supersedes={first.id}"
+    )
 
 
 async def test_uploaded_document_must_name_one(trail):
@@ -213,13 +221,24 @@ async def test_offline_names_no_document(trail, documents):
         )
 
 
-@pytest.mark.parametrize(
-    "status", [SubmissionStatus.DRAFT, SubmissionStatus.APPROVED, SubmissionStatus.REJECTED]
-)
+@pytest.mark.parametrize("status", [SubmissionStatus.DRAFT, SubmissionStatus.REJECTED])
 async def test_only_a_pending_submission_takes_one(trail, status):
     with pytest.raises(verification.VerificationError, match="only while"):
         await verification.record(
             FakeDb(), make_submission(status), method=VerificationMethod.OFFLINE, actor=OPERATOR
+        )
+
+
+async def test_after_approval_only_a_renewal_with_evidence(trail):
+    """
+    @verifies REQ-0044
+    """
+    with pytest.raises(verification.VerificationError, match="renewed with evidence"):
+        await verification.record(
+            FakeDb(),
+            make_submission(SubmissionStatus.APPROVED),
+            method=VerificationMethod.OFFLINE,
+            actor=OPERATOR,
         )
 
 
@@ -293,13 +312,26 @@ def test_the_recorded_verification_is_on_the_submission_and_listed(api, operator
     assert shown["verification"]["id"] == created.json()["id"]
 
 
-def test_an_approved_submission_answers_409(api, operator_token):
+def test_a_rejected_submission_answers_409(api, operator_token):
+    client, state = api
+    state["submission"] = make_submission(SubmissionStatus.REJECTED)
+    res = client.post(
+        URL, json={"method": "offline"}, headers=auth(operator_token(ORG, "managers"))
+    )
+    assert res.status_code == 409
+
+
+def test_an_approved_submission_refuses_plain_offline_with_422(api, operator_token):
+    """
+    @verifies REQ-0044
+    """
     client, state = api
     state["submission"] = make_submission(SubmissionStatus.APPROVED)
     res = client.post(
         URL, json={"method": "offline"}, headers=auth(operator_token(ORG, "managers"))
     )
-    assert res.status_code == 409
+    assert res.status_code == 422
+    assert "renewed with evidence" in res.json()["detail"]
 
 
 def test_a_bad_document_answers_422(api, operator_token, documents):

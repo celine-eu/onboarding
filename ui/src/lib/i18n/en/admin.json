@@ -148,6 +148,16 @@
 		"verification_record_new": "Record a new verification",
 		"verification_recorded": "Verification recorded.",
 		"verification_needed_to_approve": "Record how the participant was verified before approving.",
+		"verification_offline_with_evidence": "Checked by the community outside the platform, with the evidence file attached",
+		"verification_evidence_why": "This community shares its members' supply points (POD) with the grid operator. Each time it does, the community declares, on its own responsibility, that the member holds the POD, and names the evidence it checked. That is why a check done outside the platform counts here only with the evidence you checked attached, for example the bill or the identity document.",
+		"verification_evidence_keep": "The file is not stored on the platform. Only its fingerprint is kept: a code computed from the file, which later shows exactly which file was checked. Keep the file in the community's own records for the retention period agreed with the grid operator. The applicant is not asked for anything more.",
+		"verification_evidence_file_hint": "Attach the document you checked. It is read only to compute its fingerprint, and is then discarded.",
+		"verification_evidence_file": "Evidence file",
+		"verification_evidence_kind": "What is it?",
+		"verification_evidence_digest": "Evidence fingerprint",
+		"verification_uploaded_keep": "Download this document and keep it in the community's records: the platform deletes uploaded documents once the member's account is active, and keeps only their fingerprint.",
+		"verification_renew_hint": "This member is already approved. Record a new verification with evidence only if the grid operator suspended one of their supply points (for example after a change of contract holder), or if the verification on record has no evidence. The grid operator releases the member's data again only on a verification newer than the suspension.",
+		"verification_asserted": "Declared to the grid operator on",
 		"revisions": "Corrections",
 		"revisions_hint": "From submission on, the POD, first name, last name, email, fiscal code and supply address are corrected here rather than edited. Each correction keeps the value it replaces, how the new one was checked and why. The oldest value of a field is what the person declared.",
 		"revisions_none": "No corrections recorded.",
@@ -182,6 +192,11 @@
 		"existing_member_complete": "POD and supply address completed from the member register.",
 		"existing_member_reject_hint": "Not in the member register? You can also tell them with a prefilled email, to review before sending:",
 		"existing_member_reject_email": "open the email"
+	},
+	"evidence_kind": {
+		"utility_bill": "Utility bill",
+		"id_document": "Identity document",
+		"other": "Other document"
 	},
 	"enablement_state": {
 		"not_started": "not started",

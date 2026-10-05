@@ -16,16 +16,17 @@ require documents for it:
 
 | Method | Means | Needs |
 |---|---|---|
-| `offline` | The community checked the person's documents outside the platform | nothing stored here |
-| `uploaded-document` | The operator checked a document the participant uploaded | the document, which must belong to this submission |
+| `offline` | The community checked the person's documents outside the platform | nothing stored here; refused where the community shares PODs with a grid operator (below) |
+| `offline-with-evidence` | The same, and the operator attached the evidence the community checked | the file, which is hashed and **not stored**: only its fingerprint (sha256) is kept |
+| `uploaded-document` | The operator checked a document the participant uploaded | the document, which must belong to this submission; its fingerprint is kept |
 
 An uploaded document that turns out to be the wrong one is recorded as `offline`
 once the community has checked outside the platform.
 
 - **Who may record one:** the same capability as approving, `submissions.review`.
   Vouching for a person is part of the decision.
-- **When:** while the submission is `submitted` or `under_review`. After a decision
-  the API answers 409.
+- **When:** while the submission is `submitted` or `under_review`. After approval,
+  only a renewal with evidence (see below); after a rejection the API answers 409.
 - **Corrections:** a verification is never edited. Recording another supersedes it;
   both stay in the submission's history, the newest is the one in force, and the
   trail shows `verification_recorded` then `verification_superseded`. The optional
@@ -35,6 +36,53 @@ once the community has checked outside the platform.
   `submission-review:uploaded-document`) and to the registry member as
   `extra.identity_verification` (`method`, `verified_at`). Who recorded it stays in
   this service's audit trail.
+
+### When the community shares supply points with a grid operator
+
+A community whose manifest names a holder connector (a grid operator holding its members'
+readings) sends, with every grant carrying a member's POD, its own **declaration that the
+member holds that POD**: under which statement (`REC_ASSERTION_TERMS_FILE`), how and when
+it verified, a code for who verified, and the fingerprints of the evidence. The grid
+operator does not check who holds a POD; the community answers for the declaration. The
+console explains this to the operator where the verification is recorded, in these words:
+
+> This community shares its members' supply points (POD) with the grid operator. Each time
+> it does, the community declares, on its own responsibility, that the member holds the
+> POD, and names the evidence it checked. That is why a check done outside the platform
+> counts here only with the evidence you checked attached, for example the bill or the
+> identity document.
+>
+> The file is not stored on the platform. Only its fingerprint is kept: a code computed
+> from the file, which later shows exactly which file was checked. Keep the file in the
+> community's own records for the retention period agreed with the grid operator. The
+> applicant is not asked for anything more.
+
+What that means for the operator:
+
+- **Plain `offline` is not offered.** Attach the evidence file, or choose a document the
+  applicant uploaded. The applicant's form is unchanged.
+- **Keep the evidence.** The platform keeps fingerprints, not files. An uploaded document
+  is deleted once the member's account is active, so download it if it is your evidence.
+- **Why the file is hashed and not stored:** the community keeps its evidence anyway
+  (the terms say so), and this service does not want every member's identity document.
+  A fingerprint is enough to show later that the file produced is the one that was
+  checked; it reveals nothing without the file.
+- **The grid operator's answers**, on the `dataspace_share` step:
+  - *already registered for another person* — the same POD is shared for someone else at
+    the grid operator. Check who holds it now.
+  - *suspended* — the grid operator suspended the POD, usually after a change of contract
+    holder. It is released again only after a **new verification** (with evidence)
+    recorded after the suspension: record one, then retry the step. The step's report
+    also lists suspended PODs (by count, never the code).
+  - *assertion not accepted* — record a verification with evidence, then retry.
+- **Renewal after approval.** An approved member can be verified anew, with evidence only,
+  for the cases above (`verification_renewed` in the trail).
+- **Retention.** A verification the grid operator accepted a declaration from is kept,
+  without its note, for `ASSERTION_RETENTION_YEARS` (default 10, pending legal counsel)
+  after the member's erasure.
+
+The rule applies while `DS_KEY_ASSERTION` is on: by default everywhere but
+`CELINE_ENV=dev`. See [specifications/pod-ownership-assertion.md](specifications/pod-ownership-assertion.md).
 
 The console shows the verification panel on the submission and keeps Approve
 disabled until one is recorded. The API is
@@ -205,7 +253,7 @@ What each outcome leaves you to do:
 | `send_failed` | **Retry step 1**: the retry button on the login step, or `enablement retry … --step keycloak_user`. It asks again under the same rules, so if the account got a password or an email in the meantime, nothing is sent. |
 | `cooldown` | Wait. The person was emailed moments ago, most likely by another request, and has that email. There is no retry for it here: a second email after the cooldown is not something anybody decided. |
 | `no_email` | Nothing from this console, and a retry cannot help. Giving such accounts an address is a separate piece of work, planned outside this console. |
-| `account_disabled` | Nothing from this console. Re-approval does not re-enable a revoked account. |
+| `account_disabled` | Nothing from this console. Re-approval does not re-enable an account that is disabled while still in the community's organization. An account a REC *released* (out of every REC organization) is enabled again by its next approval. |
 | `not_on_dev_list` | Nothing: this environment emails only its recipient list. |
 
 Every outcome leaves step 1 `succeeded`, because the account exists. `send_failed` is
@@ -285,10 +333,20 @@ answer.
 ### Reversal
 
 `Revoca abilitazione` (admins only) undoes enablement: withdraw the member's
-sharing grants, revoke the credential and delete the membership, disable the
-Keycloak login, deactivate the registry member. Best-effort and recorded per
+sharing grants, revoke the credential and delete the membership, release the
+Keycloak login (disabled, out of the community's organization and its groups,
+sessions ended), deactivate the registry member. Best-effort and recorded per
 step — a revocation that fails half way must leave a record of what is still out
-there, because that record is the only way anybody finds the rest.
+there, because that record is the only way anybody finds the rest. A step whose
+revocation failed is tried again by the next press, and the registry member is
+not deactivated while the login release has failed: the login is released
+through the registry.
+
+The community dashboard's "Release member" (REC admins) runs the same four acts,
+keyed on the registry member rather than on a submission, so members imported
+into the registry can be released too (`POST …/communities/{c}/members/{k}/release`,
+[api-reference](api-reference.md)). Its outcome is written on these rows when a
+submission backs the member.
 
 **Every standing grant the community collected for the member is withdrawn**, at
 every connector, whether it came from the form or their sharing page — as the
@@ -404,6 +462,7 @@ onboarding-cli admin whoami
 onboarding-cli admin review list --rec my-rec --status submitted
 onboarding-cli admin review take 20260730-a1b2 --rec my-rec
 onboarding-cli admin review verify 20260730-a1b2 --rec my-rec --method offline --note "ID checked at the office"
+onboarding-cli admin review verify 20260730-a1b2 --rec my-rec --method offline-with-evidence --evidence ./bill.pdf --evidence-kind utility_bill  # hashed here, never sent
 onboarding-cli admin review approve 20260730-a1b2 --rec my-rec
 onboarding-cli admin review reject 20260730-a1b2 --rec my-rec --reason "POD di un'altra fornitura"
 onboarding-cli admin enablement status 20260730-a1b2 --rec my-rec

@@ -14,6 +14,7 @@ than a stub. Tokens are minted and verified for real (`issue_token`).
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -564,3 +565,196 @@ class TestTheAuditRow:
         client.post(INVITE, headers=delegated(community_token, manager_token))
         [row] = db.audit_rows
         assert "member@example.org" not in (row.detail or "")
+
+
+# ---------------------------------------------------------------------------
+# Releasing a member: `POST …/release`, REC admins only
+# ---------------------------------------------------------------------------
+
+RELEASE = f"/api/admin/communities/{COMMUNITY}/members/{MEMBER}/release"
+
+
+@pytest.fixture()
+def release_token(service_token):
+    return service_token("onboarding.members.release", client_id="svc-community")
+
+
+@pytest.fixture()
+def admin_token(operator_token):
+    return operator_token(ORG, "admins", sub="admin-sub", email="admin@example.org")
+
+
+@pytest.fixture()
+def released(monkeypatch):
+    """The release itself, faked: the route's seam is auth, shape and audit."""
+    from celine.onboarding.services import member_release
+
+    calls: list[dict] = []
+    outcome = {"state": "released", "raise": None}
+
+    async def _release(db, *, community, rec_slug, member_key):
+        calls.append({"community": community, "rec_slug": rec_slug, "member_key": member_key})
+        if outcome["raise"]:
+            raise outcome["raise"]
+        status = "failed" if outcome["state"] == "partial" else "done"
+        return member_release.Release(
+            community=community,
+            member_key=member_key,
+            source="registry",
+            steps=[
+                member_release.StepResult("dataspace_share", "done", "withdrawn", "offer-1"),
+                member_release.StepResult("dataspace_identity", "done", "revoked", "cred"),
+                member_release.StepResult("keycloak_user", status, "released", "login"),
+                member_release.StepResult("rec_registry_member", "done", "deactivated", "m"),
+            ],
+        )
+
+    monkeypatch.setattr(member_release, "release", _release)
+    return SimpleNamespace(calls=calls, outcome=outcome)
+
+
+class TestTheRelease:
+    def test_a_rec_admin_releases_and_every_step_is_answered(
+        self, client, released, release_token, admin_token
+    ):
+        response = client.post(RELEASE, headers=delegated(release_token, admin_token))
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "community": COMMUNITY,
+            "memberKey": MEMBER,
+            "state": "released",
+            "source": "registry",
+            "steps": [
+                {
+                    "step": "dataspace_share",
+                    "status": "done",
+                    "code": "withdrawn",
+                    "detail": "offer-1",
+                },
+                {
+                    "step": "dataspace_identity",
+                    "status": "done",
+                    "code": "revoked",
+                    "detail": "cred",
+                },
+                {"step": "keycloak_user", "status": "done", "code": "released", "detail": "login"},
+                {
+                    "step": "rec_registry_member",
+                    "status": "done",
+                    "code": "deactivated",
+                    "detail": "m",
+                },
+            ],
+        }
+        # The registry's pair and the REC the community resolves to, unchanged.
+        assert released.calls == [
+            {"community": COMMUNITY, "rec_slug": "green-rec", "member_key": MEMBER}
+        ]
+
+    def test_a_partial_release_is_still_a_200(self, client, released, release_token, admin_token):
+        released.outcome["state"] = "partial"
+        response = client.post(RELEASE, headers=delegated(release_token, admin_token))
+        assert response.status_code == 200
+        assert response.json()["state"] == "partial"
+
+    def test_no_provisioning_service_does_not_stop_a_release(
+        self, client, released, release_token, admin_token, monkeypatch
+    ):
+        monkeypatch.setattr(pv.settings, "provisioning_url", "")
+        response = client.post(RELEASE, headers=delegated(release_token, admin_token))
+        assert response.status_code == 200
+
+    def test_a_member_the_registry_does_not_hold_is_404(
+        self, client, released, release_token, admin_token
+    ):
+        from celine.onboarding.services.member_release import MemberNotFoundError
+
+        released.outcome["raise"] = MemberNotFoundError("nobody")
+        response = client.post(RELEASE, headers=delegated(release_token, admin_token))
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "member_not_found"
+
+    def test_an_unreadable_registry_is_502_and_nothing_changed(
+        self, client, released, release_token, admin_token
+    ):
+        from celine.onboarding.services.rec_registry import RegistryUnavailableError
+
+        released.outcome["raise"] = RegistryUnavailableError("503")
+        response = client.post(RELEASE, headers=delegated(release_token, admin_token))
+        assert response.status_code == 502
+        assert response.json()["detail"]["code"] == "registry_unavailable"
+
+    def test_both_audit_records_are_written(
+        self, client, released, release_token, admin_token, db, monkeypatch
+    ):
+        from celine.onboarding.api.admin import members
+
+        records: list[tuple] = []
+        monkeypatch.setattr(
+            members, "audit_access", lambda action, **kw: records.append((action, kw))
+        )
+
+        client.post(RELEASE, headers=delegated(release_token, admin_token))
+
+        (row,) = db.audit_rows
+        assert row.action == "member_release"
+        assert row.entity_type == "registry_member"
+        assert row.entity_id == MEMBER
+        assert row.actor_sub == "admin-sub"
+        assert row.actor_client_id == "svc-community"
+        assert "state=released" in row.detail
+        assert "keycloak_user=done:released" in row.detail
+        assert [(a, kw["resource"], kw["reason"]) for a, kw in records] == [
+            ("members.release", f"{COMMUNITY}/{MEMBER}", "released")
+        ]
+        assert records[0][1]["caller"].sub == "admin-sub"
+
+
+class TestWhoMayRelease:
+    def test_a_manager_is_denied(self, client, released, release_token, manager_token):
+        """Requester, 2026-10-05: only REC admins release."""
+        response = client.post(RELEASE, headers=delegated(release_token, manager_token))
+        assert response.status_code == 403
+        assert response.json()["detail"]["code"] == "forbidden"
+        assert released.calls == []
+
+    def test_a_platform_admin_is_allowed(self, client, released, release_token, operator_token):
+        actor = operator_token("some-other-org", roles=("platform-admin",))
+        response = client.post(RELEASE, headers=delegated(release_token, actor))
+        assert response.status_code == 200
+
+    def test_an_admin_of_another_organization_is_denied(
+        self, client, released, release_token, operator_token
+    ):
+        actor = operator_token(OTHER_ORG, "admins")
+        response = client.post(RELEASE, headers=delegated(release_token, actor))
+        assert response.status_code == 403
+        assert released.calls == []
+
+    def test_the_invite_scope_does_not_release(
+        self, client, released, community_token, admin_token
+    ):
+        response = client.post(RELEASE, headers=delegated(community_token, admin_token))
+        assert response.status_code == 403
+        assert released.calls == []
+
+    def test_an_admins_own_token_is_denied(self, client, released, admin_token):
+        response = client.post(RELEASE, headers={"Authorization": f"Bearer {admin_token}"})
+        assert response.status_code in (401, 403)
+        assert released.calls == []
+
+    def test_a_missing_actor_token_is_401(self, client, released, release_token):
+        response = client.post(RELEASE, headers=delegated(release_token, None))
+        assert response.status_code == 401
+        assert response.json()["detail"]["code"] == "actor_token_invalid"
+
+    def test_the_oauth2_proxy_header_is_refused(self, client, released, release_token, admin_token):
+        from celine.onboarding.config.settings import settings
+
+        headers = delegated(release_token, admin_token)
+        headers[settings.jwt_header_name] = admin_token
+        response = client.post(RELEASE, headers=headers)
+        assert response.status_code == 401
+        assert response.json()["detail"]["code"] == "proxy_token_refused"
+        assert released.calls == []

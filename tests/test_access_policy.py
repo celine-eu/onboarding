@@ -34,7 +34,7 @@ ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 
 # Reachable only by a service acting for an operator, so no caller holds it alone
 # and no capability set below contains it.
-DELEGATED = {"members.invite"}
+DELEGATED = {"members.invite", "members.release"}
 
 # Granted by the realm role `platform-admin` and nothing else: no organization
 # group, no scope (the registry sync, REQ-0009).
@@ -749,3 +749,52 @@ def test_missing_policy_bundle_is_permissive_only_when_asked(tmp_path, monkeypat
     decision = broken.allow(operator(), Capability.SUBMISSIONS_PURGE, organization=ORG)
     assert decision.allowed
     assert decision.reason == "policy-engine-unavailable-permissive"
+
+
+# ---------------------------------------------------------------------------
+# Delegated release — REC admins only (requester, 2026-10-05)
+# ---------------------------------------------------------------------------
+
+RELEASE = Capability.MEMBERS_RELEASE
+
+
+def release_service() -> JwtUser:
+    return service("onboarding.members.release")
+
+
+def test_a_service_acting_for_a_rec_admin_may_release(policy):
+    actor = operator(org=ORG, groups=("admins",))
+    decision = policy.allow(release_service(), RELEASE, organization=ORG, actor=actor)
+    assert decision.allowed
+
+
+def test_a_service_acting_for_the_platform_admin_may_release(policy):
+    actor = operator(roles=(PLATFORM_ADMIN_ROLE,))
+    assert policy.allow(release_service(), RELEASE, organization=ORG, actor=actor).allowed
+
+
+@pytest.mark.parametrize("tier", ["managers", "editors", "viewers"])
+def test_no_tier_below_admins_may_release(policy, tier):
+    actor = operator(org=ORG, groups=(tier,))
+    decision = policy.allow(release_service(), RELEASE, organization=ORG, actor=actor)
+    assert not decision.allowed
+    assert decision.reason == "the acting operator holds no group granting this action"
+
+
+def test_an_admin_of_another_rec_may_not_release(policy):
+    actor = operator(org=OTHER_ORG, groups=("admins",))
+    assert not policy.allow(release_service(), RELEASE, organization=ORG, actor=actor).allowed
+
+
+def test_the_invite_scope_does_not_release(policy):
+    actor = operator(org=ORG, groups=("admins",))
+    decision = policy.allow(community_service(), RELEASE, organization=ORG, actor=actor)
+    assert not decision.allowed
+    assert "missing a scope" in (decision.reason or "")
+
+
+def test_an_admins_own_token_may_not_release(policy):
+    admin = operator(org=ORG, groups=("admins",))
+    decision = policy.allow(admin, RELEASE, organization=ORG)
+    assert not decision.allowed
+    assert "only through a service" in (decision.reason or "")

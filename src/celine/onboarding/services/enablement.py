@@ -364,9 +364,21 @@ async def _write_member_did(ctx: RunContext) -> str | None:
 
 
 async def _revoke_dataspace_identity(ctx: RunContext, row: SubmissionEnablementStep) -> str:
-    from celine.onboarding.services.dataspace_identity import revoke_user_identity
+    """The membership and the recorded credential, then **every other** credential
+    this community linked to the DID, whatever its role.
 
-    return await revoke_user_identity(ctx.submission)
+    ds moves a login to the next community's DID only once the old DID holds no
+    active credential (ds ADR-0028), and the member's sharing page may have
+    issued one since approval. The same act as the dashboard's release
+    (`member_release`), which says how: found through the login, by email here.
+    The recorded subject id is cleared, so a re-approval mints a new DID.
+    """
+    from celine.onboarding.services import member_release
+
+    result = await member_release._identity(ctx.submission, username=None)
+    if result.status == member_release.FAILED:
+        raise ValueError(result.detail)
+    return result.detail
 
 
 async def _run_dataspace_share(ctx: RunContext) -> StepOutcome:
@@ -455,6 +467,9 @@ PIPELINE: tuple[StepSpec, ...] = (
         fail_closed=True,
         run=_run_registry_member,
         revoke=_revoke_registry_member,
+        # Releasing the login resolves the member through the registry; a member
+        # deactivated while that failed would be released by nobody here.
+        waits_for=EnablementStep.KEYCLOAK_USER,
     ),
     StepSpec(
         EnablementStep.DATASPACE_IDENTITY,
@@ -765,6 +780,17 @@ async def retry(
         return await load_steps(db, submission.id)
 
 
+#: How a row's ``last_error`` begins when its *revocation* failed, as opposed to
+#: its run. Such a row is revoked again by the next revocation.
+REVOKE_FAILED = "revoke failed"
+
+
+def _revoke_failed(row: SubmissionEnablementStep) -> bool:
+    return row.status == EnablementStatus.FAILED and (row.last_error or "").startswith(
+        REVOKE_FAILED
+    )
+
+
 async def revoke(db: AsyncSession, submission: Submission) -> dict[str, SubmissionEnablementStep]:
     """Undo enablement, in reverse order.
 
@@ -782,7 +808,9 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
         if spec.revoke_when is not None:
             if not spec.revoke_when(submission):
                 continue
-        elif row.status != EnablementStatus.SUCCEEDED:
+        elif row.status != EnablementStatus.SUCCEEDED and not _revoke_failed(row):
+            # A row whose revocation failed is revoked again: that is what
+            # "calling this again is the retry" has to mean for it.
             continue
         if spec.revoke is None:
             logger.info("Step %s has no revocation path; leaving it in place", spec.step)
@@ -805,7 +833,7 @@ async def revoke(db: AsyncSession, submission: Submission) -> dict[str, Submissi
             detail = await spec.revoke(ctx, row)
         except Exception as exc:
             row.status = EnablementStatus.FAILED
-            row.last_error = f"revoke failed — {type(exc).__name__}: {exc}"[:4000]
+            row.last_error = f"{REVOKE_FAILED} — {type(exc).__name__}: {exc}"[:4000]
             logger.warning("Revoking %s failed for %s: %s", spec.step, submission.ref, exc)
             refused.add(spec.step)
             await db.commit()

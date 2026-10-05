@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -250,10 +251,22 @@ def review_verify(
     method: str = typer.Option(
         ...,
         "--method",
-        help="offline (the REC checked documents outside the platform) or "
+        help="offline (the REC checked documents outside the platform), "
+        "offline-with-evidence (the same, with the evidence file; give --evidence) or "
         "uploaded-document (a document stored on the submission; give --document)",
     ),
     document: str = typer.Option(None, "--document", help="Document id, for uploaded-document"),
+    evidence: Path = typer.Option(
+        None,
+        "--evidence",
+        help="The evidence file the community keeps, for offline-with-evidence. "
+        "Hashed, never uploaded or stored: only its sha256 is recorded",
+        exists=True,
+        dir_okay=False,
+    ),
+    evidence_kind: str = typer.Option(
+        "utility_bill", "--evidence-kind", help="utility_bill, id_document or other"
+    ),
     note: str = typer.Option(None, "--note", help="Optional note, stored encrypted"),
     local: bool = _LOCAL,
     api_url: str = _API_URL,
@@ -264,15 +277,29 @@ def review_verify(
 
     A second verification supersedes the first; both stay on record.
     """
-    if method not in ("offline", "uploaded-document"):
-        typer.secho("--method must be offline or uploaded-document", fg=typer.colors.RED, err=True)
+    if method not in ("offline", "offline-with-evidence", "uploaded-document"):
+        typer.secho(
+            "--method must be offline, offline-with-evidence or uploaded-document",
+            fg=typer.colors.RED,
+            err=True,
+        )
         raise typer.Exit(1)
+    digests = None
+    if method == "offline-with-evidence":
+        if evidence is None:
+            typer.secho("offline-with-evidence needs --evidence", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1)
+        import hashlib
+
+        digests = [
+            {"kind": evidence_kind, "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()}
+        ]
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)
         try:
             found = await _resolve(transport, rec, ref)
-            row = await transport.verify(rec, found["id"], method, document, note)
+            row = await transport.verify(rec, found["id"], method, document, note, evidence=digests)
         finally:
             await transport.aclose()
         if as_json:

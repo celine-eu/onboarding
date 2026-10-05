@@ -34,10 +34,12 @@ from celine.onboarding.security.policy import Capability, get_policy
 from celine.onboarding.services import (
     audit_service,
     existing_member,
+    key_assertion,
     review,
     revision,
     submission_service,
     supply_boundary,
+    verification,
 )
 from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.services.enablement import EnablementError
@@ -67,6 +69,7 @@ def _read(submission, *, reveal: bool = False) -> SubmissionAdminRead:
     model.supply_boundary_area = supply_boundary.area_of(submission)
     model.supply_boundary_area_name = supply_boundary.area_name_of(submission)
     model.existing_member_pending = existing_member.pending(submission)
+    model.verification_needs_evidence = key_assertion.evidence_required(submission.rec_slug)
     if reveal:
         return model
     return model.model_copy(
@@ -348,6 +351,10 @@ async def delete_submission(
             f.unlink(missing_ok=True)
         old_dir.rmdir()
 
+    # A verification a holder accepted an assertion from is kept, detached, for
+    # the retention period (REQ-0045, GDPR Art. 17(3)(e)); expired ones go now.
+    kept = verification.retain_on_erasure(submission)
+    await verification.purge_expired(db)
     await db.delete(submission)
     await db.commit()
 
@@ -359,7 +366,8 @@ async def delete_submission(
         actor=actor,
         rec_slug=rec_slug,
         ip=ip,
-        detail=f"ref={ref} — GDPR erasure",
+        detail=f"ref={ref} — GDPR erasure"
+        + (f" (kept {kept} verification(s) backing a grant)" if kept else ""),
     )
 
 

@@ -443,10 +443,40 @@ async def disable_participant(submission: Submission) -> str:
     if community is None:
         return "this community declares no rec_registry binding"
 
+    return (await release_login(community, submission.ref)).detail
+
+
+@dataclass(frozen=True)
+class LoginRelease:
+    """What releasing a member's login came to, for a step row and a release answer.
+
+    ``code`` is ``released`` (this call changed something), ``already_released``
+    (nothing left to change) or ``no_account`` (no member, or no account, to
+    release); ``detail`` is the English sentence.
+    """
+
+    code: str
+    detail: str
+
+
+async def release_login(community: str, member_key: str) -> LoginRelease:
+    """Release ``(community, member_key)``'s login: disabled, out of the REC's
+    Keycloak organization and its groups, every session ended.
+
+    The provisioning service's ``POST …/disable`` does all three since its 1.5.0
+    (requester, 2026-10-05: the account is **moved**, not closed — the next REC's
+    upsert enables it again). This reads only ``changed`` and ``username``: the
+    SDK's schema predates the fields saying which part changed.
+
+    Keyed on the registry's pair, so a member imported into the registry is
+    released like one onboarded here. **Call it while the member is still
+    ``active``**: the service resolves the pair through the registry export,
+    which carries active members only.
+    """
     from celine.sdk.provisioning import ProvisioningApiError
 
     try:
-        result = await _get_client().disable(community, submission.ref)
+        result = await _get_client().disable(community, member_key)
     except ProvisioningApiError as exc:
         code = exc.code
         if exc.status_code == 404 and code in NOTHING_TO_REVOKE:
@@ -457,10 +487,10 @@ async def disable_participant(submission: Submission) -> str:
             logger.info(
                 "Provisioning has no account for %s/%s (%s); nothing to disable",
                 community,
-                submission.ref,
+                member_key,
                 code,
             )
-            return NOTHING_TO_REVOKE[code]
+            return LoginRelease("no_account", NOTHING_TO_REVOKE[code])
         # Every other 404 fails, `community_not_found` above all: the service
         # could not look the member up, so it cannot say whether a login exists,
         # and reading that as "nothing to revoke" would mark the row revoked while
@@ -468,13 +498,15 @@ async def disable_participant(submission: Submission) -> str:
         # either — it is as likely a wrong `PROVISIONING_URL` as a missing member.
         raise _refused("revoking a login", exc, community=community) from exc
 
-    return (
-        f"disabled login {result.username}"
-        if result.changed
-        # Not a failure and must not be reported as one: the revocation was
-        # already in force.
-        else f"login {result.username} was already disabled"
-    )
+    if result.changed:
+        return LoginRelease(
+            "released",
+            f"released login {result.username}: disabled, out of the community's "
+            f"organization, sessions ended",
+        )
+    # Not a failure and must not be reported as one: the release was already in
+    # force.
+    return LoginRelease("already_released", f"login {result.username} was already released")
 
 
 #: The `404` codes on a revocation that mean there is nothing to revoke, and what

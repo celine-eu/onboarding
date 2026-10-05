@@ -77,6 +77,10 @@ required_groups := {
 	"enablement.revoke": {"admins"},
 	# Delegated: the group is the acting operator's, never the caller's.
 	"members.invite": {"admins", "managers"},
+	# Delegated, and admins only: releasing a member withdraws their grants,
+	# revokes their credential and moves their login out of the REC, which is
+	# `enablement.revoke`'s grant (requester, 2026-10-05: only REC admins).
+	"members.release": {"admins"},
 	# The console's drift check: whether the registry's areas match the
 	# template. The REC's own managers and admins, and the platform admin. No
 	# scope grants it.
@@ -112,11 +116,12 @@ required_scopes := {
 	"audit.read": {"onboarding.audit.read"},
 	"export": {"onboarding.export"},
 	"members.invite": {"onboarding.members.invite"},
+	"members.release": {"onboarding.members.release"},
 }
 
 # Actions reachable only by a service acting for a verified operator. See the
 # header.
-delegated_actions := {"members.invite"}
+delegated_actions := {"members.invite", "members.release"}
 
 # Actions only the platform role grants. The registry sync (`recs.write`) pushes
 # a template's areas to the REC registry and sets the community up through the

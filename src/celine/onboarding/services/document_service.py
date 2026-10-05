@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -64,6 +65,10 @@ async def save_document(
         original_filename=file.filename or "unknown",
         mime_type=mime,
         size_bytes=size,
+        # Of the bytes as uploaded, before encryption: what a verification copies
+        # as its evidence digest, and what the file the community keeps hashes to
+        # (REQ-0041).
+        sha256=hashlib.sha256(content).hexdigest(),
     )
     db.add(document)
     await db.commit()
@@ -93,6 +98,21 @@ def get_file_path(document: Document) -> Path:
     return Path(settings.data_dir) / document.file_path
 
 
+def digest(document: Document) -> str | None:
+    """The document's sha256, computed from the stored file when it predates the column.
+
+    Stored on the row once computed. ``None`` when the file is gone.
+    """
+    if document.sha256:
+        return document.sha256
+    try:
+        content = read_file(document)
+    except FileNotFoundError:
+        return None
+    document.sha256 = hashlib.sha256(content).hexdigest()
+    return document.sha256
+
+
 def read_file(document: Document) -> bytes:
     from celine.onboarding.services.crypto import decrypt
 
@@ -112,7 +132,9 @@ async def discard_documents(db: AsyncSession, submission: Submission) -> int:
     Files go first, rows after: an interruption leaves a row without its file,
     which the console reports as gone (410), never a file nothing points at. The
     extractions go with their rows (`ON DELETE CASCADE`); verifications and
-    revisions keep their row with `document_id` set to null.
+    revisions keep their row with `document_id` set to null, and a verification
+    keeps the document's digest (`evidence`, REQ-0041). The community keeps the
+    evidence itself, outside the platform, for the retention period.
 
     Returns how many documents were discarded.
     """

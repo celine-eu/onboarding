@@ -567,12 +567,14 @@ class TestRevokingALogin:
 
     async def test_a_revocation_that_happened_says_so(self, bound, enabled, api):
         disable_route(api, changed=True, username="alice.rossi@example.org")
-        assert "disabled login alice.rossi@example.org" == await pv.disable_participant(_sub())
+        detail = await pv.disable_participant(_sub())
+        assert detail.startswith("released login alice.rossi@example.org")
+        assert "out of the community's organization" in detail
 
     async def test_one_already_in_force_is_not_reported_as_new(self, bound, enabled, api):
         disable_route(api, changed=False, username="alice.rossi@example.org")
         detail = await pv.disable_participant(_sub())
-        assert "already disabled" in detail
+        assert "already released" in detail
 
     @pytest.mark.parametrize(
         ("code", "detail"),
@@ -784,3 +786,34 @@ class TestNothingHereAdministersKeycloak:
             "dataspace_keycloak_update_existing",
         ):
             assert not hasattr(pv.settings, name), name
+
+
+
+class TestReleasingALoginByTheRegistrysPair:
+    """`release_login(community, key)`: what the release route uses for a member
+    who may have no submission. The service releases (disabled, out of the
+    organization, sessions ended); this reads its answer into a code."""
+
+    async def test_a_release_that_happened(self, enabled, api):
+        route = disable_route(api, key="ex-00001", changed=True, org_left=True)
+        outcome = await pv.release_login(COMMUNITY, "ex-00001")
+        assert route.called
+        assert outcome.code == "released"
+
+    async def test_one_already_in_force(self, enabled, api):
+        disable_route(api, key="ex-00001", changed=False)
+        assert (await pv.release_login(COMMUNITY, "ex-00001")).code == "already_released"
+
+    @pytest.mark.parametrize("code", ["member_not_found", "account_not_found"])
+    async def test_nothing_to_release(self, enabled, api, code):
+        api.post(f"/participants/{COMMUNITY}/ex-00001/disable").mock(
+            return_value=error(404, code, "…")
+        )
+        assert (await pv.release_login(COMMUNITY, "ex-00001")).code == "no_account"
+
+    async def test_a_managed_membership_fails_the_step(self, enabled, api):
+        api.post(f"/participants/{COMMUNITY}/ex-00001/disable").mock(
+            return_value=error(409, "managed_membership", "…")
+        )
+        with pytest.raises(ValueError):
+            await pv.release_login(COMMUNITY, "ex-00001")
