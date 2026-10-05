@@ -26,14 +26,17 @@ def _collect_documents(submission: Submission) -> list[tuple[str, bytes, str]]:
     return result
 
 
-def _build_download_url(submission: Submission) -> str | None:
-    from celine.onboarding.services.crypto import generate_download_token
+def review_url(submission: Submission) -> str:
+    """The submission's page in the admin console.
 
-    token = generate_download_token(submission.id)
-    if token is None:
-        return None
+    Operators are sent here, never to a file: the console requires a sign-in,
+    checks the operator reviews this community, and records each document opened.
+    """
     base = notifications_base_url(submission.rec_slug)
-    return f"{base}/api/downloads/{quote(token, safe='')}"
+    return (
+        f"{base}/admin/{quote(submission.rec_slug, safe='')}/submissions/"
+        f"{quote(str(submission.id), safe='')}"
+    )
 
 
 def notifications_base_url(rec_slug: str) -> str:
@@ -75,18 +78,14 @@ async def handle_submission_notification(submission: Submission) -> None:
         except Exception:
             logger.exception("Storage backend upload failed for %s", submission.ref)
 
-    download_url: str | None = None
-    if storage_result and storage_result.folder_url:
-        download_url = storage_result.folder_url
-    else:
-        download_url = _build_download_url(submission)
-
     email_enabled = notifications.get("email", True)
     if email_enabled and settings.smtp_host:
         try:
             from celine.onboarding.services.email_service import send_submission_email
 
-            send_submission_email(submission, download_url=download_url)
+            # Not the storage backend's link either: an S3 one is presigned, which
+            # opens the summary for whoever holds the email.
+            send_submission_email(submission, review_url=review_url(submission))
         except Exception:
             logger.exception("Email notification failed for %s", submission.ref)
 

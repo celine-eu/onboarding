@@ -47,13 +47,15 @@ class ExpiredError(OtpError):
 
 
 def _hmac_key() -> bytes:
-    """Key for the phone/code hashes.
+    """Key for the phone/code hashes: `OTP_HMAC_KEY`, never `ENCRYPTION_KEY`.
 
-    ENCRYPTION_KEY is already mandatory in production, so reuse it rather than
-    introducing a second secret to manage. In dev without a key the hashes are
-    unkeyed — acceptable because there is no real PII to protect there.
+    A separate secret, so rotating the encryption keys leaves the phone hashes
+    (rate limits, lockouts) intact, and one key does not both encrypt and sign.
+    Startup refuses an empty one outside dev while phone verification is on
+    (config/posture.py). In dev without one the hashes are unkeyed — acceptable
+    because there is no real PII to protect there.
     """
-    return (settings.encryption_key or "").encode("utf-8")
+    return (settings.otp_hmac_key or "").encode("utf-8")
 
 
 def hash_phone(e164: str) -> str:

@@ -24,7 +24,8 @@ ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"
 async def extract_from_upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],
-    _session: Submission = Depends(require_session),
+    session: Submission = Depends(require_session),
+    db: AsyncSession = Depends(get_db),
 ):
     from celine.onboarding.extractors.openai_extractor import OpenAIExtractor
 
@@ -36,6 +37,7 @@ async def extract_from_upload(
 
     extractor = OpenAIExtractor()
     extracted_data, _ = await extractor.extract_pages(pages)
+    await extraction_service.record_scan(db, session, id_card=False, data=extracted_data)
     return extracted_data
 
 
@@ -44,7 +46,8 @@ async def extract_from_upload(
 async def extract_from_id_upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],
-    _session: Submission = Depends(require_session),
+    session: Submission = Depends(require_session),
+    db: AsyncSession = Depends(get_db),
 ):
     from celine.onboarding.extractors.fields import ID_CARD_FIELDS
     from celine.onboarding.extractors.openai_extractor import (
@@ -66,6 +69,7 @@ async def extract_from_id_upload(
         user_prompt=ID_CARD_USER_PROMPT,
         fields=ID_CARD_FIELDS,
     )
+    await extraction_service.record_scan(db, session, id_card=True, data=extracted_data)
     return extracted_data
 
 
@@ -105,4 +109,7 @@ async def confirm_extraction(
     if extraction.confirmed_by_user:
         raise HTTPException(409, "Extraction already confirmed")
 
-    return await extraction_service.confirm_extraction(db, extraction, data)
+    try:
+        return await extraction_service.confirm_extraction(db, extraction, data)
+    except extraction_service.ScannedValueEditError as exc:
+        raise HTTPException(422, str(exc)) from exc

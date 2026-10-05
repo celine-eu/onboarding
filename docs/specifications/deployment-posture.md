@@ -30,7 +30,9 @@ all of them in one message:
 - `SMTP_HOST` still the workspace's Mailpit, or `SMTP_TLS=false` with a relay configured.
   `SMTP_HOST=` (empty) switches email off and is not refused;
 - `OIDC_CLIENT_SECRET` or `DS_ONBOARDING_CLIENT_SECRET` equal to its client id, the dev realm's
-  convention.
+  convention;
+- phone verification on without `OTP_HMAC_KEY`, or with an `OTP_HMAC_KEY` that is one of the
+  `ENCRYPTION_KEY` keys (REQ-0033).
 
 ### REQ-0029 — in `CELINE_ENV=dev` the same settings are one warning, and the service starts
 

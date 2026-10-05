@@ -67,6 +67,24 @@ def posture_guard(settings: Settings, env: str | None = None) -> PostureGuard:
             "switch phone verification off.",
         )
 
+    # The OTP hashes are keyed with their own secret. Unset, a phone number's
+    # hash is a plain SHA-256 that anyone can recompute from the number, and a
+    # code's hash can be brute-forced offline from a database read.
+    if settings.phone_verification_enabled and not settings.otp_hmac_key.strip():
+        guard.add(
+            "OTP_HMAC_KEY",
+            "is not set while phone verification is on",
+            "Set OTP_HMAC_KEY to a random secret of its own (not ENCRYPTION_KEY).",
+        )
+    elif settings.otp_hmac_key.strip() and settings.otp_hmac_key.strip() in {
+        k.strip() for k in settings.encryption_key.split(",")
+    }:
+        guard.add(
+            "OTP_HMAC_KEY",
+            "is one of the ENCRYPTION_KEY keys",
+            "Give OTP_HMAC_KEY its own random secret.",
+        )
+
     # The issuer is compared against every operator token's `iss`, and its JWKS
     # is what admin requests are verified with. The default names the celine-dev
     # workspace's realm, which exists nowhere else.

@@ -28,6 +28,8 @@ DEPLOYED = dict(
     oidc_client_secret="a-real-secret",
     smtp_host="smtp.rec.example.org",
     sms_provider="none",
+    encryption_key="",
+    otp_hmac_key="an-otp-hmac-secret",
     require_encryption=True,
     allow_permissive_policy=False,
     allow_local_admin=False,
@@ -94,6 +96,29 @@ def test_switching_email_off_is_not_a_violation():
     @verifies REQ-0028
     """
     enforce_posture(_settings(smtp_host=""), env="staging")
+
+
+def test_phone_verification_without_its_own_otp_key_is_refused():
+    """The OTP hashes need OTP_HMAC_KEY outside dev; ENCRYPTION_KEY is not reused.
+
+    @verifies REQ-0033
+    """
+    real_gateway = dict(sms_provider="brevo", dpa_sms_signed=True)
+    with pytest.raises(InsecureConfiguration, match="OTP_HMAC_KEY"):
+        enforce_posture(_settings(otp_hmac_key="", **real_gateway), env="staging")
+    key = "x" * 43 + "="
+    with pytest.raises(InsecureConfiguration, match="OTP_HMAC_KEY"):
+        enforce_posture(
+            _settings(encryption_key=f"other,{key}", otp_hmac_key=key, **real_gateway),
+            env="staging",
+        )
+
+
+def test_no_otp_key_is_needed_with_phone_verification_off():
+    """
+    @verifies REQ-0033
+    """
+    enforce_posture(_settings(otp_hmac_key=""), env="staging")
 
 
 def test_a_real_sms_gateway_is_not_a_violation():

@@ -301,6 +301,19 @@ def _warn_document_processing() -> None:
     )
 
 
+def _warn_removed_download_token_ttl() -> None:
+    """Say once, at boot, that `DOWNLOAD_TOKEN_TTL` is no longer read.
+
+    There is no emailed download link any more: operators are sent to the admin
+    console, which needs a sign-in and records each document opened.
+    """
+    if settings.removed_download_token_ttl:
+        logger.warning(
+            "DOWNLOAD_TOKEN_TTL is set, and no longer read: submission emails link to "
+            "the admin console, not to a download. Remove it from your .env and environment."
+        )
+
+
 def _warn_removed_subject_source() -> None:
     """Say once, at boot, that `DATASPACE_SUBJECT_SOURCE` is no longer read.
 
@@ -620,12 +633,19 @@ async def lifespan(app: FastAPI):
     _warn_document_processing()
     _warn_phone_verification()
     _warn_removed_subject_source()
+    _warn_removed_download_token_ttl()
 
     await _validate_dataspace_config()
     _validate_admin_config()
     _validate_provisioning_config()
 
-    if settings.require_encryption and not settings.encryption_key:
+    # A malformed key fails here, at boot, not on the first participant's save.
+    # The message names the entry's position, never its value.
+    from celine.onboarding.services.crypto import parse_keys
+
+    parse_keys(settings.encryption_key)
+
+    if settings.require_encryption and not settings.encryption_key.replace(",", "").strip():
         raise RuntimeError(
             "\n\n"
             "═══════════════════════════════════════════════════════════════\n"
@@ -711,7 +731,6 @@ def create_app() -> FastAPI:
     from celine.onboarding.api.config import router as config_router
     from celine.onboarding.api.consent_documents import router as consent_docs_router
     from celine.onboarding.api.documents import router as documents_router
-    from celine.onboarding.api.downloads import router as downloads_router
     from celine.onboarding.api.eligibility import router as eligibility_router
     from celine.onboarding.api.extractions import router as extractions_router
     from celine.onboarding.api.health import router as health_router
@@ -722,7 +741,6 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix="/api")
     app.include_router(recs_router, prefix="/api")
-    app.include_router(downloads_router, prefix="/api")
     # Before the `{rec_slug}` block, not after: `/api/me/...` is a literal path
     # and `{rec_slug}` would match `me`. The admin router gets the opposite
     # treatment — last — because its own prefix is `/api/admin`, which no

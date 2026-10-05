@@ -3,7 +3,7 @@
 **Public (session-gated, rate-limited):**
 
 Every per-community route is under `/api/{rec}`, where `{rec}` is the template's slug; an
-unknown slug is `404`. Only the cross-community routes, downloads, `/api/me/**` and
+unknown slug is `404`. Only the cross-community routes, `/api/me/**` and
 `/api/health` are not.
 
 | Method | Path | Auth | Notes |
@@ -27,7 +27,6 @@ unknown slug is `404`. Only the cross-community routes, downloads, `/api/me/**` 
 | `POST` | `/api/{rec}/extractions/{id}/confirm` | session | Confirm extraction (ownership check) |
 | `POST` | `/api/{rec}/submissions/{id}/verify-phone` | session | Send SMS OTP (10/hr) |
 | `POST` | `/api/{rec}/submissions/{id}/confirm-phone` | session | Confirm OTP, mark verified (20/hr) |
-| `GET` | `/api/downloads/{token}` | token | Time-limited document download |
 
 **The coverage check for a community whose areas are boundaries.**
 `POST /api/{rec}/eligibility` takes `{"address"}` or `{"lat", "lng"}` as before and

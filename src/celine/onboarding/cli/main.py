@@ -411,5 +411,40 @@ def check_offers(
     asyncio.run(_run())
 
 
+@app.command()
+def rotate_encryption_key():
+    """Re-encrypt every encrypted column and stored document with the first key.
+
+    Rotation: put the new key first in ENCRYPTION_KEY and keep the old one after
+    it (``ENCRYPTION_KEY=new,old``), restart the service, run this, then drop the
+    old key. Values stored unencrypted are encrypted. Safe to run again.
+
+    Exits 1 when a value no configured key opens — then do not drop the old key.
+    """
+    from celine.onboarding.models.database import async_session
+    from celine.onboarding.services import crypto, key_rotation
+
+    crypto.reset()
+    if not crypto.parse_keys(settings.encryption_key):
+        typer.echo("ENCRYPTION_KEY is not set: there is nothing to rotate to.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> key_rotation.RotationReport:
+        async with async_session() as db:
+            return await key_rotation.rotate_all(db)
+
+    report = asyncio.run(_run())
+    for where, count in sorted(report.rewritten.items()):
+        typer.echo(f"  {where}: {count} re-encrypted")
+    typer.echo(f"{report.unchanged} value(s) already under the first key.")
+    if report.missing_files:
+        typer.echo(f"{report.missing_files} document row(s) without a stored file.")
+    if not report.ok:
+        for item in report.undecryptable:
+            typer.echo(f"  not decryptable with any configured key: {item}", err=True)
+        typer.echo("Keep every old key until these are resolved.", err=True)
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

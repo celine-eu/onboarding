@@ -64,13 +64,15 @@ All PII is encrypted using Fernet symmetric encryption (`ENCRYPTION_KEY`). This 
 - Database columns: `first_name`, `last_name`, `email`, `phone`, `fiscal_code`, `pod_code`, `consent_ip`, `supply_municipality`, `supply_boundary_id`
 - JSON fields: `extracted_data`, `id_extracted_data` (OCR results), `raw_response` (LLM responses), `supply_address` (the address the eligibility step checked)
 
-Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false`, which is accepted only with `CELINE_ENV=dev`. Legacy unencrypted data is read gracefully during migration.
+Encryption is mandatory by default. The app refuses to start without `ENCRYPTION_KEY` unless `REQUIRE_ENCRYPTION=false`, which is accepted only with `CELINE_ENV=dev`.
+
+`ENCRYPTION_KEY` may list several keys, comma-separated: the first encrypts, all of them decrypt. To rotate, put the new key first and keep the old one after it, restart, run `onboarding-cli rotate-encryption-key` (re-encrypts every encrypted column and stored document, and encrypts any value stored without a key), then drop the old key. A value no configured key decrypts is an error, logged and raised, never returned as if it were the value; a value stored unencrypted (written with `REQUIRE_ENCRYPTION=false`) is read with a warning until the rotation encrypts it (REQ-0032).
 
 ### Session and authentication
 
 - **Applicant sessions**: 32-byte random tokens with 10-minute inactivity TTL. All data-mutating endpoints (including extraction) require a valid session token via `X-Session-Token` header.
 - **Admin endpoints** (`/api/admin/**`): a Keycloak identity, verified against the issuer's JWKS (signature, issuer, audience, expiry). Authorised by the caller's **organization + group** for operators (`admins`/`managers`/`editors`/`viewers` inside a Keycloak organization typed `rec`, valid for that organization only; the realm role `platform-admin` is the only platform-wide grant, and a realm group grants nothing) and by **scope** for service accounts, decided by OPA policies in `policies/`. Every action is audit-logged against the actor.
-- **Download links**: Fernet-encrypted tokens with configurable TTL (default 24 hours).
+- **Submission emails**: the participant receives a receipt with no link; each operator receives a message of their own with a link to the submission in the admin console, where opening a document needs a sign-in and is audited. No email carries a link that opens the documents (REQ-0031).
 
 ### HTTP hardening
 
@@ -192,7 +194,7 @@ address is the only thing that says whether the dependency is there:
 
 | Variable | Description |
 |---|---|
-| `ENCRYPTION_KEY` | Fernet key for PII encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it with `CELINE_ENV=dev` only |
+| `ENCRYPTION_KEY` | Fernet key for PII encryption, or several comma-separated during a rotation (first encrypts, all decrypt). Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The one thing you must set; `REQUIRE_ENCRYPTION=false` skips it with `CELINE_ENV=dev` only |
 
 ### Defaulted, but wrong off the celine-dev workspace
 
@@ -237,9 +239,9 @@ A deployment still setting any of them starts with scanning off and logs the ren
 | Variable | Default | Description |
 |---|---|---|
 | `REQUIRE_ENCRYPTION` | `true` | App refuses to start without `ENCRYPTION_KEY`. `false` is accepted with `CELINE_ENV=dev` only. |
+| `OTP_HMAC_KEY` | *(none)* | Key of the phone and OTP-code hashes, separate from `ENCRYPTION_KEY`. Required outside `CELINE_ENV=dev` while phone verification is on. Changing it voids pending codes and resets per-phone rate limits |
 | `SECURITY_HEADERS` | `true` | Adds security headers to all responses. Disable if your reverse proxy handles them. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated allowed origins |
-| `DOWNLOAD_TOKEN_TTL` | `86400` | Download link expiry in seconds (default: 24 hours) |
 
 ### Application
 

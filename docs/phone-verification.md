@@ -61,7 +61,7 @@ rate-limited per IP, exactly like the other public submission endpoints.
 ## Security model
 
 - **Codes are never stored.** Only an HMAC-SHA256 of `phone:code` (keyed by
-  `ENCRYPTION_KEY`) is persisted, so a database dump does not reveal codes.
+  `OTP_HMAC_KEY`, a secret of its own, REQ-0033) is persisted, so a database dump does not reveal codes.
   The hash is bound to the phone number, so it cannot be replayed for a
   different number.
 - **Phone numbers are encrypted at rest** (`EncryptedString`) and additionally

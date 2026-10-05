@@ -210,11 +210,11 @@ notifications:
   notify:
     - admin@example.com
   # email: true                         # default true; set false to disable email entirely
-  # base_url: "https://onboarding.example.com"  # for download links; defaults to first CORS origin
+  # base_url: "https://onboarding.example.com"  # for the admin-console link in operator emails; defaults to first CORS origin
 
   # Storage backend — upload submission PDF + documents to external storage.
-  # When configured, email contains a link to storage instead of a download link.
-  # Without storage, email includes a time-bound download link (DOWNLOAD_TOKEN_TTL, default 72h).
+  # Emails never link to it: each operator gets a link to the submission in the
+  # admin console, and the participant a receipt with no link.
   #
   # Google Drive (per-template service account):
   # storage:

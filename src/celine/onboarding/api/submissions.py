@@ -16,7 +16,12 @@ from celine.onboarding.models.schemas import (
     SubmissionUpdate,
 )
 from celine.onboarding.models.submission import Submission, SubmissionStatus
-from celine.onboarding.services import existing_member, submission_service, template_service
+from celine.onboarding.services import (
+    existing_member,
+    extraction_service,
+    submission_service,
+    template_service,
+)
 from celine.onboarding.services.boundaries import BoundaryUnavailableError
 from celine.onboarding.workflows.engine import InvalidTransitionError
 
@@ -106,6 +111,14 @@ async def update_submission(
     if submission.status != SubmissionStatus.DRAFT:
         raise HTTPException(
             409, "This application has been submitted and can no longer be changed."
+        )
+    # What a scan read is the service's record, not the applicant's: dropped
+    # rather than refused, because the wizard sends its copy back with the form.
+    # The applicant corrects the declared fields; an operator may correct these
+    # through the admin API, which records who did.
+    if data.model_fields_set & extraction_service.SCANNED_FIELDS:
+        data = SubmissionUpdate.model_validate(
+            data.model_dump(exclude_unset=True, exclude=set(extraction_service.SCANNED_FIELDS))
         )
     try:
         return await submission_service.update_submission(

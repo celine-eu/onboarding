@@ -268,18 +268,30 @@ def test_off_nothing_reaches_the_extractor(switch, client, monkeypatch):
 
 @pytest.mark.parametrize("url", ["/api/rec-a/extract", "/api/rec-a/extract-id"])
 def test_on_the_stateless_scans_work(switch, client, monkeypatch, url):
+    """The scan is answered and also kept on the draft, as the service read it.
+
+    @verifies REQ-0034
+    """
     from celine.onboarding.extractors import openai_extractor
+    from celine.onboarding.services import extraction_service
 
     async def _extract(self, pages, **kw):
         return {"nome": "TEST"}, {}
 
+    recorded = []
+
+    async def _record(db, submission, *, id_card, data):
+        recorded.append((id_card, data))
+
     monkeypatch.setattr(openai_extractor.OpenAIExtractor, "extract_pages", _extract)
+    monkeypatch.setattr(extraction_service, "record_scan", _record)
     switch(dpa=True, endpoint=ENDPOINT)
 
     res = client.post(url, files=FILE)
 
     assert res.status_code == 200
     assert res.json() == {"nome": "TEST"}
+    assert recorded == [(url.endswith("-id"), {"nome": "TEST"})]
 
 
 @pytest.mark.parametrize(("method", "url", "kwargs"), GATED[2:])

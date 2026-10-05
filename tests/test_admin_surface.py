@@ -441,3 +441,30 @@ class TestStats:
         assert body["by_status"]["submitted"] == 3
         assert body["by_status"]["rejected"] == 0
         assert body["submissions_with_failed_steps"] == 2
+
+
+class TestScannedValuesByAnOperator:
+    def test_an_operator_may_change_them_and_is_recorded(
+        self, client, operator_token, audited, monkeypatch
+    ):
+        """The participant cannot; an operator can, and the trail names the field.
+
+        @verifies REQ-0034
+        """
+        given = []
+
+        async def _update(db, submission, data, background_tasks=None):
+            given.append(data)
+            return build_submission()
+
+        monkeypatch.setattr(submission_service, "update_submission", _update)
+        response = client.patch(
+            ONE,
+            json={"extracted_data": {"pod": "IT001E12345678"}},
+            headers=auth(operator_token(ORG, "admins")),
+        )
+        assert response.status_code == 200
+        assert given[0].extracted_data["pod"] == "IT001E12345678"
+        assert audited[-1]["action"] == "update"
+        assert "extracted_data" in audited[-1]["detail"]
+        assert audited[-1]["actor"].sub == "operator-sub"

@@ -82,7 +82,7 @@ existing_members:              # optional: "I am already a member" (see below)
 notifications:
   from: "noreply@my-rec.org"
   notify: [admin@my-rec.org]
-  base_url: "https://my-rec.example.com"   # base URL for download links in emails
+  base_url: "https://my-rec.example.com"   # base URL of the admin-console link in operator emails
   email: true                               # set false to disable email notifications
   storage:                                  # optional: upload submissions to external storage
     backend: s3                             # the only backend

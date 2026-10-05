@@ -461,7 +461,13 @@ email, and which client they came through.
 Reading the trail is not itself audited: it is granted to every tier, and logging
 each view would bury the actions worth finding under the act of looking for them.
 Downloading a *document* is audited, because a utility bill carries the address,
-supply point and consumption history; listing filenames is not.
+supply point and consumption history; listing filenames is not. This is the only
+way to the documents: a submission's email sends each operator a link to its page
+here, never to the files (REQ-0031).
+
+Changing what a scan read (`extracted_data`, `id_extracted_data`) is an operator's
+`PATCH`, recorded as `update` with the field names; the applicant cannot change
+them (REQ-0034).
 
 An attempted approval that a blocking step refused is recorded as
 `transition_failed`. The step rows say what broke; only the trail says who tried.

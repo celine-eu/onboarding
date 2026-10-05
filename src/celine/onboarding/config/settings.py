@@ -52,8 +52,15 @@ class Settings(BaseSettings):
     templates_dir: str = str(REPO_ROOT / "templates")
     max_upload_size_mb: int = 10
 
+    # One Fernet key, or several separated by commas: the first encrypts, all
+    # decrypt. Rotate with `onboarding-cli rotate-encryption-key` (services/crypto.py).
     encryption_key: str = ""
     require_encryption: bool = True
+    # The key of the phone-number and OTP-code hashes (services/otp.py). Its own
+    # secret, not ENCRYPTION_KEY: rotating the encryption keys must not change
+    # every stored phone hash, and a key that encrypts should not also sign.
+    # Required outside dev while phone verification is on (config/posture.py).
+    otp_hmac_key: str = ""
     # Set only once the endpoint at `llm_base_url` is operated by this
     # deployment's own operator, or covered by a processing agreement (GDPR Art. 28)
     # that keeps processing in the EU. See `document_processing_enabled`.
@@ -132,7 +139,10 @@ class Settings(BaseSettings):
     # asked for explicitly.
     allow_permissive_policy: bool = False
 
-    download_token_ttl: int = 86400  # 24 hours
+    # The emailed download link's lifetime until 2026-10-05, when the link was
+    # removed: operators are sent to the admin console instead. Declared so a
+    # leftover is reported at boot rather than refused as an unknown key.
+    removed_download_token_ttl: str = Field(default="", validation_alias="DOWNLOAD_TOKEN_TTL")
 
     # Public-endpoint rate limits, keyed per IP. Configurable because the right
     # value depends on the deployment: a community whose members share one
