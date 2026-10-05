@@ -61,6 +61,7 @@ dependencies = [
     # platform level; its policy input also needs `Subject.roles`: raise this
     # floor to `>=2.0.0` and re-lock once 2.0.0 is published. Until then the
     # local SDK checkout must be installed editable for the service to import.
+    # TODO: raise to the celine-sdk release that ships `celine.sdk.posture.docs_urls`.
     "celine-sdk>=1.24.0",
     "phonenumbers>=8.13",
 ]

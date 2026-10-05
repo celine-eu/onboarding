@@ -34,6 +34,9 @@ all of them in one message:
 - phone verification on without `OTP_HMAC_KEY`, or with an `OTP_HMAC_KEY` that is one of the
   `ENCRYPTION_KEY` keys (REQ-0033).
 
+On the same signal, `/docs`, `/redoc` and `/openapi.json` are not mounted outside dev (`404`)
+unless `CELINE_PUBLIC_DOCS=true`.
+
 ### REQ-0029 — in `CELINE_ENV=dev` the same settings are one warning, and the service starts
 
 The list above is logged once, as a warning, and startup proceeds exactly as it does without
