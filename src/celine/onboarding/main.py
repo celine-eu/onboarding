@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import openai
+from celine.sdk.posture import docs_urls
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -626,9 +627,11 @@ async def lifespan(app: FastAPI):
 
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
+    from celine.onboarding.services.service_auth import enforce_collector_posture
     from celine.onboarding.services.template_service import load_recs_from_db
 
     await load_recs_from_db()
+    enforce_collector_posture()
 
     _warn_document_processing()
     _warn_phone_verification()
@@ -697,6 +700,9 @@ def create_app() -> FastAPI:
         # shared delivery points read and the consent fields.
         version="0.5.0",
         lifespan=lifespan,
+        # Outside CELINE_ENV=dev none of /docs, /redoc, /openapi.json is mounted
+        # unless CELINE_PUBLIC_DOCS=true (REQ-0028).
+        **docs_urls(),
     )
 
     app.state.limiter = limiter
