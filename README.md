@@ -167,9 +167,7 @@ and `task dev` export `CELINE_ENV=dev` unless the shell sets it already, so
 `CELINE_ENV=staging task run:api` is the prod-like mode of the same entry point.
 The compose file passes `CELINE_ENV` through with no default.
 
-The check comes from `celine.sdk.posture`, which is not in a released celine-sdk
-yet: until it is, install the SDK checkout editable
-(`uv pip install --python .venv/bin/python -e ../celine-sdk`).
+The check comes from `celine.sdk.posture`, first released in celine-sdk 2.0.0.
 
 ### How the defaults are chosen
 

@@ -11,10 +11,6 @@ here, all of them in one message.
 In dev the same list is logged as one warning and startup proceeds, which is what
 the celine-dev workspace and `task run:api` (which exports `CELINE_ENV=dev`) rely
 on.
-
-TODO: `celine.sdk.posture` is not in a released celine-sdk yet. Raise the
-`celine-sdk` floor in pyproject.toml to the first release that ships it; until
-then this needs the local SDK checkout installed editable.
 """
 
 from __future__ import annotations

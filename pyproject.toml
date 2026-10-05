@@ -55,13 +55,10 @@ dependencies = [
     # `RecRegistryApiError` — the DID write and the supply-point read the POD
     # export is built on, first released in 1.16.0.
     #
-    # TODO: `celine.sdk.posture` (the CELINE_ENV startup guard, config/posture.py)
-    # is unreleased; 1.24.0 does not ship it. Neither does it ship
-    # `JwtUser.realm_roles`, and the access policy imports nothing else for the
-    # platform level; its policy input also needs `Subject.roles`: raise this
-    # floor to `>=2.0.0` and re-lock once 2.0.0 is published. Until then the
-    # local SDK checkout must be installed editable for the service to import.
-    # TODO: raise to the celine-sdk release that ships `celine.sdk.posture.docs_urls`.
+    # `>=2.0.0`: 2.0.0 is the first release with `celine.sdk.posture` (the
+    # CELINE_ENV startup guard, config/posture.py; `docs_urls` included) and
+    # `JwtUser.realm_roles`, the only platform-level import of the access policy,
+    # whose policy input also needs `Subject.roles`; 1.24.0 ships none of them.
     "celine-sdk>=2.0.0",
     "phonenumbers>=8.13",
 ]
