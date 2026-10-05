@@ -163,6 +163,11 @@ ISSUED = {
 }
 
 
+def _is_write(req: httpx.Request) -> bool:
+    """A POST that changes something — ``/users/resolve`` is a POST that only reads."""
+    return req.method == "POST" and "/users/resolve" not in str(req.url)
+
+
 def _handler(*, resolve=None, shares=None, offers=None, prov=None, post=None, issue=None):
     """One transport for every service a member request can touch."""
 
@@ -572,7 +577,7 @@ class TestSetDecision:
         posted: list[str] = []
 
         def handle(req: httpx.Request) -> httpx.Response:
-            if req.method == "POST":
+            if _is_write(req):
                 posted.append(str(req.url))
             return _handler()(req)
 
@@ -1383,7 +1388,7 @@ class TestTheDecisionGoesToTheHolder:
         await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=True)
 
         posted = [
-            (str(r.url), json.loads(r.read().decode())) for r in requests if r.method == "POST"
+            (str(r.url), json.loads(r.read().decode())) for r in requests if _is_write(r)
         ]
         assert len(posted) == 1
         url, body = posted[0]
@@ -1404,7 +1409,7 @@ class TestTheDecisionGoesToTheHolder:
 
         await ms.set_data_sharing(_member(), RELEASE_OFFER["id"], enabled=False)
 
-        body = next(json.loads(r.read().decode()) for r in requests if r.method == "POST")
+        body = next(json.loads(r.read().decode()) for r in requests if _is_write(r))
         assert body["enabled"] is False
         assert body["decided_by"] == "subject"
         assert "keys" not in body
@@ -1423,7 +1428,7 @@ class TestTheDecisionGoesToTheHolder:
 
         await ms.set_data_sharing(_member(), OFFER_CONSENT["id"], enabled=True)
 
-        posted = [r for r in requests if r.method == "POST"]
+        posted = [r for r in requests if _is_write(r)]
         assert [str(r.url) for r in posted] == ["http://connector:8000/consent/my/shares"]
         assert posted[0].headers.get("X-User-VC") == VC
 
@@ -1539,7 +1544,7 @@ class TestAnOfferHeldInTwoPlaces:
         return [
             (str(r.url), json.loads(r.read().decode()), r.headers.get("X-User-VC"))
             for r in requests
-            if r.method == "POST"
+            if _is_write(r)
         ]
 
     async def test_a_grant_reaches_both_connectors(self, monkeypatch, _both):

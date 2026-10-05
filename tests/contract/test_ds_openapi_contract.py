@@ -13,9 +13,55 @@ That is `test_ds_semantics.py`'s job.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
+from celine.sdk.posture import is_dev
 
 from contract.inventory import CALLS, Call
+
+_VERBS = {"get", "post", "put", "patch", "delete"}
+_ANNOUNCER = "ds-contract-fallback-announcer"
+
+
+def accepted_method(spec: dict, call: Call, *, dev: bool) -> str | None:
+    """The method ``call`` is checked under, or ``None`` when ds publishes neither.
+
+    The primary ``method`` always counts. ``fallback_method`` counts **only in
+    dev**: the local stack runs this service from source against whichever ds it
+    has, and the code falls back there too. Outside dev the code refuses the
+    fallback, so the check must too, or the drift it exists to show is hidden.
+    """
+    published = spec["paths"].get(call.path, {})
+    if call.method in published:
+        return call.method
+    if dev and call.fallback_method and call.fallback_method in published:
+        return call.fallback_method
+    return None
+
+
+class _FallbackAnnouncer:
+    """Says, in the summary, which calls passed only on their dev fallback."""
+
+    def __init__(self) -> None:
+        self.lines: set[str] = set()
+
+    def pytest_terminal_summary(self, terminalreporter):
+        for line in sorted(self.lines):
+            terminalreporter.write_line(line, yellow=True, bold=True)
+
+
+def _announce_fallback(config: pytest.Config, call: Call) -> None:
+    announcer = config.pluginmanager.get_plugin(_ANNOUNCER)
+    if announcer is None:
+        announcer = _FallbackAnnouncer()
+        config.pluginmanager.register(announcer, _ANNOUNCER)
+    announcer.lines.add(
+        f"DS CONTRACT: ds {call.service} does not publish "
+        f"{call.method.upper()} {call.path} yet — accepted its dev fallback "
+        f"{(call.fallback_method or '').upper()} because CELINE_ENV=dev. Outside "
+        "dev the primary method is required and this check fails."
+    )
 
 
 def _resolve(spec: dict, ref: str) -> dict:
@@ -65,25 +111,30 @@ def required_fields(spec: dict, call: Call) -> set[str] | None:
 
 @pytest.mark.ds_contract
 @pytest.mark.parametrize("call", CALLS, ids=lambda c: f"{c.method.upper()} {c.path}")
-def test_the_call_still_exists(specs, call: Call):
+def test_the_call_still_exists(specs, call: Call, request):
     spec = specs[call.service]
     assert call.path in spec["paths"], (
         f"ds {call.service} no longer publishes {call.path}. {call.why}"
     )
-    verbs = {"get", "post", "put", "patch", "delete"}
-    published = sorted(m for m in spec["paths"][call.path] if m in verbs)
-    assert call.method in spec["paths"][call.path], (
+    published = sorted(m for m in spec["paths"][call.path] if m in _VERBS)
+    method = accepted_method(spec, call, dev=is_dev())
+    assert method, (
         f"ds {call.service} no longer accepts {call.method.upper()} on "
         f"{call.path} (has: {published}). {call.why}"
     )
+    if method != call.method:
+        _announce_fallback(request.config, call)
 
 
 @pytest.mark.ds_contract
 @pytest.mark.parametrize("call", CALLS, ids=lambda c: f"{c.method.upper()} {c.path}")
 def test_we_send_every_field_ds_requires(specs, call: Call):
     spec = specs[call.service]
-    if call.path not in spec["paths"] or call.method not in spec["paths"][call.path]:
+    method = accepted_method(spec, call, dev=is_dev())
+    if method is None:
         pytest.skip("covered by test_the_call_still_exists")
+    # On the dev fallback, check the fallback's own request (a GET takes no body).
+    call = dataclasses.replace(call, method=method)
 
     required = required_fields(spec, call)
     if required is None:

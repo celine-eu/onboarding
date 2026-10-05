@@ -73,6 +73,28 @@ PROBE_SUBJECT = _env("DS_CONTRACT_PROBE_SUBJECT")
 ORG_CLIENT_ID = _env("DS_CONTRACT_ORG_CLIENT_ID")
 ORG_CLIENT_SECRET = _env("DS_CONTRACT_ORG_CLIENT_SECRET")
 
+#: The community's **collector** client — `svc-ds-collector-<alias>` — which every
+#: act this service performs for a community is made as on a ds that serves
+#: collector clients (ds collector contract v1): memberships, credentials, the
+#: consent write and read-backs, the audience read. One token **per scope**.
+#: Unset, the checks fall back to what this service does in its development
+#: transition — the organisation (connector) client for the consent write and
+#: read-backs, the service client for the audience read — and the checks only a
+#: collector can make are **deselected**, loudly, like the holder's.
+COLLECTOR_CLIENT_ID = _env("DS_CONTRACT_COLLECTOR_CLIENT_ID")
+COLLECTOR_CLIENT_SECRET = _env("DS_CONTRACT_COLLECTOR_CLIENT_SECRET")
+COLLECTOR = {
+    "DS_CONTRACT_COLLECTOR_CLIENT_ID": COLLECTOR_CLIENT_ID,
+    "DS_CONTRACT_COLLECTOR_CLIENT_SECRET": COLLECTOR_CLIENT_SECRET,
+}
+COLLECTOR_UNSET = not all(COLLECTOR.values())
+
+#: The scopes, as ds names them. Kept literal here rather than imported from the
+#: service: this suite checks ds, and a rename on our side must not move it.
+CONSENT_PROVISION = "connector.consent.provision"
+CONSENT_COLLECTOR_READ = "connector.consent.collector.read"
+CONSENT_AUDIENCE = "connector.consent.audience"
+
 #: **Another participant's connector**, and an offer whose data it holds and the
 #: community's own connector (`DS_CONTRACT_CONNECTOR_URL`) does not — the case
 #: the POD export has to route (ADR-0008). Read-only checks. Unlike every other
@@ -126,6 +148,10 @@ def pytest_configure(config):
         "markers",
         "needs_holder: needs DS_CONTRACT_HOLDER_* — deselected, loudly, while both are unset",
     )
+    config.addinivalue_line(
+        "markers",
+        "needs_collector: needs DS_CONTRACT_COLLECTOR_CLIENT_* — deselected, loudly, while unset",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -139,6 +165,8 @@ def pytest_collection_modifyitems(config, items):
     unwanted = {"needs_contract_offer" if NO_CONTRACT_OFFER else "declares_no_contract_offer"}
     if HOLDER_UNSET:
         unwanted.add("needs_holder")
+    if COLLECTOR_UNSET:
+        unwanted.add("needs_collector")
     kept, dropped = [], []
     for item in items:
         marked = any(item.get_closest_marker(name) for name in unwanted)
@@ -149,6 +177,9 @@ def pytest_collection_modifyitems(config, items):
     config._holder_deselected = HOLDER_UNSET and any(
         item.get_closest_marker("needs_holder") for item in dropped
     )
+    config._collector_deselected = COLLECTOR_UNSET and any(
+        item.get_closest_marker("needs_collector") for item in dropped
+    )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -158,6 +189,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "DS CONTRACT: the holder checks were DESELECTED — "
             "DS_CONTRACT_HOLDER_CONNECTOR_URL and DS_CONTRACT_HOLDER_OFFER are unset, "
             "so reading an offer at another participant's connector was not checked.",
+            yellow=True,
+            bold=True,
+        )
+    if getattr(config, "_collector_deselected", False):
+        terminalreporter.write_line(
+            "DS CONTRACT: the collector checks were DESELECTED — "
+            "DS_CONTRACT_COLLECTOR_CLIENT_ID and _SECRET are unset, so the consent "
+            "checks ran as the pre-collector clients (the development transition), "
+            "and svc-ds-collector-<alias>'s one-scope tokens were not checked.",
             yellow=True,
             bold=True,
         )
@@ -276,3 +316,63 @@ def org_token() -> str:
 @pytest.fixture(scope="session")
 def org_auth(org_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {org_token}"}
+
+
+def _client_token(client_id: str, client_secret: str, scope: str | None = None) -> str:
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    if scope is not None:
+        data["scope"] = scope
+    resp = httpx.post(TOKEN_URL, data=data, timeout=10)
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+@pytest.fixture(scope="session")
+def collector_token():
+    """``collector_token(scope)``: the collector client's token for that one scope.
+
+    Only where the collector client is configured; checks that use it carry
+    ``needs_collector`` and are deselected otherwise. Cached per scope, as the
+    service caches it.
+    """
+    skip_unconfigured({**COLLECTOR, "DS_CONTRACT_TOKEN_URL": TOKEN_URL}, "the collector client")
+    cache: dict[str, str] = {}
+
+    def _token(scope: str) -> str:
+        if scope not in cache:
+            try:
+                cache[scope] = _client_token(COLLECTOR_CLIENT_ID, COLLECTOR_CLIENT_SECRET, scope)
+            except httpx.HTTPStatusError as exc:
+                pytest.fail(
+                    f"{COLLECTOR_CLIENT_ID} could not get a token for {scope!r}: "
+                    f"{exc.response.status_code} {exc.response.text[:200]} — is the "
+                    "scope an optional scope of the collector client?"
+                )
+        return cache[scope]
+
+    return _token
+
+
+@pytest.fixture(scope="session")
+def acting_auth(request):
+    """``acting_auth(scope)``: headers for an act this service performs for the community.
+
+    The collector client with that one scope where it is configured; otherwise
+    what the service does in its development transition — the organisation
+    (connector) client for the consent write and read-backs, the service client
+    for everything else.
+    """
+
+    def _auth(scope: str) -> dict[str, str]:
+        if not COLLECTOR_UNSET:
+            token = request.getfixturevalue("collector_token")(scope)
+            return {"Authorization": f"Bearer {token}"}
+        if scope in (CONSENT_PROVISION, CONSENT_COLLECTOR_READ):
+            return dict(request.getfixturevalue("org_auth"))
+        return dict(request.getfixturevalue("auth"))
+
+    return _auth

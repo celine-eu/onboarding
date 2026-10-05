@@ -1,7 +1,14 @@
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+#: ``SVC_DS_COLLECTOR_<ALIAS>_SECRET`` — a community's collector-client secret, one
+#: per dataspace-bound alias. ds's own naming (the identity registry provisions the
+#: client and reads the same variable), so the two sides agree on it.
+COLLECTOR_SECRET_PREFIX = "SVC_DS_COLLECTOR_"
+COLLECTOR_SECRET_SUFFIX = "_SECRET"
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -218,21 +225,38 @@ class Settings(BaseSettings):
     ds_connector_url: str = ""
     ds_ns_url: str = ""
 
-    # --- the community's own organisation client -------------------------
-    # Registering a consent is an act of an *organisation*, not of a service. A
-    # connector classifies its caller from the token, and a plain service client
-    # is bound to no participant — so it could write at any connector for
-    # anybody's members. ds retired that path: `svc-ds-onboarding` is now refused
-    # on `POST /consent/admin/shares` with a 403 naming the client to use.
+    # --- each community's collector client ---------------------------------
+    # Every act this service performs *for a community* in the dataspace — its
+    # members' memberships and credentials, their consent registrations and
+    # read-backs, the audience read — is the community's act, so it is made as
+    # the community's own collector client `svc-ds-collector-<alias>` (ds), one
+    # token per kind of call, each asking for exactly one scope. The alias is the
+    # REC's `dataspace.organization`; the secret is per alias:
     #
-    # That client is `svc-ds-connector-<alias>`, the community's own, and the
-    # alias is the REC's `dataspace.organization` — so the id is derived per REC
-    # and this setting only overrides it. The secret has no default and no
-    # derivation, because it is a credential.
+    #     SVC_DS_COLLECTOR_<ALIAS>_SECRET   (alias upper-cased, '-' -> '_')
     #
-    # One secret per process. A deployment serving two dataspace communities from
-    # a single instance would need two, and there is nowhere to put the second: a
-    # manifest is the per-REC home for configuration and is not a secret store.
+    # A deployment serving several communities sets one per community. Read from
+    # the process environment first, then from `.env` / `.env.local`, which is
+    # why the names are captured below: pydantic-settings refuses an unknown key
+    # in a dotenv file, and these names are not known until the manifests are.
+    # Outside CELINE_ENV=dev a bound community without its secret, or with the
+    # client id as its secret, refuses boot (`service_auth.collector_posture_guard`).
+    #
+    # Not a setting to fill in by hand: `_capture_collector_secrets` writes it.
+    ds_collector_secrets: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="__ds_collector_secrets__",
+        exclude=True,
+        repr=False,
+    )
+
+    # --- the transition: the community's connector client ---------------------
+    # **Development only, until the dataspace serves collector clients.** Before
+    # ds had one, the consent calls were made as the community's *connector*
+    # client `svc-ds-connector-<alias>` with this one secret per process, and
+    # every other call as `svc-ds-onboarding`. Under CELINE_ENV=dev a community
+    # without a collector secret still does exactly that, with a warning;
+    # anywhere else it refuses boot. `DS_ORG_CLIENT_ID` overrides the derived id.
     ds_org_client_id: str = ""
     ds_org_client_secret: str = ""
 
@@ -345,6 +369,28 @@ class Settings(BaseSettings):
         "env_file": (str(REPO_ROOT / ".env"), str(REPO_ROOT / ".env.local")),
         "env_file_encoding": "utf-8",
     }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_collector_secrets(cls, data: Any) -> Any:
+        """Move every ``SVC_DS_COLLECTOR_<ALIAS>_SECRET`` a dotenv file holds into the map.
+
+        Only a dotenv file's keys reach this point unasked (the environment
+        source reads declared names only), and without this they would refuse
+        boot as unknown. The process environment is read at lookup time instead,
+        and wins, as it does for every other setting.
+        """
+        if not isinstance(data, dict):
+            return data
+        captured: dict[str, str] = {}
+        for key in list(data):
+            name = str(key).upper()
+            if name.startswith(COLLECTOR_SECRET_PREFIX) and name.endswith(COLLECTOR_SECRET_SUFFIX):
+                captured[name] = str(data[key] or "")
+        if not captured:
+            return data
+        rest = {k: v for k, v in data.items() if str(k).upper() not in captured}
+        return {**rest, "__ds_collector_secrets__": captured}
 
     @model_validator(mode="after")
     def _resolve_smtp_tls(self) -> "Settings":

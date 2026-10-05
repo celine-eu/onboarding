@@ -13,8 +13,13 @@ from celine.sdk.auth import OidcClientCredentialsProvider
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.models.verification import CREDENTIAL_METHOD_PREFIX
-from celine.onboarding.services import sharing_intent, template_service
+from celine.onboarding.services import service_auth, sharing_intent, template_service
 from celine.onboarding.services.service_auth import (
+    CONSENT_AUDIENCE,
+    CONSENT_COLLECTOR_READ,
+    CONSENT_PROVISION,
+    CREDENTIALS_WRITE,
+    MEMBERSHIPS_WRITE,
     organisation_auth_headers,
     service_token_provider,
 )
@@ -66,6 +71,28 @@ def _parse_generated_at(value: Any) -> datetime:
 
 async def _auth_headers() -> dict[str, str]:
     token = await _get_token_provider().get_token()
+    return {"Authorization": f"Bearer {token.access_token}"}
+
+
+async def _collector_headers(organization_alias: str, scope: str) -> dict[str, str]:
+    """``Authorization`` as the community's collector client, for **one** scope.
+
+    Every act done for a community — membership, credential, consent, the
+    audience read — goes through here, each with the single scope its route
+    requires (ds collector contract v1). The token is cached per alias and
+    scope, so a read never travels with a write's token.
+
+    Under ``CELINE_ENV=dev`` a community without a collector secret keeps the
+    pre-collector client, warned once: the connector client for the consent
+    write and read-backs, this service's own for the rest. Outside dev that is a
+    :class:`~celine.onboarding.services.errors.ConfigurationError`.
+    """
+    provider = service_auth.collector_token_provider(organization_alias, scope)
+    if provider is None:
+        if service_auth.uses_connector_client_in_transition(scope):
+            return await organisation_auth_headers(organization_alias)
+        return await _auth_headers()
+    token = await provider.get_token()
     return {"Authorization": f"Bearer {token.access_token}"}
 
 
@@ -416,11 +443,13 @@ async def get_offer_audience(
             "consents cannot be asked."
         )
 
-    headers = await _auth_headers()
     datasets: list[DatasetAudience] = []
     holds_nothing: list[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
         for route in routes:
+            # As the community the route reads for, `connector.consent.audience`
+            # alone: the audience read is the collector's act, like the rest.
+            headers = await _collector_headers(route.collector, CONSENT_AUDIENCE)
             answer = await _audience_at(
                 client, route, headers, offer_id=offer_id, consumer_id=consumer_id
             )
@@ -509,7 +538,7 @@ async def _decisions_at(
 
     ``None`` when the connector serves no decisions list at all.
     """
-    headers = await organisation_auth_headers(route.collector)
+    headers = await _collector_headers(route.collector, CONSENT_COLLECTOR_READ)
     cells: list[tuple[str, DecisionCell]] = []
     cursor: str | None = None
     seen: set[str] = set()
@@ -899,6 +928,27 @@ async def _resolve_raw(access: RegistryAccess, *, email: str) -> dict[str, Any] 
     return await _resolve_raw_with_params(access, {"email": email, "derive": "false"})
 
 
+#: What ``POST /users/resolve`` accepts; ds rejects any other field.
+_RESOLVE_BODY_FIELDS = frozenset({"realm", "user_id", "username", "email"})
+
+
+def _resolve_route_missing(resp: httpx.Response) -> bool:
+    """The registry has no ``POST /users/resolve`` — not "no mapping".
+
+    405 is the method missing on a path that exists. A 404 counts only with the
+    router's own ``Not Found``: the route's 404 says ``No mapping found…``, and
+    falling back on it would send the identifiers again, in a URL, for nothing.
+    """
+    if resp.status_code == 405:
+        return True
+    if resp.status_code != 404:
+        return False
+    try:
+        return resp.json().get("detail") == "Not Found"
+    except ValueError:
+        return True
+
+
 async def _resolve_raw_with_params(
     access: RegistryAccess, params: dict[str, str]
 ) -> dict[str, Any] | None:
@@ -907,19 +957,53 @@ async def _resolve_raw_with_params(
     A 404 is *no mapping for this user*: the answer ``derive=false`` gives for
     somebody the registry has never been told about, and the ordinary first-time
     case rather than a failure.
+
+    **``POST`` with a JSON body**, never the query form: an email in a URL is
+    recorded by every access log, proxy and trace on the path, and ds withdraws
+    ``GET /users/resolve`` (410 after its sunset, outside dev). The body takes
+    only ``realm``, ``user_id``, ``username`` and ``email`` (ds forbids extras),
+    so ``derive`` — meaningful only to the GET — is not sent.
+
+    A registry too old to have the POST answers 405, or the router's own 404
+    (``Not Found``, distinct from the mapping 404 above). Under ``CELINE_ENV=dev``
+    — the local stack runs this service against whichever ds it has — the GET
+    is tried once, with a warning; anywhere else that is a refusal, because the
+    fallback would put the identifiers back into a URL.
     """
+    from celine.sdk.posture import is_dev
+
+    body = {k: v for k, v in params.items() if k in _RESOLVE_BODY_FIELDS and v}
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"{access.base_url}/users/resolve", params=params, headers=access.headers
+        resp = await client.post(
+            f"{access.base_url}/users/resolve", json=body, headers=access.headers
         )
+        if _resolve_route_missing(resp):
+            if not is_dev():
+                raise ValueError(
+                    "Subject resolution failed: the identity registry has no "
+                    f"POST /users/resolve (HTTP {resp.status_code}). Upgrade ds; "
+                    "the GET form puts identifiers in a URL and is used only "
+                    "under CELINE_ENV=dev."
+                )
+            logger.warning(
+                "identity registry has no POST /users/resolve (HTTP %d); falling "
+                "back to the deprecated GET under CELINE_ENV=dev. Upgrade ds.",
+                resp.status_code,
+            )
+            resp = await client.get(
+                f"{access.base_url}/users/resolve", params=params, headers=access.headers
+            )
 
     if resp.status_code == 409:
-        # Loud, and with the identifiers, because nobody else will look. The
-        # member gets a terminal explanation and no retry; this line is the only
-        # thing that tells an operator there is something to decide.
+        # Loud, because nobody else will look. The member gets a terminal
+        # explanation and no retry; this line is the only thing that tells an
+        # operator there is something to decide. It names which identifiers were
+        # sent and the Keycloak user id — never an email or a username, which do
+        # not belong in a log (R21); the operator finds the person by the id.
         logger.error(
-            "Identity conflict resolving subject (%s): %s",
-            ", ".join(f"{k}={v!r}" for k, v in params.items() if k != "derive"),
+            "Identity conflict resolving subject (identifiers: %s; keycloak user id: %s): %s",
+            ", ".join(k for k in params if k != "derive") or "none",
+            params.get("user_id") or "unknown",
             resp.text,
         )
         raise SubjectIdentifierConflictError(
@@ -1087,8 +1171,20 @@ async def provision_subject(
     Order matters and matches :func:`revoke_user_identity` in reverse: credential,
     then membership, then the Keycloak mapping — the membership has a foreign key
     to the DID. A Keycloak sync that fails after its retries rolls both back.
+
+    **Three principals, one per kind of act.** The credential and the membership
+    are the community's acts, made as its collector client with one scope each
+    (``identity-registry.credentials.write``, ``…memberships.write``); the
+    Keycloak mapping is this service's own (``access``). Both collector tokens
+    are fetched before anything is written, so a missing one leaves nothing
+    half-issued.
     """
     base_url, headers = access.base_url, access.headers
+    org_alias = binding.organization
+    credential_headers = await _collector_headers(org_alias, CREDENTIALS_WRITE)
+    membership_headers = (
+        await _collector_headers(org_alias, MEMBERSHIPS_WRITE) if org_alias else None
+    )
 
     body: dict[str, Any] = {"subject_id": facts.subject_id, "role": facts.role}
     if facts.ttl_days is not None:
@@ -1106,7 +1202,7 @@ async def provision_subject(
         resp = await client.post(
             f"{base_url}/admin/credentials/data-subject",
             json=body,
-            headers=headers,
+            headers=credential_headers,
         )
         if resp.status_code >= 400:
             raise ValueError(f"Credential issuance failed ({resp.status_code}): {resp.text}")
@@ -1118,9 +1214,8 @@ async def provision_subject(
     if not did or not cred_id:
         raise ValueError("Identity-registry response is missing subjectDid or credentialId")
 
-    org_alias = binding.organization
-    if org_alias:
-        await _register_membership(base_url, headers, did, org_alias)
+    if org_alias and membership_headers is not None:
+        await _register_membership(base_url, membership_headers, did, org_alias)
 
     if facts.keycloak_user_id and facts.keycloak_realm:
         await _sync_keycloak(
@@ -1196,7 +1291,11 @@ async def provision_user_identity(
     if not submission.email:
         raise ValueError("Cannot resolve a subject id: submission has no email")
     resolved = await resolve_subject(
-        access, email=submission.email, recorded=submission.dataspace_subject_id
+        access,
+        email=submission.email,
+        keycloak_realm=keycloak_realm,
+        keycloak_user_id=keycloak_user_id,
+        recorded=submission.dataspace_subject_id,
     )
     # Written **before** issuing, because issuance creates the DID and a random
     # id is not re-derivable. If a later part of this step fails — the Keycloak
@@ -1482,7 +1581,7 @@ async def _subject_rows(
     Raises when the connector cannot say: what it records is then unknown.
     """
     try:
-        headers = await organisation_auth_headers(route.collector)
+        headers = await _collector_headers(route.collector, CONSENT_COLLECTOR_READ)
     except Exception as exc:
         # Same reasoning as `register_share`: the reason names this deployment's
         # own settings and belongs in the log, not in a step row a REC manager
@@ -1721,7 +1820,7 @@ async def register_share(
         body["keys"] = keys
 
     try:
-        headers = await organisation_auth_headers(route.collector)
+        headers = await _collector_headers(route.collector, CONSENT_PROVISION)
     except Exception:  # noqa: BLE001 — reported per offer, never raised from here
         # Logged in full and summarised in the answer. The reason names this
         # deployment's own settings, and the answer reaches an operator's console
@@ -1871,7 +1970,7 @@ async def subject_shares_at_holders(rec_slug: str, *, subject_id: str) -> list[d
     binding = template_service.dataspace_binding(rec_slug)
     decisions: list[dict[str, Any]] = []
     for connector in binding.connectors:
-        headers = await organisation_auth_headers(binding.organization)
+        headers = await _collector_headers(binding.organization, CONSENT_COLLECTOR_READ)
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(
@@ -2598,11 +2697,32 @@ async def _register_membership(
 async def _delete_membership(
     base_url: str, headers: dict[str, str], did: str, org_alias: str
 ) -> None:
+    """Remove the user DID's membership of the organisation, or raise.
+
+    **A refusal is a failure, not a success.** This used to swallow every answer
+    and every exception, so a registry that refused the delete — a 403 for the
+    wrong principal, say — left the row in place while revocation reported
+    success, and the connector kept counting the person as a member. Now any
+    answer of 400 or more raises, except 404: the row is not there, which is
+    the state a delete wants (as for the credential, in :func:`revoke_user_identity`).
+    """
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            await client.delete(f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers)
-    except Exception:
-        logger.exception("Failed to delete membership %s/%s during rollback", did, org_alias)
+            resp = await client.delete(
+                f"{base_url}/admin/memberships/{did}/{org_alias}", headers=headers
+            )
+    except httpx.HTTPError as exc:
+        raise ValueError(
+            f"Membership deletion for {did} in {org_alias!r} could not reach the registry: {exc}"
+        ) from exc
+    if resp.status_code == 404:
+        logger.info("Membership for %s in %s was already gone", did, org_alias)
+        return
+    if resp.status_code >= 400:
+        raise ValueError(
+            f"Membership deletion for {did} in {org_alias!r} failed "
+            f"({resp.status_code}): {resp.text}"
+        )
 
 
 def _warn_if_partial_sync(resp: httpx.Response, did: str) -> None:
@@ -2742,21 +2862,52 @@ async def _sync_keycloak(
         _KC_SYNC_MAX_RETRIES,
         credential_id,
     )
+    # **The rollback must not hide why it ran.** Each undo step is attempted
+    # whatever the other answered, a step that fails is logged and named in the
+    # error, and the Keycloak failure stays the error's cause — so neither the
+    # original failure nor a row left behind is lost.
+    rollback_failures: list[str] = []
     if organization_alias:
-        await _delete_membership(base_url, headers, did, organization_alias)
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            await client.delete(
-                f"{base_url}/admin/credentials/{credential_id}",
-                headers=headers,
+        try:
+            await _delete_membership(
+                base_url,
+                await _collector_headers(organization_alias, MEMBERSHIPS_WRITE),
+                did,
+                organization_alias,
             )
-    except Exception:
+        except Exception as exc:  # noqa: BLE001 — reported below, beside the cause
+            logger.exception(
+                "Rollback after the failed Keycloak sync left the membership %s/%s",
+                did,
+                organization_alias,
+            )
+            rollback_failures.append(
+                f"membership of {did} in {organization_alias!r} NOT removed: {exc}"
+            )
+    try:
+        credential_headers = await _collector_headers(organization_alias, CREDENTIALS_WRITE)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.delete(
+                f"{base_url}/admin/credentials/{credential_id}",
+                headers=credential_headers,
+            )
+        if resp.status_code >= 400 and resp.status_code != 404:
+            raise ValueError(f"the registry answered {resp.status_code}: {resp.text}")
+    except Exception as exc:  # noqa: BLE001 — reported below, beside the cause
         logger.exception("Failed to revoke credential %s during rollback", credential_id)
+        rollback_failures.append(f"credential {credential_id} NOT revoked: {exc}")
 
-    raise ValueError(
-        f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts; "
-        f"credential {credential_id} has been revoked"
-    ) from (failure.__cause__ or failure)
+    if rollback_failures:
+        message = (
+            f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts, and the "
+            f"rollback was incomplete: {'; '.join(rollback_failures)}"
+        )
+    else:
+        message = (
+            f"Keycloak sync failed after {_KC_SYNC_MAX_RETRIES} attempts; "
+            f"credential {credential_id} has been revoked"
+        )
+    raise ValueError(message) from (failure.__cause__ or failure)
 
 
 async def revoke_user_identity(submission: Submission) -> str:
@@ -2779,15 +2930,26 @@ async def revoke_user_identity(submission: Submission) -> str:
         raise ValueError("IDENTITY_REGISTRY_URL is required to revoke an identity")
 
     base_url = settings.identity_registry_url.rstrip("/")
-    headers = await _auth_headers()
 
     await template_service.ensure_fresh()
     binding = template_service.dataspace_binding(submission.rec_slug)
+    # Both are the community's acts, each with its own one-scope token. Fetched
+    # first, so a missing collector client stops before anything is removed.
+    credential_headers = await _collector_headers(binding.organization, CREDENTIALS_WRITE)
     if binding.organization:
-        await _delete_membership(base_url, headers, did, binding.organization)
+        # Raises on a refusal: a membership left behind still counts the person
+        # as a member at every connector, so revocation must not report success.
+        await _delete_membership(
+            base_url,
+            await _collector_headers(binding.organization, MEMBERSHIPS_WRITE),
+            did,
+            binding.organization,
+        )
 
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.delete(f"{base_url}/admin/credentials/{credential_id}", headers=headers)
+        resp = await client.delete(
+            f"{base_url}/admin/credentials/{credential_id}", headers=credential_headers
+        )
         # 404 is success for this purpose: the credential is gone either way, and
         # refusing to clear the local columns would make the state unrepairable.
         if resp.status_code >= 400 and resp.status_code != 404:

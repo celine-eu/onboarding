@@ -32,8 +32,12 @@ import pytest
 
 from .conftest import (
     CLIENT_ID,
+    COLLECTOR_CLIENT_ID,
     CONNECTOR_URL,
+    CONSENT_AUDIENCE,
+    CONSENT_COLLECTOR_READ,
     CONSENT_OFFER,
+    CONSENT_PROVISION,
     CONTRACT_OFFER,
     FIXTURE_IDS,
     IR_URL,
@@ -200,7 +204,7 @@ def test_the_organisation_client_carries_its_participant_as_its_subject(org_toke
     )
 
 
-def test_an_organisation_must_say_whose_decision_it_is(org_auth):
+def test_an_organisation_must_say_whose_decision_it_is(acting_auth):
     """`decided_by`, and it is not a field with a default.
 
     A community registering on a member's behalf is relaying **their** decision
@@ -214,7 +218,7 @@ def test_an_organisation_must_say_whose_decision_it_is(org_auth):
     """
     r = httpx.post(
         f"{CONNECTOR_URL}/consent/admin/shares",
-        headers=org_auth,
+        headers=acting_auth(CONSENT_PROVISION),
         timeout=10,
         json={
             "subject_id": PROBE_SUBJECT,
@@ -238,14 +242,16 @@ def test_an_organisation_must_say_whose_decision_it_is(org_auth):
     )
 
 
-def test_the_organisation_client_is_the_caller_that_may_register_a_consent(org_auth):
+def test_the_communitys_client_is_the_caller_that_may_register_a_consent(acting_auth):
     """The other half of `test_a_service_token_may_not_register_a_consent`.
 
     That one proves the plain service client is refused; on its own it would go
     on passing if ds refused *everybody*, and the first anybody would hear of it
     is a member whose consent reached no connector — a non-fatal enablement step
     that fails quietly by design. So this asserts the positive: the community's
-    own organisation client gets **past** the caller-class check.
+    own client — its collector client with `connector.consent.provision`, or in
+    the development transition its organisation client — gets **past** the
+    caller-class check.
 
     Nothing is created. The offer does not exist, so the furthest this can reach
     is the offer lookup — and reaching the offer lookup at all is the proof,
@@ -253,7 +259,7 @@ def test_the_organisation_client_is_the_caller_that_may_register_a_consent(org_a
     """
     r = httpx.post(
         f"{CONNECTOR_URL}/consent/admin/shares",
-        headers=org_auth,
+        headers=acting_auth(CONSENT_PROVISION),
         timeout=10,
         json={
             "subject_id": PROBE_SUBJECT,
@@ -268,7 +274,7 @@ def test_the_organisation_client_is_the_caller_that_may_register_a_consent(org_a
         },
     )
     assert r.status_code not in (401, 403), (
-        f"the organisation client was refused at the door ({r.status_code}): "
+        f"the community's client was refused at the door ({r.status_code}): "
         f"{r.text[:200]}. Every consent this service records is written with "
         f"this client; refused here, no member's sharing decision reaches any "
         f"connector — and the enablement step that writes it is non-fatal, so "
@@ -376,24 +382,25 @@ def test_the_resolved_owner_carries_a_dataspace_identifier(auth):
     )
 
 
-def test_the_audience_read_is_ours_to_call(auth):
+def test_the_audience_read_is_ours_to_call(acting_auth):
     """Scope, not schema.
 
-    `connector.consent.audience` is on this service's client, granted for this
-    one call. A 403 would mean the grant went and the POD export falls back to
-    reading a form — which is the defect it exists to fix, so it must fail
-    loudly rather than degrade.
+    `connector.consent.audience`, asked for alone: the collector client's on a
+    ds that serves one, this service's own in the development transition. A 403
+    would mean the grant went and the POD export falls back to reading a form —
+    which is the defect it exists to fix, so it must fail loudly rather than
+    degrade.
 
     The offer id is deliberately nonsense, so the answer is about the offer.
     """
     r = httpx.get(
         f"{CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": "no-such-offer-contract-check", "consumer_id": "did:web:probe"},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code != 403, (
-        f"403 from GET /consent/admin/shares — {CLIENT_ID} has lost "
+        "403 from GET /consent/admin/shares — the caller has lost "
         "connector.consent.audience, and the POD export can no longer read who consents"
     )
     assert r.status_code == 422, (
@@ -401,7 +408,7 @@ def test_the_audience_read_is_ours_to_call(auth):
     )
 
 
-def test_the_audience_read_refuses_the_wildcard_consumer(auth):
+def test_the_audience_read_refuses_the_wildcard_consumer(acting_auth):
     """The refusal this caller relies on, asserted at its source.
 
     The standing rows this service writes are wildcard-scoped, and a per-party
@@ -413,7 +420,7 @@ def test_the_audience_read_refuses_the_wildcard_consumer(auth):
     r = httpx.get(
         f"{CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": CONSENT_OFFER, "consumer_id": "*"},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code == 422, (
@@ -424,7 +431,7 @@ def test_the_audience_read_refuses_the_wildcard_consumer(auth):
 
 
 @pytest.mark.needs_contract_offer
-def test_a_contract_offer_has_no_audience_to_read(auth):
+def test_a_contract_offer_has_no_audience_to_read(acting_auth):
     """Disclosed, not consented — the same rule the write side enforces.
 
     The two paths are meant to agree about which offers carry a decision, and
@@ -434,7 +441,7 @@ def test_a_contract_offer_has_no_audience_to_read(auth):
     r = httpx.get(
         f"{CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": CONTRACT_OFFER, "consumer_id": "did:web:probe"},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code == 409, (
@@ -443,7 +450,7 @@ def test_a_contract_offer_has_no_audience_to_read(auth):
     )
 
 
-def test_the_whole_recipient_chain_resolves(auth):
+def test_the_whole_recipient_chain_resolves(auth, acting_auth):
     """Offer to recipient to DID to audience, in the order the export walks it.
 
     Each hop is published and none of them is inferred: the offer names the party
@@ -487,7 +494,7 @@ def test_the_whole_recipient_chain_resolves(auth):
     r = httpx.get(
         f"{CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": CONSENT_OFFER, "consumer_id": consumer_did},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code == 200, f"{r.status_code}: {r.text[:200]}"
@@ -497,3 +504,53 @@ def test_the_whole_recipient_chain_resolves(auth):
         "`datasets[].subject_ids` and refuses a flattened answer"
     )
     assert "subject_ids" in body["datasets"][0]
+
+
+# ── the collector client (ds collector contract v1) ───────────────────
+
+
+def _claims(token: str) -> dict:
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+@pytest.mark.needs_collector
+@pytest.mark.parametrize("scope", [CONSENT_PROVISION, CONSENT_COLLECTOR_READ, CONSENT_AUDIENCE])
+def test_a_collector_token_carries_its_organisation_and_one_scope(collector_token, scope):
+    """`svc-ds-collector-<alias>`, `sub` = the organisation's DID, and the one scope asked for.
+
+    The client has no default ds scopes, so a token asked for one scope carries
+    that scope and no other ds grant — which is what makes it useless replayed
+    at a service it was not meant for.
+    """
+    claims = _claims(collector_token(scope))
+    assert claims.get("azp") == COLLECTOR_CLIENT_ID, claims.get("azp")
+    assert str(COLLECTOR_CLIENT_ID).startswith("svc-ds-collector-"), COLLECTOR_CLIENT_ID
+    assert str(claims.get("sub", "")).startswith("did:"), claims.get("sub")
+    granted = set(str(claims.get("scope", "")).split())
+    ds_scopes = {
+        g for g in granted if g.startswith(("connector.", "identity-registry.", "provenance."))
+    }
+    assert ds_scopes == {scope}, f"asked for {scope!r}, the token carries {sorted(ds_scopes)}"
+
+
+@pytest.mark.needs_collector
+def test_a_collector_read_token_cannot_register_a_consent(collector_token):
+    """The read-back's token is not a write token: one scope, one audience, one route kind."""
+    r = httpx.post(
+        f"{CONNECTOR_URL}/consent/admin/shares",
+        headers={"Authorization": f"Bearer {collector_token(CONSENT_COLLECTOR_READ)}"},
+        timeout=10,
+        json={
+            "subject_id": PROBE_SUBJECT,
+            "offer_id": "no-such-offer-contract-check",
+            "enabled": True,
+            "decided_by": "subject",
+            "legal_basis": {
+                "source": "onboarding-contract-check",
+                "consent_text_version": "0",
+                "rendered_text_sha256": "0" * 64,
+            },
+        },
+    )
+    assert r.status_code in (401, 403), f"{r.status_code}: {r.text[:200]}"

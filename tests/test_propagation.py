@@ -182,7 +182,8 @@ class FakeIdentityRegistry:
                 mapping["username"] = body["username"]
             return httpx.Response(200, json={"status": "synced", "did": body["did"]})
         if "/users/resolve" in url:
-            email = req.url.params.get("email")
+            sent = json.loads(req.content) if req.method == "POST" else req.url.params
+            email = sent.get("email")
             for did, mapping in self.mappings.items():
                 if mapping.get("email") == email:
                     from test_member_sharing import RESOLVE_WITH_CREDENTIAL

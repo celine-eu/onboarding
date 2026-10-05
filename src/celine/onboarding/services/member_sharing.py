@@ -374,8 +374,30 @@ async def _resolve(
     return SharingState.OK, rec_slug, credential
 
 
+def member_headers(
+    credential: dataspace_identity.SubjectCredential, user: JwtUser
+) -> dict[str, str]:
+    """What a ds **person route** is called with: the member's credential and login.
+
+    ``/consent/my/shares`` and ``/prov/my/events`` bind the credential to the
+    person presenting it (ds ADR-0024): the credential (``X-Subject-Id`` +
+    ``X-User-VC``) says *who the subject is*, and the member's own Keycloak token
+    — the one they called this service with — says *that it is them*. ds checks
+    the token's realm and ``sub`` against the mapping this service's Keycloak
+    sync wrote, and refuses a service token there.
+
+    **Never this service's own token.** A token of ours on a person route would
+    be either refused or, worse, read as the member acting. With no login token
+    on the request (``JwtUser.token`` empty), none is sent and ds decides.
+    """
+    headers = dict(credential.headers)
+    if user.token:
+        headers["Authorization"] = f"Bearer {user.token}"
+    return headers
+
+
 async def _list_decisions(
-    credential: dataspace_identity.SubjectCredential, rec_slug: str
+    credential: dataspace_identity.SubjectCredential, rec_slug: str, user: JwtUser
 ) -> list[dict[str, Any]]:
     """The member's current decisions, from every connector that holds one.
 
@@ -398,7 +420,9 @@ async def _list_decisions(
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{base}/consent/my/shares", headers=credential.headers)
+            resp = await client.get(
+                f"{base}/consent/my/shares", headers=member_headers(credential, user)
+            )
     except httpx.HTTPError as exc:
         raise SharingUnavailableError(f"Connector unreachable: {exc}") from exc
 
@@ -622,7 +646,7 @@ async def get_data_sharing(user: JwtUser) -> SharingView:
             rec_slug,
             _merge(
                 offers,
-                await _list_decisions(credential, rec_slug),
+                await _list_decisions(credential, rec_slug, user),
                 await _presented_offers(credential.subject_id),
                 binding=template_service.dataspace_binding(rec_slug),
             ),
@@ -817,7 +841,7 @@ async def set_data_sharing(user: JwtUser, offer_id: str, *, enabled: bool) -> Sh
                 resp = await client.post(
                     f"{base}/consent/my/shares",
                     json={"offer_id": offer_id, "enabled": enabled},
-                    headers=credential.headers,
+                    headers=member_headers(credential, user),
                 )
         except httpx.HTTPError as exc:
             failure = SharingUnavailableError(f"Connector unreachable: {exc}")
@@ -888,7 +912,9 @@ async def get_history(user: JwtUser) -> tuple[SharingState, list[dict[str, Any]]
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{base}/prov/my/events", headers=credential.headers)
+            resp = await client.get(
+                f"{base}/prov/my/events", headers=member_headers(credential, user)
+            )
     except httpx.HTTPError as exc:
         logger.warning("Provenance unreachable: %s", exc)
         return state, []

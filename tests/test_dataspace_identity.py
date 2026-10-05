@@ -212,8 +212,9 @@ async def test_uses_oidc_token(monkeypatch, submission, _enable_vc):
     _patch_httpx(monkeypatch, handler)
     await di.provision_user_identity(submission)
 
-    assert auth_headers[0] == "Bearer test-token"
-    di._token_provider.get_token.assert_awaited_once()
+    # No collector secret under CELINE_ENV=dev: the transition makes every
+    # registry call as this service's client, as before the collector client.
+    assert auth_headers and set(auth_headers) == {"Bearer test-token"}
 
 
 # ── organization membership ───────────────────────────────────────
@@ -657,7 +658,8 @@ async def test_a_person_with_no_mapping_is_issued_a_minted_id(monkeypatch, submi
 
     def handler(req: httpx.Request) -> httpx.Response:
         if "users/resolve" in str(req.url):
-            assert req.url.params["derive"] == "false"
+            assert req.method == "POST"
+            assert "derive" not in json.loads(req.content)
             return httpx.Response(404, json={"detail": "No mapping found for this user"})
         if "credentials/data-subject" in str(req.url):
             captured_body.update(json.loads(req.content))
@@ -1060,37 +1062,42 @@ class TestResolveSubject:
         assert resolved.did == "did:web:users.example:sub-1"
 
     async def test_derive_is_never_requested_and_the_email_is_sent(self, monkeypatch):
-        """A derived id is the registry's HMAC of the email; this setup mints UUIDs."""
-        seen: list[httpx.URL] = []
+        """A derived id is the registry's HMAC of the email; this setup mints UUIDs.
+
+        The email goes in the POST body, never the URL (R21), and ``derive`` is
+        not sent at all: the POST has no such field and ds forbids extras.
+        """
+        seen: list[httpx.Request] = []
 
         def handler(req):
-            seen.append(req.url)
+            seen.append(req)
             return httpx.Response(200, json=DERIVE_RESPONSE)
 
         _patch_httpx(monkeypatch, handler)
         await di.resolve_subject(_access(), email="a@example.org")
 
-        assert seen[0].params["derive"] == "false"
-        assert seen[0].params["email"] == "a@example.org"
+        assert seen[0].method == "POST"
+        assert not seen[0].url.params
+        assert json.loads(seen[0].content) == {"email": "a@example.org"}
 
     async def test_the_keycloak_pair_is_sent_together_or_not_at_all(self, monkeypatch):
         """`realm` alone identifies nobody; the registry wants both or neither."""
-        seen: list[httpx.URL] = []
+        seen: list[dict] = []
 
         def handler(req):
-            seen.append(req.url)
+            seen.append(json.loads(req.content))
             return httpx.Response(200, json=DERIVE_RESPONSE)
 
         _patch_httpx(monkeypatch, handler)
         await di.resolve_subject(_access(), email="a@example.org", keycloak_realm="celine")
 
-        assert "realm" not in seen[0].params
+        assert "realm" not in seen[0]
 
         await di.resolve_subject(
             _access(), email="a@example.org", keycloak_realm="celine", keycloak_user_id="kc-1"
         )
-        assert seen[1].params["realm"] == "celine"
-        assert seen[1].params["user_id"] == "kc-1"
+        assert seen[1]["realm"] == "celine"
+        assert seen[1]["user_id"] == "kc-1"
 
     async def test_a_409_is_its_own_error_and_is_logged_for_an_operator(self, monkeypatch, caplog):
         """A member cannot act on this and must not be told to retry.
@@ -1245,18 +1252,27 @@ class TestTheFunnelDoesNotGuardIssuance:
         assert "/credentials/check" not in paths
         assert submission.dataspace_vc_id == CREDENTIAL_RESPONSE["credentialId"]
 
-    async def test_one_token_for_the_whole_flow(self, monkeypatch, submission, _enable_vc):
-        """Resolve and issue share a `RegistryAccess`, so they share a token.
+    async def test_one_registry_for_the_whole_flow(self, monkeypatch, submission, _enable_vc):
+        """Resolve, issue and the membership share a `RegistryAccess`'s registry.
 
-        Lifting the function briefly made each call fetch its own, which is both
-        wasteful and the door to two calls in one flow addressing two registries.
+        Lifting the function briefly made each call build its own, which was the
+        door to two calls in one flow addressing two registries. The *token* is
+        no longer shared, by design: the credential and the membership are the
+        community's acts, each with its own one-scope collector token
+        (`test_collector_client.py`); only the resolve is this service's.
         """
         di._token_provider = _mock_token_provider()
-        _patch_httpx(monkeypatch, _default_handler)
+        hosts = []
+
+        def handler(req):
+            hosts.append(req.url.host)
+            return _default_handler(req)
+
+        _patch_httpx(monkeypatch, handler)
 
         await di.provision_user_identity(submission)
 
-        di._token_provider.get_token.assert_awaited_once()
+        assert hosts and set(hosts) == {"ir"}
 
 
 async def test_a_decisions_list_that_repeats_its_cursor_is_not_read_as_complete(monkeypatch):

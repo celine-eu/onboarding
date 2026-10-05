@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -107,7 +108,10 @@ def member(monkeypatch, submission, held_twice):
 
 
 async def _press(enabled: bool, offer: str = RESEARCH):
-    return await ms.set_data_sharing(object(), offer, enabled=enabled)
+    # The member's own login token travels to the connector beside their
+    # credential (`member_sharing.member_headers`), so the caller needs one.
+    member = SimpleNamespace(token="member-login-token")
+    return await ms.set_data_sharing(member, offer, enabled=enabled)
 
 
 def _on_the_connectors_clock(intents, fake) -> None:

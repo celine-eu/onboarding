@@ -297,10 +297,11 @@ After approval a participant manages and withdraws their sharing decisions in th
 | `DATASPACE_ENABLED` | `false` | Deployment-wide gate for dataspace identity provisioning. A community also needs a `dataspace:` block in its manifest |
 | `IDENTITY_REGISTRY_URL` | *(none)* | Base URL of the identity-registry service |
 | `OIDC_BASE_URL` | `http://keycloak.celine.localhost/realms/celine` | OIDC issuer URL for M2M token acquisition — the same issuer the admin console verifies inbound tokens against |
-| `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | The dataspace's client, for the identity registry, the connector and, only when `DATASPACE_ENABLED` is true, the REC registry member client. With the dataspace disabled the registry member is written as `OIDC_CLIENT_ID` (`svc-onboarding`) and this client is not needed ([REQ-0022](docs/specifications/registry-member.md)) |
+| `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | The dataspace's client, for what this service does as itself (resolving organisations and subjects, the DID <-> Keycloak mapping) and, only when `DATASPACE_ENABLED` is true, the REC registry member client. With the dataspace disabled the registry member is written as `OIDC_CLIENT_ID` (`svc-onboarding`) and this client is not needed ([REQ-0022](docs/specifications/registry-member.md)) |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Its secret. Required when `DATASPACE_ENABLED` is true |
-| `DS_ORG_CLIENT_ID` | *(derived)* | The community's own client, which is what registers a consent — a service client is refused. Empty derives `svc-ds-connector-<alias>` from the manifest's `dataspace.organization` |
-| `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret. Required to register or withdraw any sharing consent |
+| `SVC_DS_COLLECTOR_<ALIAS>_SECRET` | *(none)* | One per dataspace-bound community (alias upper-cased, `-` to `_`): the secret of `svc-ds-collector-<alias>`, the community's own client, which every act for it is made as — memberships, credentials, consent writes and read-backs, the audience read — one scope per token. Required outside `CELINE_ENV=dev`; boot refuses a missing one or one equal to the client id ([REQ-0035–REQ-0037](docs/specifications/dataspace-acting-for-a-community.md)) |
+| `DS_ORG_CLIENT_ID` | *(derived)* | **Development transition only** (`CELINE_ENV=dev`, a community without a collector secret): the community's connector client the consent calls fall back to. Empty derives `svc-ds-connector-<alias>` |
+| `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret, for the same transition |
 | `DATASPACE_USER_ROLE` | *(none)* | Role assigned in the credential |
 | `DATASPACE_ALLOWED_ACTIONS` | *(none)* | Comma-separated authorized actions |
 | `DATASPACE_VC_TTL_DAYS` | *(none)* | Credential validity period in days |

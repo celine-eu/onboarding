@@ -4,13 +4,15 @@ ADR-0008. The export reads an offer's audience at every connector the REC's
 manifest routes it to, and reads a connector's ``422`` as "this connector holds no
 dataset for the offer" — an answer, not a failure — so an offer held entirely by
 another participant is read there and not refused at the community's own
-connector. These check that ds still behaves that way, and that this service's
+connector. These check that ds still behaves that way, and that the community's
 client may read the audience at a connector that is not the community's.
 
 It also checks the decisions list the export's withdrawn column is read from
 (``GET /consent/admin/decisions``, ds ADR-0021): answered at the holder to the
-community's own organisation client (``DS_CONTRACT_ORG_CLIENT_*``), refused to
-this service's client, and ``422`` where the offer is not held.
+community's own client (its collector client with
+``connector.consent.collector.read``, ``DS_CONTRACT_COLLECTOR_CLIENT_*``; in the
+development transition its organisation client, ``DS_CONTRACT_ORG_CLIENT_*``),
+refused to this service's client, and ``422`` where the offer is not held.
 
 **Read-only, like the rest of the suite.** No export is pressed and nothing is
 written. (The export records no disclosure since ADR-0010, so there is no
@@ -31,6 +33,8 @@ import celine.onboarding.services.dataspace_identity as di
 from .conftest import (
     CLIENT_ID,
     CONNECTOR_URL,
+    CONSENT_AUDIENCE,
+    CONSENT_COLLECTOR_READ,
     HOLDER,
     HOLDER_CONNECTOR_URL,
     HOLDER_OFFER,
@@ -61,17 +65,17 @@ def recipient_did(auth) -> str:
     return did
 
 
-def test_the_holder_answers_the_audience_of_an_offer_it_holds(auth, recipient_did):
-    """This service's client reads the audience at another participant's
+def test_the_holder_answers_the_audience_of_an_offer_it_holds(acting_auth, recipient_did):
+    """The community's client reads the audience at another participant's
     connector, and it comes back per dataset — the shape the agreement check reads."""
     r = httpx.get(
         f"{HOLDER_CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": HOLDER_OFFER, "consumer_id": recipient_did},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code != 403, (
-        f"403 from the holder's GET /consent/admin/shares — {CLIENT_ID} may not read "
+        "403 from the holder's GET /consent/admin/shares — the community may not read "
         "the audience there, and an offer held only by it cannot be exported"
     )
     assert r.status_code == 200, f"{r.status_code}: {r.text[:200]}"
@@ -79,13 +83,13 @@ def test_the_holder_answers_the_audience_of_an_offer_it_holds(auth, recipient_di
     assert isinstance(datasets, list) and datasets and "subject_ids" in datasets[0]
 
 
-def test_a_connector_holding_nothing_for_the_offer_answers_422(auth, recipient_did):
+def test_a_connector_holding_nothing_for_the_offer_answers_422(acting_auth, recipient_did):
     """The answer the export reads as "holds nothing here". A 200 with an empty
     list, or a 403, would change what a route holding nothing means."""
     r = httpx.get(
         f"{CONNECTOR_URL}/consent/admin/shares",
         params={"offer_id": HOLDER_OFFER, "consumer_id": recipient_did},
-        headers=auth,
+        headers=acting_auth(CONSENT_AUDIENCE),
         timeout=10,
     )
     assert r.status_code == 422, (
@@ -95,14 +99,15 @@ def test_a_connector_holding_nothing_for_the_offer_answers_422(auth, recipient_d
     )
 
 
-async def test_the_export_reads_the_offer_where_it_is_held(auth, recipient_did, monkeypatch):
+async def test_the_export_reads_the_offer_where_it_is_held(acting_auth, recipient_did, monkeypatch):
     """This service's own read, end to end against ds: routed to both connectors,
     the community's answers that it holds nothing, and the audience is the holder's."""
 
-    async def _headers():
-        return dict(auth)
+    async def _headers(alias, scope):
+        assert scope == CONSENT_AUDIENCE
+        return acting_auth(scope)
 
-    monkeypatch.setattr(di, "_auth_headers", _headers)
+    monkeypatch.setattr(di, "_collector_headers", _headers)
     own = di.ConsentRoute(offer_id=HOLDER_OFFER, connector_url=CONNECTOR_URL, collector="probe")
     holder = di.ConsentRoute(
         offer_id=HOLDER_OFFER,
@@ -129,13 +134,14 @@ def _decisions(base: str, headers: dict[str, str], **params) -> httpx.Response:
     )
 
 
-def test_the_holder_lists_the_communitys_decisions_to_its_own_client(org_auth):
-    """The organisation client may list its members' decisions at the holder, and
+def test_the_holder_lists_the_communitys_decisions_to_its_own_client(acting_auth):
+    """The community's client may list its members' decisions at the holder, and
     the list ends only on a null cursor. Read to the end; nothing is written."""
+    headers = acting_auth(CONSENT_COLLECTOR_READ)
     cursor = None
     for _ in range(1000):
         r = _decisions(
-            HOLDER_CONNECTOR_URL, org_auth, limit=100, **({"cursor": cursor} if cursor else {})
+            HOLDER_CONNECTOR_URL, headers, limit=100, **({"cursor": cursor} if cursor else {})
         )
         assert r.status_code not in (404, 405), (
             "the holder serves no GET /consent/admin/decisions — an older ds; the POD "
@@ -163,19 +169,20 @@ def test_the_decisions_list_refuses_this_services_own_client(auth):
     )
 
 
-def test_a_connector_holding_nothing_answers_the_decisions_list_422(org_auth):
+def test_a_connector_holding_nothing_answers_the_decisions_list_422(acting_auth):
     """The same "holds nothing here" answer as the audience read."""
-    r = _decisions(CONNECTOR_URL, org_auth, limit=1)
+    r = _decisions(CONNECTOR_URL, acting_auth(CONSENT_COLLECTOR_READ), limit=1)
     assert r.status_code == 422, f"{r.status_code}: {r.text[:200]}"
 
 
-async def test_the_export_reads_withdrawals_where_the_offer_is_held(org_auth, monkeypatch):
-    """This service's own read, end to end against ds, as the organisation."""
+async def test_the_export_reads_withdrawals_where_the_offer_is_held(acting_auth, monkeypatch):
+    """This service's own read, end to end against ds, as the community."""
 
-    async def _headers(alias):
-        return dict(org_auth)
+    async def _headers(alias, scope):
+        assert scope == CONSENT_COLLECTOR_READ
+        return acting_auth(scope)
 
-    monkeypatch.setattr(di, "organisation_auth_headers", _headers)
+    monkeypatch.setattr(di, "_collector_headers", _headers)
     holder = di.ConsentRoute(
         offer_id=HOLDER_OFFER,
         connector_url=HOLDER_CONNECTOR_URL,

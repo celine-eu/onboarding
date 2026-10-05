@@ -148,8 +148,15 @@ tasks:
                      DS_CONTRACT_CLIENT_ID, DS_CONTRACT_CLIENT_SECRET
         organisation DS_CONTRACT_ORG_CLIENT_ID, DS_CONTRACT_ORG_CLIENT_SECRET —
                      the community's own `svc-ds-connector-<alias>`, the only
-                     caller ds lets register a consent. Its own skip group:
-                     without it three checks skip and the rest still run.
+                     caller a pre-collector ds lets register a consent. Its own
+                     skip group: without it three checks skip and the rest
+                     still run.
+        collector    DS_CONTRACT_COLLECTOR_CLIENT_ID, _SECRET — the community's
+                     `svc-ds-collector-<alias>`, which every act for it is made
+                     as on a ds with collector clients, one scope per token.
+                     Unset, the consent checks run as the development
+                     transition's clients and the collector-only checks are
+                     DESELECTED, and the summary says so.
         seeded data  DS_CONTRACT_OWNER_ID and DS_CONTRACT_OWNER_ALIAS (which
                      must differ — the id/alias check proves nothing where they
                      are the same), DS_CONTRACT_CONSENT_OFFER,

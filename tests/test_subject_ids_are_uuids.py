@@ -56,7 +56,9 @@ class FakeRegistry:
     def handler(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
         if path == "/users/resolve":
-            params = dict(req.url.params)
+            # POST carries the identifiers in a JSON body; the GET is only the
+            # dev fallback against an older registry.
+            params = json.loads(req.content) if req.method == "POST" else dict(req.url.params)
             self.resolve_params.append(params)
             email = (params.get("email") or "").lower()
             did = self.mappings.get(email)

@@ -141,7 +141,7 @@ task export-pod-list -- --rec my-rec --offer household-energy-flexibility
   The audience lists standing grants only, so a member who withdrew would
   otherwise look like one nobody asked. The export also reads
   `GET /consent/admin/decisions` at every connector holding the offer — as the
-  community, with its own organisation client (`DS_ORG_CLIENT_SECRET`), every page
+  community, with its collector client (`connector.consent.collector.read`), every page
   — and lists a member whose every decision is withdrawn. Their supply points come
   from the registry like everybody else's.
 - The file has four columns and nothing else: `authorised_pod_code`, and
@@ -408,8 +408,9 @@ connector that does not serve them.
 a caller may do from the organisation its token names; a plain service client
 names none, so one that could register a consent could register it at any
 connector for anybody's members. `svc-ds-onboarding` is refused. The call is made
-as `svc-ds-connector-<alias>` — the community's own client, alias from
-`dataspace.organization`, secret `DS_ORG_CLIENT_SECRET`.
+as `svc-ds-collector-<alias>` — the community's own collector client, alias from
+`dataspace.organization`, secret `SVC_DS_COLLECTOR_<ALIAS>_SECRET` — with
+`connector.consent.provision` alone ([dataspace-integration](dataspace-integration.md#acting-for-a-community)).
 
 **Whose decision it is, is stated.** `decided_by: subject` relays a decision the
 member took — the form, or their own toggle later — and a relayed *withdrawal* is
@@ -510,9 +511,8 @@ failed share never rolls back the identity or the approval — it just leaves
 `raise_on_error=True`, returning 422 on connector rejection). See
 [dataspace-integration.md](dataspace-integration.md) for the full sequence.
 
-Onboarding reads the offers vocabulary and records the disclosure with its
-`svc-ds-onboarding` service token, and registers the consent with the community's
-own client, as above.
+Onboarding reads the offers vocabulary unauthenticated, and registers the consent
+with the community's collector client, as above.
 
 ### Changing the decision afterwards
 
@@ -525,8 +525,10 @@ somebody is approved, and the participant webapp had no credential to act with.
 Three things about it are load-bearing:
 
 - **The member acts as themselves.** The connector authenticates a data subject
-  by verifiable credential (`X-Subject-Id` + `X-User-VC`), never by a service
-  token. This service resolves *which* credential is theirs and presents it; it
+  by verifiable credential (`X-Subject-Id` + `X-User-VC`), bound to the member's
+  own login token — the one they called this service with, forwarded as
+  `Authorization` (ds ADR-0024) — and never by a service token: this service's own
+  never reaches `/consent/my/*` or `/prov/my/events`. It resolves *which* credential is theirs and presents it; it
   never returns one, never caches one across requests, and holds no capability
   that would let an operator decide on somebody's behalf. That last part is the
   point: a consent an administrator could give is not a consent.

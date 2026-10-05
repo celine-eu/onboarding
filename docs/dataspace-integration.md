@@ -45,24 +45,26 @@ sequenceDiagram
 
     Note over Onboarding: provision_user_identity()
 
-    Note over Onboarding: Acquire M2M token<br/>(svc-ds-onboarding)
+    Note over Onboarding: as svc-ds-onboarding (this service)
     Onboarding->>IdRegistry: GET /users/resolve?email=…&derive=false
     IdRegistry-->>Onboarding: {subject_id, did} or 404 (no mapping)
     Note over Onboarding: no mapping: reuse the id the submission recorded,<br/>else mint uuid4, and record it before issuing
 
+    Note over Onboarding: as svc-ds-collector-&lt;alias&gt;,<br/>one token per scope
     Onboarding->>IdRegistry: POST /admin/credentials/data-subject<br/>{subject_id, role, allowedActions, ttlDays,<br/>linkedParticipantDid, verifiedBy, verificationMethod}
     IdRegistry-->>Onboarding: {subjectDid, credentialId, generatedAt}
 
     Onboarding->>IdRegistry: POST /admin/memberships<br/>{user_did, organization_alias, role}
     IdRegistry-->>Onboarding: 201 Created (or 409 already exists)
 
+    Note over Onboarding: as svc-ds-onboarding (this service)
     Onboarding->>IdRegistry: POST /admin/keycloak/sync<br/>{subjectDid, userId, realm, username}
     IdRegistry->>KC: Set dataspace_did attribute
     IdRegistry-->>Onboarding: 200 OK
 
     Note over Onboarding: provision_user_shares() — last step,<br/>only if DS_CONNECTOR_URL set + consent given
     loop each consented offer id
-        Note over Onboarding: as svc-ds-connector-&lt;alias&gt;, at the<br/>connector that holds this offer's data
+        Note over Onboarding: as svc-ds-collector-&lt;alias&gt;, at the<br/>connector that holds this offer's data
         Onboarding->>Connector: POST /consent/admin/shares<br/>{subject_id: DID, offer_id, enabled: true,<br/>decided_by: subject, legal_basis, keys?}
         Connector-->>Onboarding: 200 OK
     end
@@ -110,11 +112,11 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
     It also sends the **username** Keycloak returned at step 1 -- the same value step 2 of enablement wrote into `Member.user_id`. That is what lets a dataspace decision be applied to rows: the connector translates consenting subject DIDs into usernames through this registry (`POST /users/identities`, which reads `KeycloakMapping.username` and falls back to `email`) and hands them to the celine `dataset-api`, which resolves them against `Member.user_id`. Sending it keeps both ends naming one person the same way. Omitting it leaves the email fallback standing, which is correct only while username == email -- the convention the provisioning service uses for an account it *creates*, and **not** the platform's: it also adopts an account whose username is something else, and for them the row filter would resolve nobody and the data plane would deny rows a person had consented to. The value is optional because a retry of step 3 alone has no provisioning result to read it from; the key is then omitted rather than sent as null, so a good value already in the registry is never overwritten with nothing.
 
-7. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping. The DID itself stays at the registry with no mapping. A retry reissues under it, because the subject id was recorded on the submission in step 2.
+7. **Rollback on failure** -- If the Keycloak sync fails after 3 retries, the membership is removed via `DELETE /admin/memberships/{did}/{alias}`, the credential is revoked via `DELETE /admin/credentials/{credentialId}`, and the approval is rejected. This prevents orphaned credentials and memberships that have no corresponding Keycloak mapping. **The rollback never hides why it ran**: each undo is attempted whatever the other answered, an undo the registry refuses (any answer of 400 or more but 404) is logged and named in the error, and the Keycloak failure stays the error's cause. The same strictness applies on revocation: a refused membership delete stops it before the credential is touched and the submission keeps its identity columns, rather than reporting success over a row that still counts the person as a member. The DID itself stays at the registry with no mapping. A retry reissues under it, because the subject id was recorded on the submission in step 2.
 
 8. **Data-sharing share provisioning** -- `provision_user_shares()` runs as the last step, after the Keycloak DID sync. When `DS_CONNECTOR_URL` is set and the submission's `data_sharing_consent` is true, it POSTs once per recorded offer id to `{connector}/consent/admin/shares` with body `{subject_id: <dataspace DID>, offer_id, enabled: true, decided_by: "subject", legal_basis: {source: "onboarding", rec_slug, consent_text_version, locale, rendered_text_sha256, accepted_at, submission_ref}}`. It names an offer, never a dataset. The call is idempotent and sets `share_provisioned=true` on success. Unlike step 7, it is **deliberately non-fatal**: a failed share never rolls back the identity or rejects the approval -- it leaves `share_provisioned=false` for retry. It reads every connector holding the member's offers first and writes only where one disagrees with the member's newest decision, withdrawals included, or where a holder's standing grant carries other keys than the member's supply points in the registry now -- see [data-sharing](data-sharing.md).
 
-   **Registered as the community, not as this service.** The connector decides what a caller may do from the organisation its token names, and a plain service client names none -- so one could write a consent at any connector for anybody's members. ds refuses `svc-ds-onboarding` here. The call is made as the community's own client, `svc-ds-connector-<alias>`, where the alias is the manifest's `dataspace.organization` and the secret is `DS_ORG_CLIENT_SECRET`. Nothing else in this flow uses that identity.
+   **Registered as the community, not as this service.** The connector decides what a caller may do from the organisation its token names, and a plain service client names none -- so one could write a consent at any connector for anybody's members. ds refuses `svc-ds-onboarding` here. The call is made as the community's own collector client, `svc-ds-collector-<alias>`, with `connector.consent.provision` alone -- see [Acting for a community](#acting-for-a-community).
 
    **`decided_by` says whose decision it is**, and it is not a detail. `subject` relays a decision somebody took -- which is what a form is -- and a relayed *withdrawal* is then theirs, so no later provisioning run lifts it. `collector` records one the organisation took itself, which is what a withdrawal on revoked membership is: nobody withdrew, the community revoked a membership and the consent went with it.
 
@@ -130,19 +132,47 @@ Step 5 is skipped entirely when the REC's manifest declares no `dataspace.organi
 
 ## Authentication
 
-The onboarding service authenticates to identity-registry using **M2M (machine-to-machine) client credentials**:
+Every token is an OIDC client-credentials token (`celine.sdk.auth.OidcClientCredentialsProvider`), cached in memory per client **and per requested scope**, and renewed before expiry. Three principals reach the dataspace, and which one a call uses is decided by **whose act it is**:
 
-- **Client**: `svc-ds-onboarding` (configurable via `DS_ONBOARDING_CLIENT_ID`)
-- **Auth provider**: `celine.sdk.auth.OidcClientCredentialsProvider` from `celine-sdk>=1.13.0`
-- **Token handling**: The provider acquires tokens via the OIDC client credentials flow, caches them in memory, and auto-refreshes before expiry. No manual token management is needed.
+| Principal | Client | For |
+|---|---|---|
+| this service | `svc-ds-onboarding` (`DS_ONBOARDING_CLIENT_ID` / `_SECRET`) | what it does as itself: resolve an organisation (`/owners/resolve`), resolve a subject (`/users/resolve`), write the DID <-> Keycloak mapping (`/admin/keycloak/sync`); and the REC registry member client when `DATASPACE_ENABLED` |
+| the community | `svc-ds-collector-<alias>` (`SVC_DS_COLLECTOR_<ALIAS>_SECRET`) | everything done **for** a community: its members' credentials and memberships, their consent registrations and read-backs, the audience read |
+| the member | their credential (`X-Subject-Id` + `X-User-VC`) **and** their own login token | their own decisions and history (`/consent/my/shares`, `/prov/my/events`) |
 
-The `httpx.AsyncClient` is configured with the auth provider, so all outgoing requests to identity-registry automatically include a valid Bearer token. The same `svc-ds-onboarding` service token is used for most connector calls, carrying `connector.consent.audience` for reading an offer's audience back, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience.
+### Acting for a community
 
-**It no longer registers consent.** `connector.consent.provision` left every plain service client, because a service client is bound to no participant: one holding it could write a consent at any connector, for anybody's members. Registering a consent (`POST /consent/admin/shares`) and reading one subject's decisions back from a holder (`GET /consent/admin/subject-shares`) are made as the **community's own** client -- `svc-ds-connector-<alias>`, id derived from the manifest's `dataspace.organization`, secret `DS_ORG_CLIENT_SECRET` -- which already carries the grant and is the one identity a holder will accept as a consent collector. A deployment that upgraded ds and did not set that secret registers nothing and says so in the log; it does not silently fall back.
+An act for a community is that organisation's act: the receiver binds it to the organisation the token's `sub` names (the collector client's `sub` is the organisation's DID), and a shared service client -- whose secret every onboarding operator would hold -- names none. So each community bound to the dataspace has its own collector client, `svc-ds-collector-<alias>`, provisioned by ds for an organisation that collects consent, where the alias is the manifest's `dataspace.organization`. A deployment serving several communities holds one secret per community:
 
-`connector.consent.audience` is separate from `.provision` deliberately: a write grant must not carry bulk subject enumeration with it. It is what `GET /consent/admin/shares` requires, and the POD export is its only caller here. It stays on the service client, which is why the POD export is unaffected by the switch above.
+```text
+SVC_DS_COLLECTOR_<ALIAS>_SECRET    alias upper-cased, '-' -> '_'   e.g. SVC_DS_COLLECTOR_EXAMPLE_REC_SECRET
+```
 
-The same token carries **`rec-registry.lookup`** for the other half of that export: the DIDs the connector returns are resolved to supply points through `POST /admin/lookup/members-by-dids` on the rec-registry, which is also where `set_member_did` wrote the DID at step 6. One grant covers both lookup actions -- `rec_registry/access.rego` grants `lookup` and `assets.lookup` from it -- so there is no `rec-registry.assets.lookup` to declare. It is granted in `celine-policies/clients.ds-host.yaml`, the host overlay, because `rec-registry.*` is celine's vocabulary added on top of a client ds declares.
+Set in the environment, or in `.env` / `.env.local` (the environment wins).
+
+**One scope per token.** The collector client has no default ds scopes; each token asks for exactly the one optional scope its route requires, and each scope adds exactly one audience. A receiver requires its own audience and refuses a collector token naming another ds service's, so a token replayed anywhere else is useless, and a read never travels with a write's token:
+
+| Call | Scope | Audience |
+|---|---|---|
+| `POST /admin/credentials/data-subject`, `DELETE /admin/credentials/{id}` (IR) | `identity-registry.credentials.write` | `svc-ds-identity-registry` |
+| `POST /admin/memberships`, `DELETE /admin/memberships/{did}/{alias}` (IR) | `identity-registry.memberships.write` | `svc-ds-identity-registry` |
+| `POST /consent/admin/shares` (connector) | `connector.consent.provision` | `svc-ds-connector` |
+| `GET /consent/admin/subject-shares`, `GET /consent/admin/decisions` (connector) | `connector.consent.collector.read` | `svc-ds-connector` |
+| `GET /consent/admin/shares` -- the POD export's audience read (connector) | `connector.consent.audience` | `svc-ds-connector` |
+
+`connector.disclosure.record` and `provenance.write` are the collector's too, and nothing here calls them: this service records no disclosure (ADR-0010) and only reads provenance, as the member. `tests/contract/inventory.py` declares each call's principal and scope.
+
+**Outside `CELINE_ENV=dev`, a community without its collector secret refuses boot** -- every community bound to a dataspace organisation, with `DATASPACE_ENABLED`, all of them in one message -- and so does a secret equal to the client id. See [REQ-0037](specifications/dataspace-acting-for-a-community.md).
+
+**The development transition.** A local stack whose ds and realm predate the collector client has none to give. Under `CELINE_ENV=dev` only, a community without a collector secret keeps the pre-collector clients, with a warning naming the variable: the consent write and read-backs as its connector client `svc-ds-connector-<alias>` (`DS_ORG_CLIENT_SECRET`, `DS_ORG_CLIENT_ID` overriding the derived id), every other call as `svc-ds-onboarding`. Never outside dev, and never for a community whose collector secret is set.
+
+### The member's own calls
+
+The member's own decisions and history are read and written **as the member**: the credential this service resolved for them (`X-Subject-Id` + `X-User-VC`) says who the subject is, and the member's own Keycloak token -- the one they called this service with, forwarded as `Authorization: Bearer` -- says it is them; ds binds the two by realm and `sub` (ds ADR-0024). This service's own token never goes to a person route.
+
+### The REC registry lookup
+
+This service's token carries **`rec-registry.lookup`** for the other half of the POD export (whose audience read is the collector's, above): the DIDs the connector returns are resolved to supply points through `POST /admin/lookup/members-by-dids` on the rec-registry, which is also where `set_member_did` wrote the DID at step 6. One grant covers both lookup actions -- `rec_registry/access.rego` grants `lookup` and `assets.lookup` from it -- so there is no `rec-registry.assets.lookup` to declare. It is granted in `celine-policies/clients.ds-host.yaml`, the host overlay, because `rec-registry.*` is celine's vocabulary added on top of a client ds declares.
 
 ## Configuration
 
@@ -155,8 +185,9 @@ The same token carries **`rec-registry.lookup`** for the other half of that expo
 | `OIDC_BASE_URL` | *(none)* | OIDC issuer for M2M token acquisition — the **`celine` realm** (e.g. `http://keycloak.celine.localhost/realms/celine`). One realm for every outbound call this app makes; realm alignment converges there, so do not point it at the dataspaces realm. Required when `DATASPACE_ENABLED=true`. |
 | `DS_ONBOARDING_CLIENT_ID` | `svc-ds-onboarding` | Keycloak client ID for M2M authentication. |
 | `DS_ONBOARDING_CLIENT_SECRET` | *(none)* | Keycloak client secret for M2M authentication. Required when `DATASPACE_ENABLED=true`. |
-| `DS_ORG_CLIENT_ID` | *(derived)* | The community's own client, which is what registers a consent. Empty derives `svc-ds-connector-<alias>` from the REC's `dataspace.organization`. |
-| `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret. Required to register or withdraw any consent; without it nothing is recorded, at any connector. |
+| `SVC_DS_COLLECTOR_<ALIAS>_SECRET` | *(none)* | One per dataspace-bound community: the secret of `svc-ds-collector-<alias>`, which every act for that community is made as. Required outside `CELINE_ENV=dev` (boot refuses a missing one, or one equal to the client id). |
+| `DS_ORG_CLIENT_ID` | *(derived)* | **Development transition only.** The community's connector client, used under `CELINE_ENV=dev` for a community without a collector secret. Empty derives `svc-ds-connector-<alias>`. |
+| `DS_ORG_CLIENT_SECRET` | *(none)* | Its secret, for the same transition. Read nowhere else. |
 
 ### Participant login settings
 
@@ -176,14 +207,14 @@ policy resolves them by. See
 
 The identities this service presents are granted by different people for different
 things, and asking for a login in celine's realm is celine's business. One of them is
-not this service's at all -- registering a consent is an act of an organisation, so it
-is done under the community's own client:
+not this service's at all -- everything done for a community is that organisation's act,
+so it is done under the community's own collector client:
 
 | Identity | Is | Used for |
 |---|---|---|
 | `OIDC_CLIENT_ID` (`svc-onboarding`) | celine's own client | Asking the provisioning service for a login -- a **scope**, not a Keycloak grant; the Digital Twin's boundary lookups; the registry sync; and the REC registry member client **when `DATASPACE_ENABLED` is false** |
-| `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Identity registry, connector; and the REC registry member client (registration, DID write, supply-point lookups) **only when `DATASPACE_ENABLED` is true** |
-| `svc-ds-connector-<alias>` (`DS_ORG_CLIENT_SECRET`) | **the community's** client, not this service's | Registering a member's consent, and reading one member's decisions back from the participant that holds the data |
+| `DS_ONBOARDING_CLIENT_ID` (`svc-ds-onboarding`) | the dataspace's client | Resolving organisations and subjects, the DID <-> Keycloak mapping; and the REC registry member client (registration, DID write, supply-point lookups) **only when `DATASPACE_ENABLED` is true** |
+| `svc-ds-collector-<alias>` (`SVC_DS_COLLECTOR_<ALIAS>_SECRET`) | **the community's** client, not this service's | Its members' credentials and memberships, their consent registrations and read-backs, the audience read -- one scope per token |
 
 ### The two calls, and what they are keyed on
 
@@ -382,7 +413,7 @@ These control provisioning of data-sharing consent to the dataspace connector (s
 | Variable | Default | Description |
 |---|---|---|
 | `DS_CONNECTOR_URL` | *(none)* | The **community's own** connector: its members' decisions about its own data, and the member's `/consent/my/*` surface. When unset, share provisioning is skipped. A decision about data another participant holds goes to that participant instead — see the manifest's `dataspace.connectors`. |
-| `DS_ORG_CLIENT_ID` / `DS_ORG_CLIENT_SECRET` | *(derived)* / *(none)* | The community's own client, which is what registers a consent at either connector. |
+| `SVC_DS_COLLECTOR_<ALIAS>_SECRET` | *(none)* | The community's collector client, which registers and reads back a consent at either connector (one per community). `DS_ORG_CLIENT_*` only in the development transition. |
 | `DS_NS_URL` | *(none)* | Public vocabulary base (`GET /ns/sharing-offers`) the wizard renders offers from. When unset, falls back to the connector's `/ns` path. |
 
 ## Relation to REC registry registration
@@ -450,5 +481,5 @@ The integration follows a **fail-closed** strategy:
 - `httpx` -- async HTTP client for identity-registry API calls
 - **identity-registry** service -- must be deployed and accessible at `IDENTITY_REGISTRY_URL`
 - **ds-connector** service -- required only for data-sharing share provisioning; must be accessible at `DS_CONNECTOR_URL`
-- **Keycloak** -- must have the `svc-ds-onboarding` client configured with appropriate permissions: `connector.consent.audience` for the POD export's consent read, `rec-registry.lookup` for its supply-point read, `connector.disclosure.record` for the disclosure, and the `svc-ds-connector` audience. **Not** `connector.consent.provision`, which no longer works on a plain service client
-- **The community's own client** `svc-ds-connector-<alias>` -- created beside the participant by ds's own tooling, and the only identity that may register a consent. Its secret is `DS_ORG_CLIENT_SECRET`. A holder's connector additionally has to have recorded this community as an accepted consent collector
+- **Keycloak** -- must have the `svc-ds-onboarding` client with `identity-registry.organizations.read`, `identity-registry.resolve`, `identity-registry.keycloak.sync` and `rec-registry.lookup`. The grants for acts done for a community (`connector.consent.*`, `identity-registry.memberships.write` / `.credentials.write`, `connector.disclosure.record`, `provenance.write`) belong on the collector client, not here
+- **The community's collector client** `svc-ds-collector-<alias>` -- provisioned by ds for an organisation that collects consent (`sub` = the organisation's DID, no default ds scopes, the scopes in [Acting for a community](#acting-for-a-community) optional). Its secret is `SVC_DS_COLLECTOR_<ALIAS>_SECRET`. In the development transition only: the connector client `svc-ds-connector-<alias>`, secret `DS_ORG_CLIENT_SECRET`. A holder's connector additionally has to have recorded this community as an accepted consent collector
