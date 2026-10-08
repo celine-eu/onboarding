@@ -2,6 +2,7 @@
 name = "celine-onboarding"
 version = "1.0.1"
 description = "REC onboarding platform backend"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
