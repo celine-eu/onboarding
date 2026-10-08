@@ -14,6 +14,9 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src/ src/
+# pyproject.toml declares it as the package readme; hatchling refuses to build
+# the project without it.
+COPY README.md .
 COPY templates/ templates/
 # OPA policies for the admin console, evaluated in-process. Without them the
 # access policy cannot load and every /api/admin request is denied — so this is
