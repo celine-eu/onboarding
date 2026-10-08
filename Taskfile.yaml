@@ -36,6 +36,16 @@ tasks:
     cmds:
       - docker compose build
 
+  release:
+    desc: >-
+      Version, changelog and tag from the conventional commits since the last
+      tag, then push. The tag is what publishes: the release workflow builds
+      ghcr.io/celine-eu/onboarding and ghcr.io/celine-eu/onboarding-ui under it.
+    cmds:
+      - .venv/bin/semantic-release -v version --no-vcs-release
+      - git push
+      - git push --tags
+
   migrate:
     desc: Run Alembic migrations
     cmds:

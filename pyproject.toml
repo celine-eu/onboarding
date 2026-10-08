@@ -86,6 +86,8 @@ dev = [
     # "Failed to spawn: ruff" rather than reporting anything. A lint task that
     # cannot run reads as a lint task that passes.
     "ruff>=0.16",
+    # `task release`.
+    "python-semantic-release>=10.5.3",
 ]
 
 [tool.pytest.ini_options]
@@ -103,6 +105,33 @@ markers = [
     "e2e: needs a live app and a database (ONBOARDING_E2E_DATABASE_URL)",
     "ds_contract: needs a live ds stack (DS_CONTRACT_*_URL)",
 ]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+# The UI ships as its own image under the same version (`ghcr.io/celine-eu/onboarding-ui`),
+# so its package version moves with the API's.
+version_variables = ["ui/package.json:version"]
+
+build_command = """
+    uv lock --upgrade-package "$PACKAGE_NAME"
+    git add uv.lock
+    uv build
+"""
+
+branch = "main"
+changelog_file = "CHANGELOG.md"
+tag_format = "v{version}"
+commit_parser = "conventional"
+
+upload_to_release = false
+upload_to_pypi = false
+commit_version_number = false
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "up"]
+parse_squash_commits = true
+ignore_merge_commits = true
 
 [tool.ruff]
 target-version = "py312"

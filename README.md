@@ -337,7 +337,18 @@ task test                 # backend + frontend tests
 task lint                 # ruff + svelte-check
 task export-csv           # the community's register, via the API (-- --rec <slug>)
 task export-pod-list      # the community's supply-point evidence for one offer, via the API
+task release              # semantic-release: version, changelog, tag, push
 ```
+
+### Releasing
+
+`task release` derives the version from the conventional commits since the last tag,
+writes it to `pyproject.toml` and `ui/package.json`, updates `CHANGELOG.md`, tags
+`v<version>` and pushes. The release workflow (`.github/workflows/release.yaml`) builds two
+images from one repository and tags both alike: `ghcr.io/celine-eu/onboarding` (the API,
+`Dockerfile`) and `ghcr.io/celine-eu/onboarding-ui` (the UI, `ui/Dockerfile`). A tag
+publishes `:<tag>` and `:latest`; every push to `main` publishes `:dev`. Infra deploys them
+as two releases with one image-tag value.
 
 ### Adding a field
 
