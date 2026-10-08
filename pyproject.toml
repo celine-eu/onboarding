@@ -1,6 +1,6 @@
 [project]
 name = "celine-onboarding"
-version = "1.0.0"
+version = "1.0.1"
 description = "REC onboarding platform backend"
 requires-python = ">=3.12"
 dependencies = [
