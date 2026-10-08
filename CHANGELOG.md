@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.3 (2026-10-08)
+
+### Bug Fixes
+
+- Correct workflow
+  ([`955ac7d`](https://github.com/celine-eu/onboarding/commit/955ac7d884480db2c4155ec0460e1a4e51f1547a))
+
+
 ## v1.0.2 (2026-10-08)
 
 ### Bug Fixes
