@@ -67,11 +67,12 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The mapping belongs to the wheel target alone. Set for every target, it also
+# moved `src/celine` to `celine/` in the sdist, and the wheel, built from that
+# sdist, found nothing under `src/` and shipped empty.
 [tool.hatch.build.targets.wheel]
-packages = ["src/celine"]
-
-[tool.hatch.build.sources]
-"src" = ""
+only-include = ["src/celine/onboarding"]
+sources = {"src" = ""}
 
 [project.scripts]
 onboarding-cli = "celine.onboarding.cli.main:app"
