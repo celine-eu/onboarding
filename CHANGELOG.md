@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.0 (2026-10-09)
+
+### Features
+
+- Let the platform operator's client start a registry sync
+  ([`0935995`](https://github.com/celine-eu/onboarding/commit/09359952c2e2b27ef1fa7bd69e966be8dc896822))
+
+
 ## v1.0.3 (2026-10-08)
 
 ### Bug Fixes
