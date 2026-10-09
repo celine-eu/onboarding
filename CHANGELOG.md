@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.1 (2026-10-09)
+
+### Bug Fixes
+
+- Check a pooled database connection before using it
+  ([`f6bcf76`](https://github.com/celine-eu/onboarding/commit/f6bcf76e9da7570328dc3169901c067ce3b00d54))
+
+
 ## v1.1.0 (2026-10-09)
 
 ### Features
