@@ -189,8 +189,9 @@ The import calls the Digital Twin as this service (`OIDC_CLIENT_ID`, scope
 `digital-twin.values.read`), so it needs `DIGITAL_TWIN_URL` and
 `OIDC_CLIENT_SECRET` wherever it runs.
 
-The template's areas reach the registry only through an explicit sync by a realm
-admin — `onboarding-cli registry-sync --rec <slug> --token <their token>`, or `POST
+The template's areas reach the registry only through an explicit sync by the platform
+operator — `onboarding-cli registry-sync --rec <slug>` as the operator's client
+`celine-cli`, or with a platform admin's `--token <their token>`, or `POST
 /api/admin/recs/{rec}/registry-sync` ([specifications/registry-sync.md](specifications/registry-sync.md),
 [admin-console.md](admin-console.md#the-registry-sync)). Loading or reloading a template never
 does. Each area becomes one registry area `{name: <name>, boundary: {source, id},

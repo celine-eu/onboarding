@@ -89,7 +89,8 @@ class Transport(Protocol):
 
 
 class ApiTransport:
-    """The real API, authenticated as `svc-onboarding-cli`."""
+    """The real API, authenticated as the CLI's client (`ONBOARDING_CLI_CLIENT_ID`,
+    `svc-onboarding-cli` by default; `celine-cli` for the platform operator)."""
 
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self._base_url = (base_url or settings.onboarding_api_url).rstrip("/")
@@ -125,8 +126,8 @@ class ApiTransport:
         if response.status_code == 401:
             raise CliError(
                 "The API rejected the CLI's token (401). Check "
-                "ONBOARDING_CLI_CLIENT_SECRET and that svc-onboarding-cli exists in "
-                "Keycloak."
+                "ONBOARDING_CLI_CLIENT_SECRET and that "
+                f"{settings.onboarding_cli_client_id} exists in Keycloak."
             )
         if response.status_code == 403:
             raise CliError(f"Not permitted: {_detail(response)}")

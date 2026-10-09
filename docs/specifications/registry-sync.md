@@ -1,41 +1,49 @@
 # Registry sync
 
 How a template's areas reach the REC registry. The template is the source of truth for a
-community's areas; this service writes them to the registry when a platform admin asks, and
-at no other time. The reasons are in
+community's areas; this service writes them to the registry when the platform operator asks,
+and at no other time. The reasons are in
 [ADR-0012](../decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md)
 (the areas) and
 [ADR-0014](../decisions/ADR-0014-registry-sync-sets-up-the-community-through-the-provisioning-reconcile.md)
-(the set-up step).
+(the set-up step) and
+[ADR-0017](../decisions/ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md)
+(who may start it).
 
 ---
 
-### REQ-0009 — registry sync is an explicit platform-admin action
+### REQ-0009 — registry sync is an explicit platform operator's action
 
 `POST /api/admin/recs/{rec_slug}/registry-sync?dry_run=&prune=` pushes one REC's template
 areas to the registry community its `rec_registry.community` names. An `onboarding-cli`
 command calls the same route.
 
-- **Capability `recs.write`**, granted to the realm role `platform-admin` only (REQ-0030).
-  No organization group grants it, `admins` included, and no realm group does: the sync
-  writes registry data and provisioning state for a whole community.
-- **No service account holds `recs.write`.** No scope grants it, `onboarding.admin`
-  included, as none grants `members.invite` alone: a sync always follows a person's decision.
-- **The CLI authenticates as that person, or runs in-process.** `onboarding-cli`'s
-  registry-sync command takes a platform admin's own token (`--token`), or runs `--local` in
-  process, through the same service layer, under the break-glass rules. Its
-  `svc-onboarding-cli` client-credentials token is refused on this route.
+- **A sync is a platform operator's decision, made as a `platform-admin` person or through the
+  operator's client `celine-cli`.** Capability `recs.write` is granted to the realm role
+  `platform-admin` (REQ-0030) and to a service holding the scope `onboarding.recs.write`,
+  which `onboarding.admin` covers. No organization group grants it, `admins` included, and
+  no realm group does: the sync writes registry data and provisioning state for a whole
+  community.
+- **Any client holding `onboarding.admin` reaches it.** `celine-cli` is the one meant for it;
+  `svc-onboarding-cli`, the CLI's default client, holds `onboarding.admin` too. The sync is
+  not a delegated action: a service holding only a delegated scope is refused, whatever
+  operator token it forwards.
+- **The CLI authenticates as its client, as that person, or runs in-process.**
+  `onboarding-cli registry-sync` uses its own client-credentials identity
+  (`ONBOARDING_CLI_CLIENT_ID`; `celine-cli` for the platform operator) unless it is given a
+  platform admin's own token (`--token`), or runs `--local` in process, through the same
+  service layer, under the break-glass rules.
 - **Nothing else runs it.** Loading, reloading or importing a template never writes to the
   registry.
 - **An unknown REC is `404`**; a caller without `recs.write` is `403` before anything is
-  read or written. A platform admin sees `recs.write` among the REC's capabilities in
-  `GET /api/admin/me`; no organization group does.
-- **The CLI refuses to start without `--token` or `--local`** (exit code 2), so its
-  client-credentials identity is never tried. It exits 1 when any area or node was refused
-  or the set-up step (REQ-0014) failed.
+  read or written. A platform admin, and a client holding the scope, see `recs.write` among
+  the REC's capabilities in `GET /api/admin/me`; no organization group does.
+- **The CLI exits 1** when its identity is refused, when any area or node was refused, or
+  when the set-up step (REQ-0014) failed.
 - **A real sync is audited** (`registry_sync`, entity `rec`), with counts only: how many
   areas and nodes were created, changed, left alone, deleted or refused, and the set-up
-  step's status. A dry run records nothing.
+  step's status. The actor is the person, or `service` with the client id from the token's
+  `azp` (`celine-cli`), or `cli` for `--local`. A dry run records nothing.
 - The registry calls use this service's own token: `rec-registry.community.write` for the
   writes, requested for the call that writes and not carried by this service's default token;
   `rec-registry.read` for reading the community's areas, topology and member counts

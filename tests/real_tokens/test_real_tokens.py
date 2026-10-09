@@ -18,7 +18,9 @@ PLATFORM_ADMIN_ROLE = "platform-admin"
 VIEWER = {"recs.read", "submissions.read", "audit.read"}
 ORG_ADMIN = {c.value for c in ALL_CAPABILITIES} - {"members.invite", "recs.write"}
 PLATFORM_ADMIN = ORG_ADMIN | {"recs.write"}
-SERVICE_ADMIN = ORG_ADMIN - {"recs.drift"}
+# A service holding `onboarding.admin` reaches the registry sync (ADR-0017), and no
+# scope grants the drift check.
+SERVICE_ADMIN = PLATFORM_ADMIN - {"recs.drift"}
 ALL_RECS = ["foreign-rec", "own-rec", "unbound-rec"]
 
 

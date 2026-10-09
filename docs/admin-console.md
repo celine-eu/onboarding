@@ -425,7 +425,7 @@ and writes nothing. It is shown to a platform admin (the realm role `platform-ad
 the REC's own `managers` and `admins` (`recs.drift`), and the navigation offers the page only
 to them; the REC's editors and viewers do not see it. A community whose areas are
 municipality lists is not synced, and the page says so. Bringing the registry in line is the
-registry sync (below), which the console does not offer: it is a platform admin's act.
+registry sync (below), which the console does not offer: it is the platform operator's act.
 
 ## Language
 
@@ -477,29 +477,38 @@ still `failed`, so a repair loop can branch on it. Submissions are addressed by
 reference; an ambiguous partial is refused with the candidates listed rather than
 guessed at.
 
-Authentication is a `client_credentials` token for `svc-onboarding-cli`. `--local`
-talks to the database directly for a deployment with no Keycloak — see
+Authentication is a `client_credentials` token for the client named by
+`ONBOARDING_CLI_CLIENT_ID` (`svc-onboarding-cli` by default; `celine-cli` for the platform
+operator). `--local` talks to the database directly for a deployment with no Keycloak — see
 [authorization.md](authorization.md#break-glass).
 
 ### The registry sync
 
-A platform admin pushes a community's template areas to the REC registry, and sets the
+The platform operator pushes a community's template areas to the REC registry, and sets the
 community's Keycloak organization up on the way ([ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md),
 [ADR-0014](decisions/ADR-0014-registry-sync-sets-up-the-community-through-the-provisioning-reconcile.md)):
 
 ```bash
-onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN" --dry-run   # the plan, nothing written
-onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN"             # set up, then write
-onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN" --prune     # also delete undeclared areas
-onboarding-cli registry-sync --rec my-rec --local                            # in process, break-glass
+onboarding-cli registry-sync --rec my-rec --dry-run                       # the plan, nothing written
+onboarding-cli registry-sync --rec my-rec                                 # set up, then write
+onboarding-cli registry-sync --rec my-rec --prune                         # also delete undeclared areas
+onboarding-cli registry-sync --rec my-rec --token "$ADMIN_TOKEN"          # as a platform-admin person
+onboarding-cli registry-sync --rec my-rec --local                         # in process, break-glass
 ```
 
-It needs `recs.write`, which only the realm role `platform-admin` grants, so `--token` is that
-person's own access token; the CLI's service account is refused, and the command will not
-start without `--token` or `--local`. It prints the set-up step and every node and area
-with its outcome, takes `--json`, and exits 1 when anything was refused or the set-up
-step failed. A re-run is safe: it changes nothing that already matches and completes a
-set-up that failed.
+It needs `recs.write`. A sync is a platform operator's decision, made as a `platform-admin`
+person or through the operator's client `celine-cli`
+([ADR-0017](decisions/ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md)).
+Without `--token` the command authenticates as the CLI's client, so set
+`ONBOARDING_CLI_CLIENT_ID=celine-cli` and its secret in `ONBOARDING_CLI_CLIENT_SECRET`; its
+`onboarding.admin` covers the sync's scope, `onboarding.recs.write`. `svc-onboarding-cli`
+holds `onboarding.admin` too and is accepted the same way. `--token` takes a platform admin's
+own access token instead. The audit records who it was: the person, or the client
+(`actor_type=service`, its client id).
+
+It prints the set-up step and every node and area with its outcome, takes `--json`, and exits
+1 when the caller was refused, anything was refused or the set-up step failed. A re-run is
+safe: it changes nothing that already matches and completes a set-up that failed.
 
 Removing an area is two steps. `--prune` refuses an area members still reference and says
 how many: move them on the `celine-community` dashboard first, then prune.

@@ -25,7 +25,9 @@ authorization model is described in [authorization.md](../authorization.md).
   organization the request concerns travel in `input.subject.claims.org_groups`, and no
   other organization's groups are passed.
 - **A service account is not made a platform administrator by a role.** A service is
-  authorised by its scopes only; the role is read for people. A delegated action
+  authorised by its scopes only; the role is read for people. Its scopes may reach
+  `recs.write` (`onboarding.recs.write`, which `onboarding.admin` covers; REQ-0009,
+  ADR-0017), never `recs.drift`. A delegated action
   (`members.invite`) still needs a service acting for the operator, and an acting operator
   who holds `platform-admin` qualifies.
 - **Whether a caller is a person or a service is decided by the SDK's

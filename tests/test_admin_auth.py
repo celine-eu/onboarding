@@ -250,6 +250,27 @@ class TestARealmIssuedCliServiceToken:
             rec_a["capabilities"]
         )
 
+    @pytest.mark.parametrize("azp", ["svc-onboarding-cli", "celine-cli"])
+    def test_onboarding_admin_grants_it_the_registry_sync(self, client, issue_token, azp):
+        """`recs.write`, the sync (ADR-0017), and not `recs.drift`, which no scope grants.
+
+        `celine-cli`, the platform operator's client, is the one meant for it; any
+        client holding `onboarding.admin` reaches it.
+
+        @verifies REQ-0009
+        """
+        token = issue_token(
+            sub="7b2e9f14-3a6d-4c81-b5e0-2d9f8a7c6e53",
+            azp=azp,
+            scope="onboarding.admin",
+            jti="trrtcc:3d1f6b2a-7c4e-4f0a-8e2b-9a6c5d4e3f21",
+        )
+        body = client.get("/api/admin/me", headers=auth(token)).json()
+
+        [rec_a] = [rec for rec in body["recs"] if rec["slug"] == "rec-a"]
+        assert "recs.write" in rec_a["capabilities"]
+        assert "recs.drift" not in rec_a["capabilities"]
+
     def test_without_the_grant_marker_it_is_a_person_of_no_community(self, client, cli_token):
         """The marker is what decides it: the same claims with a password-grant
         `jti` hold no organization, and a person with none is refused."""

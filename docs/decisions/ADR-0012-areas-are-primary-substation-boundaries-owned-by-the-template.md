@@ -1,7 +1,7 @@
 # ADR-0012 — A community's areas are primary-substation boundaries, declared in its template and pushed to the registry on request
 
 **Date:** 2026-09-27
-**Status:** accepted
+**Status:** accepted; amended by [ADR-0017](ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md)
 
 ## Context
 

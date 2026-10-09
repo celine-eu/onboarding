@@ -149,7 +149,8 @@ async def registry_sync_route(
 ) -> RegistrySyncOut:
     """Push this REC's template areas to its registry community.
 
-    The `platform-admin` role only (`recs.write`); no service account holds it. A dry
+    The platform operator only (`recs.write`): the `platform-admin` role, or a client
+    holding `onboarding.recs.write` (`onboarding.admin` covers it; ADR-0017). A dry
     run writes nothing — not to the registry, not to the provisioning service —
     and answers the plan. A real run first sets the community up through the
     provisioning reconcile, whose failure is reported and does not stop the

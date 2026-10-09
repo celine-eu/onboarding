@@ -48,8 +48,10 @@ class Capability(enum.StrEnum):
     """
 
     RECS_READ = "recs.read"
-    #: The `platform-admin` role only, and no scope: the registry sync of a REC's
-    #: template areas. See `platform_only_actions` in the rego.
+    #: The platform operator only: the `platform-admin` role, or the scope
+    #: `onboarding.recs.write` (`onboarding.admin` covers it); never an organization
+    #: group. The registry sync of a REC's template areas. See
+    #: `platform_only_actions` in the rego.
     RECS_WRITE = "recs.write"
     #: The console's drift check of a REC's registry areas (D55): the
     #: `platform-admin` role, and that REC's own `managers` and `admins`; no

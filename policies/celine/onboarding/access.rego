@@ -117,24 +117,28 @@ required_scopes := {
 	"export": {"onboarding.export"},
 	"members.invite": {"onboarding.members.invite"},
 	"members.release": {"onboarding.members.release"},
+	# The registry sync, for the platform operator's client (`celine-cli`) and any
+	# other client holding `onboarding.admin`. See `platform_only_actions`.
+	"recs.write": {"onboarding.recs.write"},
 }
 
 # Actions reachable only by a service acting for a verified operator. See the
 # header.
 delegated_actions := {"members.invite", "members.release"}
 
-# Actions only the platform role grants. The registry sync (`recs.write`) pushes
+# Actions only the platform level grants. The registry sync (`recs.write`) pushes
 # a template's areas to the REC registry and sets the community up through the
 # provisioning reconcile: it writes a whole community's areas and topology and
 # its Keycloak organization, which is platform business. So it has no entry in
-# `required_groups` — an organization's own `admins` do not reach it — and none
-# in `required_scopes`, so `onboarding.admin` does not either, and a sync always
-# follows a person's decision.
+# `required_groups`: an organization's own `admins` do not reach it. It is a
+# platform operator's decision, taken as a person holding the `platform-admin`
+# role or through the operator's client, `celine-cli`, which holds
+# `onboarding.admin` and so `onboarding.recs.write` (ADR-0017).
 platform_only_actions := {"recs.write"}
 
 # Actions no scope grants, for people only: they have no entry in
 # `required_scopes`, so no service account reaches them, `onboarding.admin`
-# included. `recs.write` is one too (above).
+# included.
 people_only_actions := {"recs.drift"}
 
 known_action if required_groups[input.action.name]
@@ -255,7 +259,7 @@ reason := "granted by platform role" if {
 	not has_actor
 } else := "the acting operator holds no group granting this action" if {
 	is_delegated
-} else := "only the platform-admin role grants this action" if {
+} else := "only the platform-admin role or a platform operator's client grants this action" if {
 	input.action.name in platform_only_actions
 } else := "caller belongs to a different organization than this community" if {
 	input.subject.claims.organization != input.resource.attributes.organization

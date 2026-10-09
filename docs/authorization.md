@@ -34,7 +34,8 @@ There are exactly two, and nothing in between (REQ-0030):
 
 - **The realm role `platform-admin`**, read from the access token's
   `realm_access.roles` (`JwtUser.realm_roles`). It is the only platform-wide grant:
-  every capability on every community, `recs.write` and `recs.drift` included.
+  every capability on every community, `recs.write` and `recs.drift` included, and
+  the only one for a person.
 - **An organization's own groups**, `admins > managers > editors > viewers`, read from
   the `Organization` that `JwtUser.get_organization` returns for the organization the
   request concerns. They are valid inside that organization only.
@@ -54,7 +55,9 @@ the SDK's `PolicyInput`, passing the realm roles as `Subject.roles`, and seriali
 it with `PolicyEngine.build_input_dict`, which emits `subject.roles` beside
 `subject.groups` (celine-sdk 2.0.0).
 
-A service account is never granted by the role: it is authorised by its scopes.
+A service account is never granted by the role: it is authorised by its scopes, which
+are not organization-scoped. A service holding `onboarding.recs.write` (or
+`onboarding.admin`) therefore reaches `recs.write` on every community: see below.
 
 | Group | May |
 |---|---|
@@ -71,16 +74,21 @@ An organization group grants those for that community's RECs only. The
 their credential is not, and a deployment must be able to grant one without the
 other.
 
-### `recs.write` is the platform admin's only
+### `recs.write` is the platform operator's only
 
 The registry sync (`POST /api/admin/recs/{rec}/registry-sync`) writes a whole community's
-areas and topology in the REC registry and sets its Keycloak organization up, so its
-capability, `recs.write`, is granted by the realm role `platform-admin` and nothing else:
-not an organization's own `admins` (`platform_only_actions` in the rego), not a realm
-group, and no scope — it has no `onboarding.*` scope, so `onboarding.admin` does not
-satisfy it either. A sync always follows a person's decision: `onboarding-cli
-registry-sync` takes that person's `--token`, or runs `--local`. See
-[ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md).
+areas and topology in the REC registry and sets its Keycloak organization up. **A sync is a
+platform operator's decision, made as a `platform-admin` person or through the operator's
+client `celine-cli`.** So its capability, `recs.write`, is granted by the realm role
+`platform-admin` and by the scope `onboarding.recs.write`, which `onboarding.admin` covers:
+never by an organization's own `admins` (`platform_only_actions` in the rego), and never by
+a realm group. It is not delegated: a forwarded operator token lends a service nothing here.
+
+`celine-cli` holds `onboarding.admin`, and so does `svc-onboarding-cli`, the CLI's default
+client: either can start a sync, and the audit names which. `onboarding-cli registry-sync`
+uses its client-credentials identity unless given a person's `--token`, or runs `--local`.
+See [ADR-0012](decisions/ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md)
+and [ADR-0017](decisions/ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md).
 
 ### `recs.drift` is the platform admin's and the REC's own managers and admins
 
@@ -171,9 +179,10 @@ and startup logs a warning naming every affected REC.
 ## Scopes
 
 For service accounts and `onboarding-cli`. Defined in `celine-policies`'
-`clients.yaml`; `onboarding.admin` satisfies all of them. None grants `recs.write` (the
-registry sync), which is the `platform-admin` role's alone, or `recs.drift` (the drift check),
-which is for people only.
+`clients.yaml`; `onboarding.admin` satisfies all of them. `onboarding.recs.write` grants the
+registry sync (`recs.write`) and is meant for the platform operator's client; `celine-cli`
+holds it through `onboarding.admin`. None grants `recs.drift` (the drift check), which is for
+people only.
 
 ```
 onboarding.recs.read            onboarding.enablement.retry
@@ -182,7 +191,7 @@ onboarding.submissions.reveal   onboarding.audit.read
 onboarding.submissions.write    onboarding.export
 onboarding.submissions.review   onboarding.submissions.purge
 onboarding.submissions.revise   onboarding.members.invite
-                                onboarding.members.release
+onboarding.recs.write           onboarding.members.release
 ```
 
 `onboarding.submissions.revise` (correcting a POD, name or email by revision,

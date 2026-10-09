@@ -36,8 +36,9 @@ ADMIN = MANAGER | {"submissions.purge", "enablement.revoke"}
 # and no capability set below contains it.
 DELEGATED = {"members.invite", "members.release"}
 
-# Granted by the realm role `platform-admin` and nothing else: no organization
-# group, no scope (the registry sync, REQ-0009).
+# Granted at the platform level only: the realm role `platform-admin`, or a
+# service scope (`onboarding.recs.write`, covered by `onboarding.admin`); never an
+# organization group (the registry sync, REQ-0009).
 PLATFORM_ONLY = {"recs.write"}
 # Everything a person can hold, on every community (REQ-0030).
 PLATFORM_ADMIN = ADMIN | PLATFORM_ONLY
@@ -320,10 +321,10 @@ def test_the_policy_input_keeps_the_two_levels_apart(policy):
 # ---------------------------------------------------------------------------
 
 
-SERVICE_ADMIN = {c.value for c in ALL_CAPABILITIES} - DELEGATED - PLATFORM_ONLY - DRIFT
+SERVICE_ADMIN = {c.value for c in ALL_CAPABILITIES} - DELEGATED - DRIFT
 
 
-def test_service_admin_scope_grants_everything_but_delegated_and_platform_only_actions(policy):
+def test_service_admin_scope_grants_everything_but_delegated_and_people_only_actions(policy):
     caps = policy.capabilities(service("onboarding.admin"), organization=ORG)
     assert caps == SERVICE_ADMIN
 
@@ -346,6 +347,7 @@ def test_service_with_no_scope_gets_nothing(policy):
         ("onboarding.enablement.revoke", Capability.ENABLEMENT_REVOKE),
         ("onboarding.audit.read", Capability.AUDIT_READ),
         ("onboarding.export", Capability.EXPORT),
+        ("onboarding.recs.write", Capability.RECS_WRITE),
     ],
 )
 def test_narrow_service_scope_grants_exactly_one_capability(policy, scope, capability):
@@ -394,7 +396,8 @@ def test_a_realm_group_on_a_service_token_grants_nothing(policy, scope, expected
 
 
 # ---------------------------------------------------------------------------
-# recs.write — the registry sync, the platform admin only
+# recs.write — the registry sync, the platform level only: the platform-admin
+# role, or the platform operator's client by scope (ADR-0017)
 # ---------------------------------------------------------------------------
 
 SYNC = Capability.RECS_WRITE
@@ -430,21 +433,69 @@ def test_no_realm_group_grants_the_sync(policy, tier):
     assert not policy.allow(operator(realm_groups=(tier,)), SYNC, organization=ORG).allowed
 
 
+@pytest.mark.parametrize("community", [ORG, OTHER_ORG, None])
 @pytest.mark.parametrize(
-    "scopes",
-    [
-        ("onboarding.admin",),
-        ("onboarding.recs.read",),
-        ("onboarding.recs.write",),
-        ("onboarding.*",),
-    ],
+    "scopes", [("onboarding.admin",), ("onboarding.recs.write",), ("onboarding.*",)]
 )
-def test_no_scope_grants_the_sync(policy, scopes):
-    """No service account holds `recs.write`, `onboarding.admin` and wildcards included.
+def test_a_service_holding_the_sync_scope_may_sync(policy, scopes, community):
+    """The platform operator's client, `celine-cli`, holds `onboarding.admin`.
 
     @verifies REQ-0009
     """
-    assert not policy.allow(service(*scopes), SYNC, organization=ORG).allowed
+    decision = policy.allow(service(*scopes), SYNC, organization=community)
+    assert decision.allowed
+    assert decision.reason == "granted by service scope"
+
+
+def test_the_operator_client_as_a_realm_issues_it_may_sync(policy):
+    """`celine-cli`'s token as a realm synced by celine-policies issues it: `azp`
+    and the `trrtcc:` grant marker, no `client_id`, no `preferred_username`, no
+    realm role.
+
+    @verifies REQ-0009
+    """
+    cli = JwtUser(
+        sub="5c0e7d2a-9b41-4f6e-8a13-6d2f0b9e7c48",
+        claims={
+            "azp": "celine-cli",
+            "jti": "trrtcc:0f4b8e21-6a7d-4c39-9e52-1b8d3f6a0c74",
+            "scope": "digital-twin.admin rec-registry.admin onboarding.admin",
+        },
+    )
+    assert cli.is_service_account
+    assert policy.allow(cli, SYNC, organization=ORG).allowed
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        (),
+        ("onboarding.recs.read",),
+        ("onboarding.submissions.review", "onboarding.export"),
+        ("onboarding.members.invite", "onboarding.members.release"),
+        ("rec-registry.admin",),
+    ],
+)
+def test_a_service_without_the_sync_scope_may_not(policy, scopes):
+    """
+    @verifies REQ-0009
+    """
+    decision = policy.allow(service(*scopes), SYNC, organization=ORG)
+    assert not decision.allowed
+    assert decision.reason == "service is missing a scope granting this action"
+
+
+@pytest.mark.parametrize(
+    "scopes", [("onboarding.members.invite",), ("onboarding.members.release",)]
+)
+def test_a_delegated_service_call_may_not_sync(policy, scopes):
+    """The sync is not a delegated action: an acting platform admin's token lends
+    a service nothing, so a delegated scope does not reach it.
+
+    @verifies REQ-0009
+    """
+    actor = operator(roles=(PLATFORM_ADMIN_ROLE,))
+    assert not policy.allow(service(*scopes), SYNC, organization=ORG, actor=actor).allowed
 
 
 def test_an_org_admin_is_told_why_the_sync_is_refused(policy):
@@ -452,7 +503,10 @@ def test_an_org_admin_is_told_why_the_sync_is_refused(policy):
     @verifies REQ-0009
     """
     decision = policy.allow(operator(org=ORG, groups=("admins",)), SYNC, organization=ORG)
-    assert decision.reason == "only the platform-admin role grants this action"
+    assert (
+        decision.reason
+        == "only the platform-admin role or a platform operator's client grants this action"
+    )
 
 
 # ---------------------------------------------------------------------------

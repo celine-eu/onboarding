@@ -139,7 +139,7 @@ endpoint needs is in brackets.
 | `GET` | `/api/admin/me` | Identity + per-community capabilities. 403 when the caller administers nothing, which is what drives the console's denied page |
 | `GET` | `/api/admin/recs` | Communities the caller may administer |
 | `POST` | `/api/admin/recs/reload` | Force a manifest cache refresh (deployment-wide, so the `platform-admin` role only) [`recs.read`] |
-| `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **The `platform-admin` role only**, no scope grants it; see below [`recs.write`] |
+| `POST` | `/api/admin/recs/{rec}/registry-sync?dry_run=&prune=` | Push the REC's template areas to its registry community, after setting the community up through the provisioning reconcile. **The platform operator only**: the `platform-admin` role, or a client holding `onboarding.recs.write` (`onboarding.admin` covers it; `celine-cli`); see below [`recs.write`] |
 | `GET` | `/api/admin/recs/{rec}/registry-drift` | Whether the registry's areas and topology match the template; a read, see below. The `platform-admin` role and the REC's own `managers`/`admins` only, no scope [`recs.drift`] |
 | `GET` | `/api/admin/{rec}/stats` | Queue counts by status + submissions with a failed enablement step [`submissions.read`] |
 | `GET` | `/api/admin/{rec}/submissions` | Queue. Filters `status`, `ref`, `created_from/to`, `declared_existing_member`; `X-Total-Count` header. Fiscal code and POD masked [`submissions.read`] |
@@ -163,14 +163,14 @@ endpoint needs is in brackets.
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/invitation` | Email a registry member an invitation to set a password. **Delegated**, see below [`members.invite`] |
 | `POST` | `/api/admin/communities/{community}/members/{member_key}/password-reset` | Email a registry member a password reset. **Delegated**, see below [`members.invite`] |
 
-**Registry sync (`/api/admin/recs/{rec}/registry-sync`, ADR-0012, ADR-0014):**
+**Registry sync (`/api/admin/recs/{rec}/registry-sync`, ADR-0012, ADR-0014, ADR-0017):**
 
 The template is the source of truth for a community's areas; this route is the only thing
-that writes them to the REC registry, and it runs only when a platform admin calls it (never on
-a template load). `onboarding-cli registry-sync --rec <slug> [--dry-run] [--prune]` calls
-the same route with a platform admin's own `--token`, or runs `--local` in process under the
-break-glass rules; the CLI's client-credentials identity is never used for it
-([specification](specifications/registry-sync.md)).
+that writes them to the REC registry, and it runs only when the platform operator calls it
+(never on a template load). `onboarding-cli registry-sync --rec <slug> [--dry-run] [--prune]`
+calls the same route with the CLI's client-credentials identity (`celine-cli` for the
+platform operator), or with a platform admin's own `--token`, or runs `--local` in process
+under the break-glass rules ([specification](specifications/registry-sync.md)).
 
 In order:
 

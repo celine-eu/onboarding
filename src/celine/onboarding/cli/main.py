@@ -312,29 +312,24 @@ def registry_sync(
     token: str = typer.Option(
         None,
         "--token",
-        help="A platform admin's own access token. Required unless --local: no service "
-        "account may start a sync",
+        help="A platform admin's own access token, instead of the CLI's client-credentials "
+        "identity",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
-    """Push a REC's template areas to its registry community, as a platform admin.
+    """Push a REC's template areas to its registry community, as the platform operator.
 
     The same route the console calls, `POST /api/admin/recs/{rec}/registry-sync`,
-    authorised as `recs.write`, which only the realm role `platform-admin` grants.
-    Pass that admin's own token with `--token`, or run `--local` in process under
-    the break-glass rules (ALLOW_LOCAL_ADMIN=true). The CLI's own
-    client-credentials identity is never used for it.
+    authorised as `recs.write`: a sync is a platform operator's decision, made as a
+    person holding the realm role `platform-admin` or through the operator's
+    client `celine-cli`. By default the CLI authenticates with its own
+    client-credentials identity (ONBOARDING_CLI_CLIENT_ID), which needs the scope
+    `onboarding.recs.write` or `onboarding.admin`. Pass a platform admin's own
+    token with `--token`, or run `--local` in process under the break-glass rules
+    (ALLOW_LOCAL_ADMIN=true).
 
     Exits 1 when any area or node was refused, or the community set-up failed.
     """
-    if not local and not token:
-        typer.secho(
-            "registry-sync needs --token <a platform admin's access token>, or --local. "
-            "It is a person's decision: the CLI's service account cannot start one.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(2)
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)

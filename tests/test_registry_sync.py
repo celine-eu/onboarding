@@ -156,7 +156,7 @@ def _outcomes(body: dict, kind: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-class TestOnlyAPlatformAdminMaySync:
+class TestOnlyThePlatformLevelMaySync:
     def test_a_platform_admin_may(self, client, registry, provisioning, platform_admin):
         """
         @verifies REQ-0009
@@ -188,18 +188,48 @@ class TestOnlyAPlatformAdminMaySync:
         assert response.status_code == 403
         assert registry.requests == []
 
-    @pytest.mark.parametrize(
-        "scopes", [("onboarding.admin",), ("onboarding.recs.read",), ("onboarding.*",)]
-    )
-    def test_no_service_account_may(self, client, registry, service_token, scopes):
-        """`svc-onboarding-cli`'s client-credentials token included.
+    @pytest.mark.parametrize("scopes", [("onboarding.admin",), ("onboarding.recs.write",)])
+    def test_the_operator_client_may(self, client, registry, provisioning, service_token, scopes):
+        """`celine-cli`, the platform operator's client, holds `onboarding.admin`.
 
         @verifies REQ-0009
         """
-        token = service_token(*scopes)
+        token = service_token(*scopes, client_id="celine-cli")
+        response = _sync(client, {"Authorization": f"Bearer {token}"}, dry_run=True)
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.parametrize(
+        "scopes", [(), ("onboarding.recs.read",), ("onboarding.members.invite",)]
+    )
+    def test_a_service_without_the_scope_may_not(self, client, registry, service_token, scopes):
+        """
+        @verifies REQ-0009
+        """
+        token = service_token(*scopes, client_id="celine-cli")
         response = _sync(client, {"Authorization": f"Bearer {token}"}, dry_run=True)
         assert response.status_code == 403
         assert registry.requests == []
+
+    def test_a_sync_by_the_operator_client_is_audited_as_that_client(
+        self, client, registry, provisioning, issue_token, db
+    ):
+        """The token as a realm issues it: `azp` and the grant marker, no `client_id`.
+
+        @verifies REQ-0009
+        """
+        token = issue_token(
+            sub="5c0e7d2a-9b41-4f6e-8a13-6d2f0b9e7c48",
+            azp="celine-cli",
+            jti="trrtcc:0f4b8e21-6a7d-4c39-9e52-1b8d3f6a0c74",
+            scope="onboarding.admin",
+        )
+        assert _sync(client, {"Authorization": f"Bearer {token}"}).status_code == 200
+
+        [row] = db.audit_rows
+        assert row.action == "registry_sync"
+        assert row.actor_type == "service"
+        assert row.actor_client_id == "celine-cli"
+        assert row.actor_email is None
 
     def test_no_token_is_401(self, client, registry):
         """
@@ -1427,7 +1457,8 @@ def test_nothing_personal_is_logged(client, registry, provisioning, platform_adm
 
 
 # ---------------------------------------------------------------------------
-# The CLI (REQ-0009): the same route, as a person, or in process
+# The CLI (REQ-0009): the same route, as the operator's client, a person, or in
+# process
 # ---------------------------------------------------------------------------
 
 API = "http://onboarding.test"
@@ -1462,16 +1493,79 @@ def _cli(*args: str):
 
 
 class TestTheCli:
-    def test_without_a_token_or_local_it_refuses_before_asking(
-        self, cli_to_app, registry, provisioning
+    @pytest.fixture()
+    def client_credentials(self, monkeypatch, issue_token):
+        """The CLI's client-credentials grant, answered with a realm-shaped token.
+
+        Records the client the CLI asked a token for; the app verifies the token
+        it receives for real.
+        """
+        import celine.sdk.auth
+
+        from celine.onboarding.config.settings import settings
+
+        asked: list[str] = []
+        scopes = {"scope": "onboarding.admin"}
+
+        class _Provider:
+            def __init__(self, *, base_url, client_id, client_secret, **_):
+                asked.append(client_id)
+                self._client_id = client_id
+
+            async def get_token(self):
+                class _Token:
+                    access_token = issue_token(
+                        sub="5c0e7d2a-9b41-4f6e-8a13-6d2f0b9e7c48",
+                        azp=self._client_id,
+                        jti="trrtcc:0f4b8e21-6a7d-4c39-9e52-1b8d3f6a0c74",
+                        **scopes,
+                    )
+
+                return _Token()
+
+        monkeypatch.setattr(celine.sdk.auth, "OidcClientCredentialsProvider", _Provider)
+        monkeypatch.setattr(settings, "onboarding_cli_client_id", "celine-cli")
+        return asked, scopes
+
+    def test_without_a_token_it_syncs_as_the_cli_client(
+        self, cli_to_app, registry, provisioning, client_credentials, db
     ):
-        """The CLI's own service account never starts a sync (D35).
+        """No person's token and no `--local`: the CLI's own client-credentials
+        identity, `celine-cli` here, starts the sync.
 
         @verifies REQ-0009
         """
+        asked, _ = client_credentials
         result = _cli()
-        assert result.exit_code == 2
-        assert "--token" in result.output and "--local" in result.output
+        assert result.exit_code == 0, result.output
+        assert asked == ["celine-cli"]
+        assert "set up community: succeeded" in result.output
+        assert set(registry.snapshot()["areas"]) == {"north", "south"}
+        [row] = db.audit_rows
+        assert row.actor_type == "service" and row.actor_client_id == "celine-cli"
+
+    def test_without_a_token_a_dry_run_writes_nothing(
+        self, cli_to_app, registry, provisioning, client_credentials
+    ):
+        """
+        @verifies REQ-0010
+        """
+        result = _cli("--dry-run", "--json")
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["dry_run"] is True
+        assert registry.writes() == [] and provisioning.calls == []
+
+    def test_a_cli_client_without_the_scope_is_refused(
+        self, cli_to_app, registry, provisioning, client_credentials
+    ):
+        """
+        @verifies REQ-0009
+        """
+        _, scopes = client_credentials
+        scopes["scope"] = "onboarding.recs.read"
+        result = _cli()
+        assert result.exit_code == 1
+        assert "Not permitted" in result.output
         assert registry.requests == [] and provisioning.calls == []
 
     def test_a_non_admin_token_is_refused(self, cli_to_app, registry, operator_token):
@@ -1483,11 +1577,13 @@ class TestTheCli:
         assert "Not permitted" in result.output
         assert registry.requests == []
 
-    def test_a_service_token_is_refused(self, cli_to_app, registry, service_token):
+    def test_a_service_token_without_the_scope_is_refused(
+        self, cli_to_app, registry, service_token
+    ):
         """
         @verifies REQ-0009
         """
-        result = _cli("--token", service_token("onboarding.admin"))
+        result = _cli("--token", service_token("onboarding.submissions.review"))
         assert result.exit_code == 1
         assert "Not permitted" in result.output
         assert registry.requests == []

@@ -1,7 +1,7 @@
 # ADR-0014 — Registry sync sets up the community's organization through the provisioning reconcile
 
 **Date:** 2026-09-27
-**Status:** accepted
+**Status:** accepted; amended by [ADR-0017](ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md)
 
 Supersedes the consequence of
 [ADR-0004](ADR-0004-ask-the-provisioning-service-instead-of-administering-the-realm.md) that

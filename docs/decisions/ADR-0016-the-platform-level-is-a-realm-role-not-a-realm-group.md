@@ -1,7 +1,7 @@
 # ADR-0016 — The platform level is the realm role `platform-admin`, not a realm group
 
 **Date:** 2026-10-03
-**Status:** accepted
+**Status:** accepted; amended by [ADR-0017](ADR-0017-the-platform-operators-client-may-start-a-registry-sync.md)
 
 Narrows the "realm-level" grant that [ADR-0003](ADR-0003-provision-into-the-group-this-service-may-administer.md),
 [ADR-0012](ADR-0012-areas-are-primary-substation-boundaries-owned-by-the-template.md) and
