@@ -136,7 +136,7 @@ def api(idp: TestIdp, _seeded) -> str:
         "DS_CONNECTOR_URL": "",
         "REC_REGISTRY_URL": "",
         "DATASPACE_ENABLED": "false",
-        "POLICIES_DIR": str(REPO_ROOT / "policies"),
+        "CELINE_POLICIES_DIR": str(REPO_ROOT / "policies"),
         "TEMPLATES_DIR": str(REPO_ROOT / "templates"),
         # Every request comes from 127.0.0.1, so the per-IP limits would
         # otherwise stop the suite a third of the way in.

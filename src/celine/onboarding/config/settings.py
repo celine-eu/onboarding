@@ -138,8 +138,12 @@ class Settings(BaseSettings):
     # OPA policies evaluated in-process for every /api/admin request. Default is
     # the repo's own policies/ directory rather than PoliciesSettings' relative
     # "./policies", because the API is started from ./src and a relative path
-    # would resolve to src/policies.
-    policies_dir: str = str(REPO_ROOT / "policies")
+    # would resolve to src/policies. Read from `CELINE_POLICIES_DIR`, the name
+    # celine-sdk's PoliciesSettings and the infra chart use; until 2026-10-15
+    # it was `POLICIES_DIR`, which nothing else on the platform reads.
+    policies_dir: str = Field(
+        default=str(REPO_ROOT / "policies"), validation_alias="CELINE_POLICIES_DIR"
+    )
     # When the policy bundle cannot be loaded, deny. A permissive fallback is
     # what celine-grid does, and it is genuinely convenient in development — but
     # the failure it papers over is "no authorization at all", so it has to be

@@ -225,7 +225,7 @@ manager's token. `onboarding.members.release` is the same, with a REC admin's to
 | `OIDC_JWKS_URI` | Defaults to `{OIDC_BASE_URL}/protocol/openid-connect/certs`. |
 | `OIDC_AUDIENCE` | `svc-onboarding`. A token minted for another service is rejected. |
 | `JWT_HEADER_NAME` | `x-auth-request-access-token`, set by oauth2-proxy. |
-| `POLICIES_DIR` | Where the rego lives. Shipped in the image. |
+| `CELINE_POLICIES_DIR` | Where the rego lives. Shipped in the image. |
 | `ALLOW_PERMISSIVE_POLICY` | **Allows everything** when the bundle fails to load. Development only: startup refuses it unless `CELINE_ENV=dev`. |
 
 Startup refuses four configurations in which the console would *appear* guarded

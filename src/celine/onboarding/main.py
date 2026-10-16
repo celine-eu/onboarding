@@ -599,7 +599,7 @@ def _validate_admin_config() -> None:
             "Every /api/admin request would be denied, so the console would be\n"
             "unusable rather than insecure — but the cause is worth fixing at boot\n"
             "instead of discovering it one denial at a time.\n\n"
-            "  1. Check POLICIES_DIR points at the repo's policies/ directory\n"
+            "  1. Check CELINE_POLICIES_DIR points at the repo's policies/ directory\n"
             "  2. For development without policies (CELINE_ENV=dev only), set\n"
             "     ALLOW_PERMISSIVE_POLICY=true — which allows EVERYTHING\n\n"
             "═══════════════════════════════════════════════════════════════\n"

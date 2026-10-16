@@ -125,7 +125,7 @@ services:
       # `SVC_ONBOARDING_SECRET`), as the other services' dev defaults are; a
       # deployment sets its own.
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-svc-onboarding}
-      POLICIES_DIR: /app/policies
+      CELINE_POLICIES_DIR: /app/policies
     # `.env` is gitignored, so a fresh checkout has none — and a plain list entry
     # makes compose refuse to start rather than fall through to the defaults
     # above. Optional is what lets `docker compose up` work on a clone with no

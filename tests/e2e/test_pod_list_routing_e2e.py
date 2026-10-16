@@ -331,7 +331,7 @@ def routed_api(idp, database, dataspace) -> str:
         "DS_ORG_CLIENT_SECRET": "e2e",
         "REC_REGISTRY_URL": "",
         "DATASPACE_ENABLED": "false",
-        "POLICIES_DIR": str(REPO_ROOT / "policies"),
+        "CELINE_POLICIES_DIR": str(REPO_ROOT / "policies"),
         "TEMPLATES_DIR": str(REPO_ROOT / "templates"),
     }
     process = subprocess.Popen(
