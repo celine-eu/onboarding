@@ -1,4 +1,5 @@
 import copy
+import json
 import logging
 import re
 import time
@@ -1128,6 +1129,30 @@ def get_consent_dir(rec_slug: str) -> Path:
     if consent_dir.exists():
         return consent_dir
     return Path(settings.data_dir) / "consent"
+
+
+def consent_document_meta(rec_slug: str, slug: str) -> dict[str, Any] | None:
+    """The metadata of a consent document kept with the template (`<slug>.*.json`), or None."""
+    consent_dir = get_consent_dir(rec_slug)
+    meta_file = next((f for f in consent_dir.glob(f"{slug}.*") if f.name.endswith(".json")), None)
+    if meta_file is None:
+        return None
+    return json.loads(meta_file.read_text(encoding="utf-8"))
+
+
+def consent_document_path(rec_slug: str, slug: str) -> Path | None:
+    """The consent document file kept with the template, or None when there is none to serve."""
+    meta = consent_document_meta(rec_slug, slug)
+    if meta is None:
+        return None
+    filename = meta.get("filename", f"{slug}.pdf")
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    consent_dir = get_consent_dir(rec_slug)
+    doc_path = (consent_dir / filename).resolve()
+    if not doc_path.is_relative_to(consent_dir.resolve()) or not doc_path.is_file():
+        return None
+    return doc_path
 
 
 def get_asset_path(rec_slug: str, relative: str) -> Path | None:

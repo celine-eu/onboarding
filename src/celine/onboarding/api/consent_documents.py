@@ -18,23 +18,15 @@ def _consent_dir(rec_slug: str) -> Path:
 
 
 def _load_meta(rec_slug: str, slug: str) -> dict:
-    meta_files = list(_consent_dir(rec_slug).glob(f"{slug}.*"))
-    json_file = next((f for f in meta_files if f.name.endswith(".json")), None)
-    if not json_file:
+    meta = template_service.consent_document_meta(rec_slug, slug)
+    if meta is None:
         raise HTTPException(404, f"No metadata for '{slug}'")
-    return json.loads(json_file.read_text(encoding="utf-8"))
+    return meta
 
 
 def _find_document(rec_slug: str, slug: str) -> Path:
-    meta = _load_meta(rec_slug, slug)
-    filename = meta.get("filename", f"{slug}.pdf")
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise HTTPException(400, "Invalid filename")
-    consent_dir = _consent_dir(rec_slug)
-    doc_path = (consent_dir / filename).resolve()
-    if not doc_path.is_relative_to(consent_dir.resolve()):
-        raise HTTPException(400, "Invalid path")
-    if not doc_path.exists():
+    doc_path = template_service.consent_document_path(rec_slug, slug)
+    if doc_path is None:
         raise HTTPException(404, f"Document file not found for '{slug}'")
     return doc_path
 

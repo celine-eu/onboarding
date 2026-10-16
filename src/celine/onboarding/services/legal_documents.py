@@ -5,7 +5,8 @@ A deployment may run a legal host that serves every community's documents
 and its page per language. A consent slot the manifest declares without its own `url` or
 `file` resolves there, so a community's template needs no legal links at all. Per slot:
 
-1. the manifest's own `url` or `file` wins (an operator can always point elsewhere);
+1. the manifest's own `url` wins (an operator can always point elsewhere), and so does its
+   `file`, when the template has that document to serve;
 2. otherwise, with `LEGAL_BASE_URL` set, the legal host: the versioned page in the
    community's language, and that version;
 3. if the host has never answered, the slot's address (`<base>/<community>/<slot>/`, which
@@ -13,7 +14,8 @@ and its page per language. A consent slot the manifest declares without its own 
    version it was, from the host's dated history;
 4. a slot whose document the community does not have (not on the host, or published
    nowhere) is not asked: nobody can be made to accept a document they cannot read;
-5. without `LEGAL_BASE_URL`, today's behaviour: the declared slot as it is.
+5. without `LEGAL_BASE_URL`, the declared slot as it is, when it has a `url` or the template
+   has its document; otherwise it is not asked, like rule 4.
 
 `current.json` is refreshed every few minutes, and the last good copy is kept for as long
 as the host does not answer.
@@ -105,6 +107,13 @@ def _resolve_one(rec_slug: str, manifest: dict[str, Any], legal_slot: str) -> di
     return _from_host(legal, manifest.get("locale", "it")) if legal else None
 
 
+def _kept_with_the_template(rec_slug: str, slot: str) -> bool:
+    """Whether the template has the slot's document, served at `/consent-documents/<slot>`."""
+    from celine.onboarding.services import template_service
+
+    return template_service.consent_document_path(rec_slug, slot) is not None
+
+
 def consent_documents(rec_slug: str, manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Per asked consent slot, what it shows: the manifest's entry, completed by the legal host."""
     consent = manifest.get("consent") or {}
@@ -113,8 +122,12 @@ def consent_documents(rec_slug: str, manifest: dict[str, Any]) -> dict[str, dict
         declared = consent.get(slot)
         if not isinstance(declared, dict):
             continue
-        if declared.get("url") or declared.get("file") or not _base():
+        if declared.get("url"):
             resolved[slot] = dict(declared)
+            continue
+        if declared.get("file") or not _base():
+            if _kept_with_the_template(rec_slug, slot):
+                resolved[slot] = dict(declared)
             continue
         found = _resolve_one(rec_slug, manifest, legal_slot)
         if found is not None:

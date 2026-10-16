@@ -58,11 +58,47 @@ def _serves(body, calls=None):
     return handler
 
 
-def test_without_a_legal_host_the_manifest_is_as_it_was(monkeypatch):
+def _template_with(monkeypatch, tmp_path, *slots: str) -> None:
+    """A template directory for `rec-a` keeping these slots' documents, as served."""
+    consent = tmp_path / "rec-a" / "consent"
+    consent.mkdir(parents=True)
+    for slot in slots:
+        (consent / f"{slot}.pdf").write_bytes(b"%PDF-1.4")
+        (consent / f"{slot}.pdf.json").write_text(json.dumps({"filename": f"{slot}.pdf"}))
+    monkeypatch.setattr(settings, "templates_dir", str(tmp_path))
+
+
+def test_without_a_legal_host_the_manifest_is_as_it_was(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "legal_base_url", "")
+    _template_with(monkeypatch, tmp_path, "gdpr", "statute")
     manifest = _manifest(gdpr=ASK, statute={"version": "1.0", "file": "consent/statute.pdf"})
     assert ld.consent_documents("rec-a", manifest) == {"gdpr": ASK, "statute": manifest["consent"]["statute"]}
     assert ld.data_sharing_notice("rec-a", _manifest(data_sharing={})) is None
+
+
+def test_without_a_legal_host_a_slot_with_no_document_is_not_asked(monkeypatch, tmp_path):
+    """No `url`, nothing kept with the template, no host: a required box nobody could read."""
+    monkeypatch.setattr(settings, "legal_base_url", "")
+    _template_with(monkeypatch, tmp_path, "gdpr")
+    own = {"version": "2026-06-13", "url": "https://rec-a.example.org/rules.pdf"}
+    manifest = _manifest(gdpr=ASK, policy=own, statute={"version": "1.0", "required": True})
+    assert ld.consent_documents("rec-a", manifest) == {"gdpr": ASK, "policy": own}
+
+
+def test_a_file_the_template_does_not_have_is_not_asked(monkeypatch, tmp_path):
+    _template_with(monkeypatch, tmp_path)
+    ld._current["rec-a"] = CURRENT
+    manifest = _manifest(statute={"version": "1.0", "file": "consent/statute.pdf"})
+    assert ld.consent_documents("rec-a", manifest) == {}
+
+
+def test_the_asked_slots_follow_the_documents(monkeypatch, tmp_path, seed_rec):
+    """The wizard's boxes and the server's required check read the same resolution."""
+    monkeypatch.setattr(settings, "legal_base_url", "")
+    _template_with(monkeypatch, tmp_path, "gdpr", "policy")
+    seed_rec("rec-a", consent={"gdpr": ASK, "policy": ASK, "statute": ASK})
+    assert template_service.consent_slots("rec-a") == ("gdpr", "policy")
+    assert "statute" not in template_service.get_config("rec-a")["consent"]
 
 
 def test_the_manifests_own_link_wins():
@@ -160,3 +196,16 @@ async def test_an_unknown_version_is_recorded_without_one(seed_rec):
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"}, consent={"gdpr": ASK})
     row = await _create(ConsentCreate(gdpr_consent=True, gdpr_consent_version=None))
     assert row.gdpr_consent and row.gdpr_consent_version is None and row.gdpr_consent_at is not None
+
+
+def test_the_template_serves_only_its_own_documents(monkeypatch, tmp_path):
+    _template_with(monkeypatch, tmp_path, "gdpr")
+    consent = tmp_path / "rec-a" / "consent"
+    served = template_service.consent_document_path("rec-a", "gdpr")
+    assert served == (consent / "gdpr.pdf").resolve()
+    assert template_service.consent_document_path("rec-a", "statute") is None
+    # metadata, and no file behind it
+    (consent / "policy.pdf.json").write_text(json.dumps({"filename": "policy.pdf"}))
+    assert template_service.consent_document_path("rec-a", "policy") is None
+    (consent / "terms.pdf.json").write_text(json.dumps({"filename": "../../outside.pdf"}))
+    assert template_service.consent_document_path("rec-a", "terms") is None

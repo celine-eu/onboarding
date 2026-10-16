@@ -272,9 +272,12 @@ decides whether a recipient is disclosed or must be consented to separately. See
 **A slot the manifest leaves out is not asked**: no checkbox, nothing required or recorded.
 That is how a community that publishes no statute is onboarded.
 
-A declared slot shows, in this order:
+A declared slot is asked only when there is a document to read. A required box whose link
+leads nowhere is never shown. A declared slot shows, in this order:
 
-1. its own `url` or `file`;
+1. its own `url`, or its `file` when the template keeps that document (`consent/<slot>.*` with
+   its `.json` metadata, the file `/api/<rec>/consent-documents/<slot>` serves). A `file` the
+   template does not have is not asked;
 2. otherwise, when `LEGAL_BASE_URL` is set, the legal host's document for that community.
    This is the versioned page in the community's `locale` (`gdpr` → `privacy`, `policy` →
    `regulations`, `statute` → `statute`, read from `<LEGAL_BASE_URL>/<community>/current.json`,
@@ -282,6 +285,8 @@ A declared slot shows, in this order:
    A document the host does not have, or that its owner publishes nowhere, is not asked;
 3. before the host has ever answered, the slot's address with no version. The acceptance's
    date then says which version it was, from the host's dated history.
+4. without `LEGAL_BASE_URL`, a slot with neither `url` nor a document kept with the template
+   is not asked.
 
 The version recorded with an acceptance is the one this service showed, never the client's.
 A submission naming another version came from a stale page, and is refused with 409.
