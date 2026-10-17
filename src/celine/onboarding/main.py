@@ -735,8 +735,10 @@ def create_app() -> FastAPI:
         # `supply_boundary_area_name`; to 0.5.0 for `/api/admin/me`'s
         # `platform_roles` in place of `realm_groups`, the submission revisions
         # routes (and their retry body's own `RevisionRetryRequest` schema), the
-        # shared delivery points read and the consent fields.
-        version="0.5.0",
+        # shared delivery points read and the consent fields; to 0.6.0 for the
+        # member's own acceptances (`/api/me/acceptances`) and the `terms` and
+        # `terms_clauses` consent fields.
+        version="0.6.0",
         lifespan=lifespan,
         # Outside CELINE_ENV=dev none of /docs, /redoc, /openapi.json is mounted
         # unless CELINE_PUBLIC_DOCS=true (REQ-0028).

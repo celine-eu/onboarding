@@ -171,10 +171,16 @@ class TestTheTokenIsVerified:
     """No capability on this surface, so the token is the whole of the authentication."""
 
     def test_no_token_is_refused(self, client, shim):
+        """
+        @verifies REQ-0050
+        """
         assert _get(client, None).status_code == 401
         assert shim.statements == []
 
     def test_a_token_signed_by_another_key_is_refused(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         import jwt as pyjwt
         from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -187,6 +193,9 @@ class TestTheTokenIsVerified:
         assert shim.statements == []
 
     def test_an_unsigned_token_is_refused(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         import jwt as pyjwt
 
         good = pyjwt.decode(_member_token(issue_token), options={"verify_signature": False})
@@ -196,22 +205,34 @@ class TestTheTokenIsVerified:
         assert shim.statements == []
 
     def test_an_expired_token_is_refused(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         token = _member_token(issue_token, exp=int(time.time()) - 600, iat=int(time.time()) - 900)
 
         assert _get(client, token).status_code == 401
         assert shim.statements == []
 
     def test_a_token_for_another_audience_is_refused(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         assert _get(client, _member_token(issue_token, aud="svc-elsewhere")).status_code == 401
         assert shim.statements == []
 
     def test_a_token_from_another_issuer_is_refused(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         token = _member_token(issue_token, iss="https://keycloak.test/realms/elsewhere")
 
         assert _get(client, token).status_code == 401
         assert shim.statements == []
 
     def test_a_token_in_the_query_string_is_not_read(self, client, shim, issue_token):
+        """
+        @verifies REQ-0050
+        """
         token = _member_token(issue_token)
 
         assert client.get(f"/api/me/acceptances?access_token={token}").status_code == 401
@@ -219,7 +240,10 @@ class TestTheTokenIsVerified:
 
 class TestOnlyAMembersOwnToken:
     def test_a_service_account_is_refused(self, client, shim, db, service_token):
-        """Even holding `onboarding.admin`: a client acting for a member forwards their token."""
+        """Even holding `onboarding.admin`: a client acting for a member forwards their token.
+
+        @verifies REQ-0050
+        """
         _application(db)
 
         resp = _get(client, service_token("onboarding.admin"))
@@ -230,7 +254,10 @@ class TestOnlyAMembersOwnToken:
     def test_a_service_account_named_like_a_members_uuid_is_refused(
         self, client, shim, db, issue_token
     ):
-        """A client whose `sub` is a member's uuid is still a client."""
+        """A client whose `sub` is a member's uuid is still a client.
+
+        @verifies REQ-0050
+        """
         _application(db)
         token = issue_token(
             sub=MEMBER_UUID,
@@ -246,7 +273,10 @@ class TestOnlyAMembersOwnToken:
     def test_no_capability_is_needed_and_none_is_consulted(
         self, client, db, issue_token, monkeypatch
     ):
-        """A member holds no console group; the operator policy must not be asked."""
+        """A member holds no console group; the operator policy must not be asked.
+
+        @verifies REQ-0050
+        """
         from celine.onboarding.security import policy
 
         def _never(*args, **kwargs):
@@ -264,6 +294,9 @@ class TestOnlyAMembersOwnToken:
 
 class TestTheirOwnApplicationAndNoOneElses:
     def test_the_members_approved_application_answers(self, client, db, issue_token):
+        """
+        @verifies REQ-0049
+        """
         mine = _application(db)
 
         body = _get(client, _member_token(issue_token)).json()
@@ -284,6 +317,9 @@ class TestTheirOwnApplicationAndNoOneElses:
         assert by_slot["terms_clauses"]["legal_slot"] == "terms_clauses"
 
     def test_another_members_application_is_not_returned(self, client, db, issue_token):
+        """
+        @verifies REQ-0049
+        """
         _application(db, login=OTHER_UUID)
 
         body = _get(client, _member_token(issue_token)).json()
@@ -295,6 +331,7 @@ class TestTheirOwnApplicationAndNoOneElses:
 
         An adopted account's username is not its email, and an email names whoever typed
         it into the form. Only the uuid the login step recorded is evidence.
+        @verifies REQ-0049
         """
         _application(db, login=OTHER_UUID)
         token = _member_token(
@@ -306,6 +343,9 @@ class TestTheirOwnApplicationAndNoOneElses:
     def test_the_query_binds_the_tokens_sub_and_nothing_the_caller_sent(
         self, client, shim, db, issue_token
     ):
+        """
+        @verifies REQ-0050
+        """
         _application(db)
 
         _get(client, _member_token(issue_token), "/api/me/acceptances?sub=x&rec_slug=rec-b")
@@ -317,6 +357,9 @@ class TestTheirOwnApplicationAndNoOneElses:
         assert not bound & {"x", "rec-b", "member@example.org"}
 
     def test_query_parameters_cannot_point_it_elsewhere(self, client, db, issue_token):
+        """
+        @verifies REQ-0050
+        """
         mine = _application(db)
         other = _application(db, login=OTHER_UUID)
         _application(db, rec_slug="rec-b")
@@ -330,6 +373,9 @@ class TestTheirOwnApplicationAndNoOneElses:
         assert resp.json()["submission_id"] == str(mine.id)
 
     def test_a_path_segment_does_not_reach_another_application(self, client, db, issue_token):
+        """
+        @verifies REQ-0050
+        """
         other = _application(db, login=OTHER_UUID)
 
         resp = _get(client, _member_token(issue_token), f"/api/me/acceptances/{other.id}")
@@ -341,6 +387,7 @@ class TestTheirOwnApplicationAndNoOneElses:
         """Released from rec-b and now in rec-a, one Keycloak account: rec-b's is not shown.
 
         The uuid alone would name the application in the community they left.
+        @verifies REQ-0049
         """
         _application(db, rec_slug="rec-b")
 
@@ -351,6 +398,9 @@ class TestTheirOwnApplicationAndNoOneElses:
     def test_a_token_naming_no_community_served_here_finds_nothing(
         self, client, shim, db, issue_token
     ):
+        """
+        @verifies REQ-0049
+        """
         _application(db)
 
         for organization in (None, "rec-unknown"):
@@ -359,7 +409,10 @@ class TestTheirOwnApplicationAndNoOneElses:
         assert shim.statements == []
 
     def test_a_member_of_two_communities_is_refused(self, client, shim, db, issue_token):
-        """Picking one would answer for a community the reader did not mean."""
+        """Picking one would answer for a community the reader did not mean.
+
+        @verifies REQ-0050
+        """
         _application(db)
         token = issue_token(
             sub=MEMBER_UUID,
@@ -387,6 +440,9 @@ class TestOnlyAnEnabledApplication:
         ],
     )
     def test_an_application_not_approved_does_not_answer(self, client, db, issue_token, status):
+        """
+        @verifies REQ-0049
+        """
         _application(db, status=status)
 
         assert _get(client, _member_token(issue_token)).json()["submission_id"] is None
@@ -403,12 +459,18 @@ class TestOnlyAnEnabledApplication:
     def test_a_login_step_that_did_not_succeed_does_not_answer(
         self, client, db, issue_token, step_status
     ):
+        """
+        @verifies REQ-0049
+        """
         _application(db, step_status=step_status)
 
         assert _get(client, _member_token(issue_token)).json()["submission_id"] is None
 
     def test_a_revoked_login_does_not_answer(self, client, db, issue_token):
-        """`enablement.revoke` leaves the row pending and clears its `external_ref`."""
+        """`enablement.revoke` leaves the row pending and clears its `external_ref`.
+
+        @verifies REQ-0049
+        """
         _application(db, step_status=EnablementStatus.PENDING, login=None)
 
         assert _get(client, _member_token(issue_token)).json()["submission_id"] is None
@@ -417,12 +479,18 @@ class TestOnlyAnEnabledApplication:
         "step", [s for s in EnablementStep if s is not EnablementStep.KEYCLOAK_USER]
     )
     def test_another_steps_reference_is_not_a_login(self, client, db, issue_token, step):
-        """Only the login step's `external_ref` is a Keycloak uuid."""
+        """Only the login step's `external_ref` is a Keycloak uuid.
+
+        @verifies REQ-0049
+        """
         _application(db, step=step)
 
         assert _get(client, _member_token(issue_token)).json()["submission_id"] is None
 
     def test_the_latest_approved_application_answers(self, client, db, issue_token):
+        """
+        @verifies REQ-0049
+        """
         _application(db, created_at=datetime(2026, 1, 1, tzinfo=UTC), terms_consent_version="0.1")
         latest = _application(db, created_at=datetime(2026, 10, 1, tzinfo=UTC))
 
@@ -434,7 +502,10 @@ class TestOnlyAnEnabledApplication:
 
 class TestWhatIsReturned:
     def test_nothing_but_the_acceptances(self, client, db, issue_token):
-        """No personal data of the application, and no evidence of how it was made."""
+        """No personal data of the application, and no evidence of how it was made.
+
+        @verifies REQ-0049
+        """
         _application(db)
 
         resp = _get(client, _member_token(issue_token))
@@ -453,7 +524,10 @@ class TestWhatIsReturned:
             }
 
     def test_a_slot_not_accepted_or_without_a_version_is_left_out(self, client, db, issue_token):
-        """Without a version there is nothing to match, so the reader asks."""
+        """Without a version there is nothing to match, so the reader asks.
+
+        @verifies REQ-0049
+        """
         _application(
             db,
             gdpr_consent_version=None,
@@ -466,6 +540,9 @@ class TestWhatIsReturned:
         assert {a["slot"] for a in body["acceptances"]} == {"terms"}
 
     def test_the_clauses_are_never_implied_by_the_terms(self, client, db, issue_token):
+        """
+        @verifies REQ-0049
+        """
         _application(db, terms_clauses_consent=False)
 
         slots = {a["slot"] for a in _get(client, _member_token(issue_token)).json()["acceptances"]}

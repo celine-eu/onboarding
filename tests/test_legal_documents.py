@@ -228,6 +228,9 @@ WITH_TERMS = {**CURRENT, "slots": {**CURRENT["slots"], "terms": TERMS}}
 
 
 def test_the_terms_resolve_on_the_host_with_the_declarations_of_the_language_shown():
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     documents = ld.consent_documents("rec-a", _manifest(terms=ASK))
     assert documents["terms"] == {"required": True, "url": f"{BASE}/rec-a/terms-of-use/0.2/it/",
@@ -236,6 +239,9 @@ def test_the_terms_resolve_on_the_host_with_the_declarations_of_the_language_sho
 
 
 def test_the_clauses_are_the_terms_document_with_their_own_slot():
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     documents = ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK))
     clauses = documents["terms_clauses"]
@@ -246,7 +252,10 @@ def test_the_clauses_are_the_terms_document_with_their_own_slot():
 
 
 def test_no_words_no_box_for_the_clauses():
-    """A text without `specific_approval` in the language shown: the box is not asked."""
+    """A text without `specific_approval` in the language shown: the box is not asked.
+
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     english = {**_manifest(terms=ASK, terms_clauses=ASK), "locale": "en"}
     assert list(ld.consent_documents("rec-a", english)) == ["terms"]
@@ -257,6 +266,9 @@ def test_no_words_no_box_for_the_clauses():
 
 
 def test_the_clauses_are_not_asked_without_the_terms():
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     assert ld.consent_documents("rec-a", _manifest(terms_clauses=ASK)) == {}
     # The host has no terms for this community: neither box.
@@ -265,25 +277,37 @@ def test_the_clauses_are_not_asked_without_the_terms():
 
 
 def test_before_the_host_answers_the_terms_are_asked_and_the_clauses_are_not():
-    """The slot's address and no version, like every slot; but no words for box 2."""
+    """The slot's address and no version, like every slot; but no words for box 2.
+
+    @verifies REQ-0047
+    """
     documents = ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK))
     address = f"{BASE}/rec-a/terms/"
     assert documents == {"terms": {"required": True, "url": address, "version": None}}
 
 
 def test_a_manifest_link_for_the_terms_asks_no_clauses():
-    """Onboarding cannot read the operator's page, so it has no words for box 2."""
+    """Onboarding cannot read the operator's page, so it has no words for box 2.
+
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     own = {"version": "3", "url": "https://elsewhere.example.org/terms"}
     assert list(ld.consent_documents("rec-a", _manifest(terms=own, terms_clauses=ASK))) == ["terms"]
 
 
 def test_without_a_legal_host_neither_is_asked(monkeypatch):
+    """
+    @verifies REQ-0047
+    """
     monkeypatch.setattr(settings, "legal_base_url", "")
     assert ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK)) == {}
 
 
 async def test_both_are_recorded_each_on_its_own(seed_rec):
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
              consent={"terms": ASK, "terms_clauses": ASK})
@@ -300,6 +324,9 @@ async def test_both_are_recorded_each_on_its_own(seed_rec):
 
 
 async def test_the_clauses_are_required_and_never_implied_by_the_terms(seed_rec):
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
              consent={"terms": ASK, "terms_clauses": ASK})
@@ -310,6 +337,9 @@ async def test_the_clauses_are_required_and_never_implied_by_the_terms(seed_rec)
 
 
 async def test_a_stale_clauses_box_is_refused(seed_rec):
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
              consent={"terms": ASK, "terms_clauses": ASK})
@@ -321,6 +351,9 @@ async def test_a_stale_clauses_box_is_refused(seed_rec):
 
 
 async def test_clauses_sent_where_they_are_not_asked_are_not_recorded(seed_rec):
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     seed_rec("rec-a", locale="en", rec_registry={"community": "rec-a"},
              consent={"terms": ASK, "terms_clauses": ASK})
@@ -330,6 +363,9 @@ async def test_clauses_sent_where_they_are_not_asked_are_not_recorded(seed_rec):
 
 
 def test_the_config_carries_both_boxes_words(seed_rec):
+    """
+    @verifies REQ-0047
+    """
     ld._current["rec-a"] = WITH_TERMS
     seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
              consent={"terms": ASK, "terms_clauses": ASK})
@@ -343,6 +379,9 @@ def test_the_config_carries_both_boxes_words(seed_rec):
 @pytest.mark.parametrize("consent", [{"terms_clauses": ASK}, {"terms": "yes", "terms_clauses": ASK},
                                      {"terms": ASK, "terms_clauses": True}])
 def test_a_manifest_with_clauses_and_no_terms_is_refused_at_load(consent):
+    """
+    @verifies REQ-0048
+    """
     with pytest.raises(ValueError, match="terms_clauses"):
         template_service.validate_consent_slots(consent, where="REC 'rec-a'")
 
@@ -350,4 +389,7 @@ def test_a_manifest_with_clauses_and_no_terms_is_refused_at_load(consent):
 @pytest.mark.parametrize("consent", [None, {}, {"gdpr": ASK}, {"terms": ASK},
                                      {"terms": ASK, "terms_clauses": ASK}])
 def test_a_manifest_with_both_or_neither_loads(consent):
+    """
+    @verifies REQ-0048
+    """
     template_service.validate_consent_slots(consent, where="REC 'rec-a'")

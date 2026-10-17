@@ -105,7 +105,10 @@ def test_submitting_requires_only_the_declared_documents(seed_rec):
 
 
 def test_submitting_requires_the_terms_and_their_clauses_each(seed_rec, monkeypatch):
-    """Box 2 is a separate act: the terms accepted do not stand for it."""
+    """Box 2 is a separate act: the terms accepted do not stand for it.
+
+    @verifies REQ-0047
+    """
     from celine.onboarding.config.settings import settings
     from celine.onboarding.services import legal_documents as ld
     from celine.onboarding.workflows.engine import can_submit
