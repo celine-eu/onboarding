@@ -102,3 +102,33 @@ def test_submitting_requires_only_the_declared_documents(seed_rec):
     assert can_submit(_submission("rec-a", gdpr=True)) == ["Policy consent is required"]
     seed_rec("rec-b", consent={"gdpr": DOC, "policy": DOC, "statute": DOC})
     assert can_submit(_submission("rec-b", gdpr=True, policy=True)) == ["Statute consent is required"]
+
+
+def test_submitting_requires_the_terms_and_their_clauses_each(seed_rec, monkeypatch):
+    """Box 2 is a separate act: the terms accepted do not stand for it."""
+    from celine.onboarding.config.settings import settings
+    from celine.onboarding.services import legal_documents as ld
+    from celine.onboarding.workflows.engine import can_submit
+
+    terms = {"version": "0.2", "status": "final", "paths": {"it": "/rec-a/terms-of-use/0.2/it/"},
+             "sha256": {"it": "f" * 64},
+             "declarations": {"it": {"general": "G",
+                                     "specific_approval": {"text": "S", "articles": [5]}}}}
+    monkeypatch.setattr(settings, "legal_base_url", "http://legal.example.org")
+    monkeypatch.setattr(ld, "_current", {"rec-a": {"slots": {"terms": terms}}})
+    ask = {"required": True}
+    seed_rec("rec-a", locale="it", consent={"terms": ask, "terms_clauses": ask})
+
+    def _submission(**consents):
+        return MagicMock(
+            rec_slug="rec-a", first_name="A", last_name="B", fiscal_code="X", pod_code="IT0",
+            email="a@example.org", phone=None, extra_data={}, declared_existing_member=False,
+            terms_consent=consents.get("terms", False),
+            terms_clauses_consent=consents.get("terms_clauses", False),
+        )
+
+    assert can_submit(_submission(terms=True, terms_clauses=True)) == []
+    assert can_submit(_submission(terms=True)) == [
+        "Specific approval of the terms' clauses consent is required"
+    ]
+    assert can_submit(_submission(terms_clauses=True)) == ["Terms of use consent is required"]

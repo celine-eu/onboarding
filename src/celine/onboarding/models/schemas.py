@@ -22,6 +22,11 @@ class ConsentCreate(BaseModel):
     policy_consent_version: str | None = Field(default=None, max_length=20)
     statute_consent: bool = False
     statute_consent_version: str | None = Field(default=None, max_length=20)
+    terms_consent: bool = False
+    terms_consent_version: str | None = Field(default=None, max_length=20)
+    # The specific approval of the terms' clauses: its own box, never implied by `terms`.
+    terms_clauses_consent: bool = False
+    terms_clauses_consent_version: str | None = Field(default=None, max_length=20)
     # "I am already a member" (REQ-0024). Refused with a 422 by a template that
     # does not offer it, rather than recorded and then ignored.
     declared_existing_member: bool = False
@@ -198,6 +203,17 @@ class SubmissionRead(BaseModel):
     policy_consent_sha256: str | None = None
     statute_consent_url: str | None = None
     statute_consent_sha256: str | None = None
+    # Default False/None: a row read before migration 0022 has none of them.
+    terms_consent: bool = False
+    terms_consent_at: datetime | None = None
+    terms_consent_version: str | None = None
+    terms_consent_url: str | None = None
+    terms_consent_sha256: str | None = None
+    terms_clauses_consent: bool = False
+    terms_clauses_consent_at: datetime | None = None
+    terms_clauses_consent_version: str | None = None
+    terms_clauses_consent_url: str | None = None
+    terms_clauses_consent_sha256: str | None = None
     data_sharing_consent: bool
     data_sharing_consent_at: datetime | None
     data_sharing_consent_offer_ids: list[str] | None
@@ -217,7 +233,9 @@ class SubmissionRead(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_validator("declared_existing_member", mode="before")
+    @field_validator(
+        "declared_existing_member", "terms_consent", "terms_clauses_consent", mode="before"
+    )
     @classmethod
     def unflushed_is_undeclared(cls, v: bool | None) -> bool:
         return bool(v)

@@ -209,3 +209,145 @@ def test_the_template_serves_only_its_own_documents(monkeypatch, tmp_path):
     assert template_service.consent_document_path("rec-a", "policy") is None
     (consent / "terms.pdf.json").write_text(json.dumps({"filename": "../../outside.pdf"}))
     assert template_service.consent_document_path("rec-a", "terms") is None
+
+
+# --- the terms, and the specific approval of their clauses ----------------------------
+
+DECLARATIONS = {
+    "it": {"general": "Dichiaro di accettare le Condizioni d'uso, versione 0.2.",
+           "specific_approval": {
+               "text": "Ai sensi degli artt. 1341 e 1342 c.c., approvo gli artt. 5 e 7.",
+               "articles": [5, 7]}},
+    "en": {"general": "I accept the Terms of use, version 0.2."},
+}
+TERMS = {"id": "rec-a/terms-of-use", "version": "0.2", "status": "final",
+         "paths": {"it": "/rec-a/terms-of-use/0.2/it/", "en": "/rec-a/terms-of-use/0.2/en/"},
+         "sha256": {"it": "f" * 64, "en": "9" * 64}, "titles": {"it": "Condizioni d'uso"},
+         "declarations": DECLARATIONS}
+WITH_TERMS = {**CURRENT, "slots": {**CURRENT["slots"], "terms": TERMS}}
+
+
+def test_the_terms_resolve_on_the_host_with_the_declarations_of_the_language_shown():
+    ld._current["rec-a"] = WITH_TERMS
+    documents = ld.consent_documents("rec-a", _manifest(terms=ASK))
+    assert documents["terms"] == {"required": True, "url": f"{BASE}/rec-a/terms-of-use/0.2/it/",
+                                  "version": "0.2", "sha256": "f" * 64,
+                                  "declarations": DECLARATIONS["it"]}
+
+
+def test_the_clauses_are_the_terms_document_with_their_own_slot():
+    ld._current["rec-a"] = WITH_TERMS
+    documents = ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK))
+    clauses = documents["terms_clauses"]
+    assert {k: clauses[k] for k in ("url", "version", "sha256")} == {
+        k: documents["terms"][k] for k in ("url", "version", "sha256")}
+    assert clauses["declarations"]["specific_approval"]["text"].startswith("Ai sensi")
+    assert list(documents) == ["terms", "terms_clauses"]
+
+
+def test_no_words_no_box_for_the_clauses():
+    """A text without `specific_approval` in the language shown: the box is not asked."""
+    ld._current["rec-a"] = WITH_TERMS
+    english = {**_manifest(terms=ASK, terms_clauses=ASK), "locale": "en"}
+    assert list(ld.consent_documents("rec-a", english)) == ["terms"]
+    no_words = {**TERMS, "declarations": None}
+    without = {**WITH_TERMS, "slots": {**CURRENT["slots"], "terms": no_words}}
+    ld._current["rec-a"] = without
+    assert list(ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK))) == ["terms"]
+
+
+def test_the_clauses_are_not_asked_without_the_terms():
+    ld._current["rec-a"] = WITH_TERMS
+    assert ld.consent_documents("rec-a", _manifest(terms_clauses=ASK)) == {}
+    # The host has no terms for this community: neither box.
+    ld._current["rec-a"] = CURRENT
+    assert ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK)) == {}
+
+
+def test_before_the_host_answers_the_terms_are_asked_and_the_clauses_are_not():
+    """The slot's address and no version, like every slot; but no words for box 2."""
+    documents = ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK))
+    address = f"{BASE}/rec-a/terms/"
+    assert documents == {"terms": {"required": True, "url": address, "version": None}}
+
+
+def test_a_manifest_link_for_the_terms_asks_no_clauses():
+    """Onboarding cannot read the operator's page, so it has no words for box 2."""
+    ld._current["rec-a"] = WITH_TERMS
+    own = {"version": "3", "url": "https://elsewhere.example.org/terms"}
+    assert list(ld.consent_documents("rec-a", _manifest(terms=own, terms_clauses=ASK))) == ["terms"]
+
+
+def test_without_a_legal_host_neither_is_asked(monkeypatch):
+    monkeypatch.setattr(settings, "legal_base_url", "")
+    assert ld.consent_documents("rec-a", _manifest(terms=ASK, terms_clauses=ASK)) == {}
+
+
+async def test_both_are_recorded_each_on_its_own(seed_rec):
+    ld._current["rec-a"] = WITH_TERMS
+    seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
+             consent={"terms": ASK, "terms_clauses": ASK})
+    row = await _create(ConsentCreate(
+        terms_consent=True, terms_consent_version="0.2",
+        terms_clauses_consent=True, terms_clauses_consent_version="0.2",
+    ))
+    for slot in ("terms", "terms_clauses"):
+        assert getattr(row, f"{slot}_consent") is True
+        assert getattr(row, f"{slot}_consent_at") is not None
+        assert getattr(row, f"{slot}_consent_version") == "0.2"
+        assert getattr(row, f"{slot}_consent_url") == f"{BASE}/rec-a/terms-of-use/0.2/it/"
+        assert getattr(row, f"{slot}_consent_sha256") == "f" * 64
+
+
+async def test_the_clauses_are_required_and_never_implied_by_the_terms(seed_rec):
+    ld._current["rec-a"] = WITH_TERMS
+    seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
+             consent={"terms": ASK, "terms_clauses": ASK})
+    with pytest.raises(submission_service.ConsentNotGivenError, match="terms_clauses"):
+        await _create(ConsentCreate(terms_consent=True, terms_consent_version="0.2"))
+    with pytest.raises(submission_service.ConsentNotGivenError, match="terms"):
+        await _create(ConsentCreate(terms_clauses_consent=True))
+
+
+async def test_a_stale_clauses_box_is_refused(seed_rec):
+    ld._current["rec-a"] = WITH_TERMS
+    seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
+             consent={"terms": ASK, "terms_clauses": ASK})
+    with pytest.raises(submission_service.ConsentVersionMismatchError, match="terms_clauses"):
+        await _create(ConsentCreate(
+            terms_consent=True, terms_consent_version="0.2",
+            terms_clauses_consent=True, terms_clauses_consent_version="0.1",
+        ))
+
+
+async def test_clauses_sent_where_they_are_not_asked_are_not_recorded(seed_rec):
+    ld._current["rec-a"] = WITH_TERMS
+    seed_rec("rec-a", locale="en", rec_registry={"community": "rec-a"},
+             consent={"terms": ASK, "terms_clauses": ASK})
+    row = await _create(ConsentCreate(terms_consent=True, terms_clauses_consent=True))
+    assert row.terms_consent is True
+    assert row.terms_clauses_consent is False and row.terms_clauses_consent_at is None
+
+
+def test_the_config_carries_both_boxes_words(seed_rec):
+    ld._current["rec-a"] = WITH_TERMS
+    seed_rec("rec-a", locale="it", rec_registry={"community": "rec-a"},
+             consent={"terms": ASK, "terms_clauses": ASK})
+    consent = template_service.get_config("rec-a")["consent"]
+    assert consent["terms"]["declarations"]["general"] == DECLARATIONS["it"]["general"]
+    approval = consent["terms_clauses"]["declarations"]["specific_approval"]
+    assert approval == DECLARATIONS["it"]["specific_approval"]
+    assert template_service.consent_slots("rec-a") == ("terms", "terms_clauses")
+
+
+@pytest.mark.parametrize("consent", [{"terms_clauses": ASK}, {"terms": "yes", "terms_clauses": ASK},
+                                     {"terms": ASK, "terms_clauses": True}])
+def test_a_manifest_with_clauses_and_no_terms_is_refused_at_load(consent):
+    with pytest.raises(ValueError, match="terms_clauses"):
+        template_service.validate_consent_slots(consent, where="REC 'rec-a'")
+
+
+@pytest.mark.parametrize("consent", [None, {}, {"gdpr": ASK}, {"terms": ASK},
+                                     {"terms": ASK, "terms_clauses": ASK}])
+def test_a_manifest_with_both_or_neither_loads(consent):
+    template_service.validate_consent_slots(consent, where="REC 'rec-a'")

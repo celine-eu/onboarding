@@ -36,6 +36,7 @@ async def _validate_dataspace_config() -> None:
         organization_for,
         rec_registry_binding,
         validate_boundary_template,
+        validate_consent_slots,
         validate_data_sharing_recipients,
         validate_data_sharing_summary,
         validate_data_sharing_texts,
@@ -53,6 +54,7 @@ async def _validate_dataspace_config() -> None:
         registry = rec_registry_binding(slug)  # raises on a malformed block
         validate_boundary_template(manifest, where=f"REC {slug!r}")
         validate_existing_members(manifest.get("existing_members"), where=f"REC {slug!r}")
+        validate_consent_slots(manifest.get("consent"), where=f"REC {slug!r}")
         validate_data_sharing_texts(
             ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
             where=f"REC {slug!r}",

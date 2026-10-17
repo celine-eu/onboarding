@@ -116,6 +116,23 @@ class Submission(Base):
     policy_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     statute_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     statute_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The terms of use, and the specific approval of their clauses (Art. 1341(2) c.c.): one
+    # document, two acts, each with its own box and time. Both columns sets hold the terms'
+    # url, version and sha256.
+    terms_consent: Mapped[bool] = mapped_column(default=False)
+    terms_consent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terms_consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    terms_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    terms_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    terms_clauses_consent: Mapped[bool] = mapped_column(default=False)
+    terms_clauses_consent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terms_clauses_consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    terms_clauses_consent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    terms_clauses_consent_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     keep_me_updated: Mapped[bool] = mapped_column(default=False)
 

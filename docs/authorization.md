@@ -217,6 +217,26 @@ manager's token. `onboarding.members.release` is the same, with a REC admin's to
    capability fails closed.
 5. The action is written to the audit trail against the caller.
 
+## The member's own surface
+
+`/api/me/**` names no capability and consults no policy: the member's token is the whole
+authority, because a route an operator could act through would make a member's record
+worthless. The token is verified as a console request's is (JWKS, issuer, `svc-onboarding`
+audience, expiry), from the `Authorization` header only.
+
+What stands in for the policy is **whose data answers**, decided from the verified token
+alone and never from the request:
+
+- the community is the one the token's organization resolves to; a token naming two
+  communities served here is refused (`409`), one naming none gets an empty answer;
+- for `/api/me/acceptances`, the application is the one whose `keycloak_user` enablement
+  step **succeeded** with the token's `sub` as its Keycloak uuid, in that community, and
+  **approved**. A revocation clears the uuid from the step, so a released member's old
+  application no longer answers; the email and the username are never consulted;
+- a service account is refused (`403`), `onboarding.admin` included: a client acting for a
+  member (the web app, through `celine.sdk.onboarding.OnboardingClient`) forwards the
+  member's own token.
+
 ## Configuration
 
 | Variable | Notes |

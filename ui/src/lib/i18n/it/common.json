@@ -1,7 +1,7 @@
 {
 	"app_title": "CER Onboarding",
 	"onboarding_title": "Registrazione",
-	"app_subtitle": "Piattaforma di adesione alla Comunita Energetica Rinnovabile",
+	"app_subtitle": "Piattaforma di adesione alla Comunità Energetica Rinnovabile",
 	"language": "Lingua",
 	"next": "Avanti",
 	"back": "Indietro",
@@ -13,10 +13,10 @@
 	"error": "Errore",
 	"success": "Operazione completata",
 	"start_onboarding": "Inizia adesione",
-	"find_your_rec": "Inserisci il tuo indirizzo per trovare la tua comunita energetica",
+	"find_your_rec": "Inserisci il tuo indirizzo per trovare la tua comunità energetica",
 	"address_placeholder": "Via Roma 1, Borgo Valsugana",
 	"search": "Cerca",
-	"no_rec_found": "Nessuna comunita energetica trovata per questo indirizzo.",
+	"no_rec_found": "Nessuna comunità energetica trovata per questo indirizzo.",
 	"rec_search_unchecked": "Non è stato possibile verificare alcune comunità in questo momento. Riprova più tardi.",
-	"show_all_recs": "Mostra tutte le comunita"
+	"show_all_recs": "Mostra tutte le comunità"
 }

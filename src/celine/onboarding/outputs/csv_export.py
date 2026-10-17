@@ -36,6 +36,12 @@ BASE_FIELDS = [
     "statute_consent",
     "statute_consent_at",
     "statute_consent_version",
+    "terms_consent",
+    "terms_consent_at",
+    "terms_consent_version",
+    "terms_clauses_consent",
+    "terms_clauses_consent_at",
+    "terms_clauses_consent_version",
     # Data-sharing consent (Block B) — optional, with the offers, version, locale
     # and rendered-text hash that record what the person actually saw.
     "data_sharing_consent",

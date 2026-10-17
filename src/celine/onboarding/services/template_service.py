@@ -70,8 +70,28 @@ def load_manifest(rec_slug: str) -> dict[str, Any]:
     return _cache[rec_slug]
 
 
-#: The documents an applicant may be asked to accept at the first step.
-CONSENT_SLOTS = ("gdpr", "policy", "statute")
+#: The documents an applicant may be asked to accept at the first step. `terms_clauses` is
+#: the specific approval of the terms' clauses: the terms' document, with its own box.
+CONSENT_SLOTS = ("gdpr", "policy", "statute", "terms", "terms_clauses")
+
+
+def validate_consent_slots(block: Any, *, where: str) -> None:
+    """Refuse a `consent:` declaring `terms_clauses` without `terms`.
+
+    The clauses are approved on the terms' text, so without the terms there is nothing to
+    approve them on: a manifest saying so is a mistake, not a community without terms.
+    """
+    if not isinstance(block, dict) or "terms_clauses" not in block:
+        return
+    if not isinstance(block.get("terms_clauses"), dict):
+        raise ValueError(
+            f"{where}: 'consent.terms_clauses' must be a mapping (e.g. {{required: true}})"
+        )
+    if not isinstance(block.get("terms"), dict):
+        raise ValueError(
+            f"{where}: 'consent.terms_clauses' is declared without 'consent.terms'. The specific "
+            "approval of the clauses is given on the terms' own text: declare both, or neither."
+        )
 
 
 def consent_documents(rec_slug: str) -> dict[str, dict[str, Any]]:

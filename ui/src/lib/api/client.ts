@@ -176,6 +176,14 @@ export interface SiteConfig {
 			file?: string;
 			url?: string;
 			required: boolean;
+			/** The terms only, from the legal host: what the member declares, in the
+			 *  text's own words (inside its sha256), shown as they are. `general` is the
+			 *  terms' box; `specific_approval` is `terms_clauses`'s, a separate act. */
+			sha256?: string | null;
+			declarations?: {
+				general: string;
+				specific_approval?: { text: string; articles: number[] };
+			};
 			/** The data-sharing step only: the privacy notice shown above the offers. */
 			notice?: { url: string; version?: string | null };
 			offers?: string[];

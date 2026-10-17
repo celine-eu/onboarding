@@ -15,7 +15,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,6 +61,8 @@ class SubmissionEnablementStep(Base):
     __tablename__ = "submission_enablement_steps"
     __table_args__ = (
         UniqueConstraint("submission_id", "step", name="uq_enablement_submission_step"),
+        # A member's own acceptances find their application by the login's Keycloak uuid.
+        Index("ix_enablement_step_external_ref", "step", "external_ref"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -60,6 +60,21 @@ def generate_submission_pdf(submission: Submission) -> bytes:
         submission.statute_consent_at,
         submission.statute_consent_version,
     )
+    _consent_row(
+        pdf,
+        "Terms of use",
+        submission.terms_consent,
+        submission.terms_consent_at,
+        submission.terms_consent_version,
+    )
+    # Its own row: the specific approval of the clauses is a separate act.
+    _consent_row(
+        pdf,
+        "Terms: clauses approved",
+        submission.terms_clauses_consent,
+        submission.terms_clauses_consent_at,
+        submission.terms_clauses_consent_version,
+    )
     _row(pdf, "Keep me updated", "Yes" if submission.keep_me_updated else "No")
     _row(pdf, "Consent IP", submission.consent_ip)
     pdf.ln(4)

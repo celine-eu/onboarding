@@ -17,6 +17,13 @@ and its page per language. A consent slot the manifest declares without its own 
 5. without `LEGAL_BASE_URL`, the declared slot as it is, when it has a `url` or the template
    has its document; otherwise it is not asked, like rule 4.
 
+`terms_clauses` has no document of its own. It is the specific approval of the terms' onerous
+clauses (Art. 1341(2) c.c.), a separate act on the same text: it is asked only when `terms`
+is, and only when the host's text for the language shown carries
+`declarations.specific_approval`. It records the same url, version and sha256 as `terms`. A
+host slot's `declarations` (what the member declares, from the text's front matter, so inside
+its sha256) are passed through for the wizard to show as they are.
+
 `current.json` is refreshed every few minutes, and the last good copy is kept for as long
 as the host does not answer.
 """
@@ -38,7 +45,9 @@ REFRESH_SECONDS = 300.0
 TIMEOUT_SECONDS = 3.0
 
 #: The wizard's consent slot → the legal host's slot.
-LEGAL_SLOT = {"gdpr": "privacy", "policy": "regulations", "statute": "statute"}
+LEGAL_SLOT = {"gdpr": "privacy", "policy": "regulations", "statute": "statute", "terms": "terms"}
+#: The specific approval of the terms' clauses: the terms' own document, its own box.
+CLAUSES_SLOT, CLAUSES_OF = "terms_clauses", "terms"
 #: The notice shown above the sharing offers.
 NOTICE_SLOT = "data_sharing_notice"
 
@@ -88,15 +97,28 @@ def current(rec_slug: str) -> dict[str, Any] | None:
 
 
 def _from_host(legal: dict[str, Any], locale: str) -> dict[str, Any] | None:
-    """A slot of `current.json` as `{url, version, sha256}`, or None when it has no page."""
+    """A slot of `current.json` as `{url, version, sha256}`, or None when it has no page.
+
+    The `declarations` of the language shown come along when the text has them.
+    """
     if legal.get("external"):
         return {"url": legal["url"], "version": legal.get("version"), "sha256": legal.get("sha256")} if legal.get("url") else None
     paths = legal.get("paths") or {}
     lang = locale if locale in paths else next(iter(paths), None)
     if lang is None:
         return None
-    return {"url": _base() + paths[lang], "version": legal.get("version"),
-            "sha256": (legal.get("sha256") or {}).get(lang)}
+    found = {"url": _base() + paths[lang], "version": legal.get("version"),
+             "sha256": (legal.get("sha256") or {}).get(lang)}
+    declarations = (legal.get("declarations") or {}).get(lang)
+    if isinstance(declarations, dict):
+        found["declarations"] = declarations
+    return found
+
+
+def specific_approval(document: dict[str, Any]) -> dict[str, Any] | None:
+    """The `specific_approval` a resolved document declares, if it has words for it."""
+    approval = (document.get("declarations") or {}).get("specific_approval")
+    return approval if isinstance(approval, dict) and approval.get("text") else None
 
 
 def _resolve_one(rec_slug: str, manifest: dict[str, Any], legal_slot: str) -> dict[str, Any] | None:
@@ -132,6 +154,12 @@ def consent_documents(rec_slug: str, manifest: dict[str, Any]) -> dict[str, dict
         found = _resolve_one(rec_slug, manifest, legal_slot)
         if found is not None:
             resolved[slot] = {**declared, **found}
+    terms = resolved.get(CLAUSES_OF)
+    declared = consent.get(CLAUSES_SLOT)
+    if isinstance(declared, dict) and terms is not None and specific_approval(terms):
+        # No words, no box: the approval is asked only with the text that says it.
+        same = {k: terms.get(k) for k in ("url", "version", "sha256")}
+        resolved[CLAUSES_SLOT] = {**declared, **same, "declarations": terms["declarations"]}
     return resolved
 
 

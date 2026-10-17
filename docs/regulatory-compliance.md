@@ -36,7 +36,8 @@ art. 42-bis regime, which used the low-voltage secondary substation. See
 | Primary-substation boundary | `submissions.supply_boundary_id` (encrypted) and `supply_boundary_source`, only for a community whose areas are boundaries; resolved by the service from the supply address (checked, else scanned) on save, submit and approval, never sent by a client; **the geocoded coordinates are not stored** | ✅ must be the boundary of one of the template's areas | ✅ for such a community |
 | Energy assets (PV, kWp, battery, EV, heat pump) | `extra_data` (manifest fields) | type only | only if manifest marks `required` |
 | Property type | `extra_data.property_type` | enum | ❌ |
-| GDPR / policy / statute consent | `submissions.*_consent` + timestamp + version | ✅ | ✅ |
+| GDPR / policy / statute / terms consent | `submissions.*_consent` + timestamp + version, and the page's url and sha256 when the legal host served it | ✅ | ✅ where the community asks it |
+| Specific approval of the terms' clauses (Art. 1341(2) c.c.) | `submissions.terms_clauses_consent` + its own timestamp, with the terms' version, url and sha256: a separate act, its own box, never ticked in advance, worded by the terms' text itself (`declarations.specific_approval`) | ✅ | ✅ where it is asked (only with `terms`, and only when the text carries the words) |
 | Dataspace DID / VC / membership | `submissions.dataspace_*` | provisioned on approval | n/a |
 
 ## Coverage assessment

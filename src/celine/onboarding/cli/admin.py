@@ -127,6 +127,8 @@ def _print_submission(row: dict) -> None:
         "gdpr_consent",
         "policy_consent",
         "statute_consent",
+        "terms_consent",
+        "terms_clauses_consent",
         "data_sharing_consent",
         "share_provisioned",
         "dataspace_did",

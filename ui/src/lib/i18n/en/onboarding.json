@@ -25,6 +25,7 @@
 	"gdpr_consent": "I consent to the processing of personal data under GDPR",
 	"policy_consent": "I accept the energy community policy",
 	"statute_consent": "I accept the energy community statute",
+	"terms_consent": "I accept the platform's terms of use",
 	"keep_me_updated": "I'd like to receive updates and communications about the REC",
 	"step_eligibility": "Coverage",
 	"eligibility_intro": "Verify that your supply address is within the energy community coverage area.",

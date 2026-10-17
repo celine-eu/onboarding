@@ -740,3 +740,12 @@ async def test_an_unbound_rec_is_not_warned(bind_rec, monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         await app_main._validate_dataspace_config()
     assert _STALE not in caplog.text
+
+
+async def test_clauses_without_the_terms_refuse_to_start(seed_rec, monkeypatch):
+    """Imported by a build that did not check: the clauses have no text to be approved on."""
+    seed_rec("rec-a", organization="rec-a", consent={"terms_clauses": {"required": True}})
+    monkeypatch.setattr(app_main.settings, "dataspace_enabled", False)
+
+    with pytest.raises(ValueError, match="without 'consent.terms'"):
+        await app_main._validate_dataspace_config()

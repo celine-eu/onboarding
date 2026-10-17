@@ -22,14 +22,17 @@ accepting it from the caller would let anyone ask about any community's offers.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Annotated, Any
 
 from celine.sdk.auth import JwtUser
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celine.onboarding.api.admin.deps import get_current_user
-from celine.onboarding.services import member_sharing
+from celine.onboarding.models.database import get_db
+from celine.onboarding.services import member_acceptances, member_sharing
 
 logger = logging.getLogger(__name__)
 
@@ -161,4 +164,62 @@ async def get_data_sharing_history(user: MemberDep) -> DataSharingHistoryRespons
 
     return DataSharingHistoryResponse(
         has_identity=state is member_sharing.SharingState.OK, state=state, events=events
+    )
+
+
+class AcceptanceRead(BaseModel):
+    """One document the member accepted at application, as it was shown to them.
+
+    ``slot`` is onboarding's; ``legal_slot`` is the legal host's (`gdpr` is `privacy`),
+    so a reader matches it against `current.json` without knowing onboarding's names.
+    ``terms_clauses`` is the specific approval of the terms' clauses, on the terms' own
+    document: its own entry, never implied by ``terms``.
+    """
+
+    slot: str
+    legal_slot: str
+    version: str
+    url: str | None = None
+    sha256: str | None = None
+    accepted_at: datetime | None = None
+
+
+class AcceptancesResponse(BaseModel):
+    """The member's own application's acceptances. Nothing else of the application.
+
+    ``submission_id`` is ``None`` when the member has no approved application in the
+    community their token names — preregistered, or never applied — and the list is
+    empty: an answer, not an error, so the reader asks.
+    """
+
+    submission_id: str | None = None
+    rec_slug: str | None = None
+    acceptances: list[AcceptanceRead] = Field(default_factory=list)
+
+
+@router.get("/acceptances", response_model=AcceptancesResponse)
+async def get_acceptances(
+    user: MemberDep, db: Annotated[AsyncSession, Depends(get_db)]
+) -> AcceptancesResponse:
+    """What this member accepted when they applied: slot, version, url, sha256, when.
+
+    Their own and nobody else's. The application is found through the Keycloak uuid
+    the login step recorded, the token's `sub`, in the community their token names; the
+    route takes no parameter, so there is nothing to point it at another member's.
+    A service account is refused: it has no application, and a client acting for a
+    member forwards the member's token.
+    """
+    try:
+        found = await member_acceptances.get_acceptances(db, user)
+    except member_acceptances.NotAMemberTokenError as exc:
+        raise HTTPException(status_code=403, detail="A member's own token is required") from exc
+    except member_acceptances.AmbiguousCommunityError as exc:
+        # Picking one would answer for a community the reader did not mean.
+        logger.error("Cannot resolve a single community for member %s: %s", user.sub, exc)
+        raise HTTPException(status_code=409, detail="ambiguous_community") from exc
+
+    return AcceptancesResponse(
+        submission_id=found.submission_id,
+        rec_slug=found.rec_slug,
+        acceptances=[AcceptanceRead(**a.__dict__) for a in found.acceptances],
     )

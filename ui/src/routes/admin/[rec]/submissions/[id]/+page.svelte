@@ -294,7 +294,10 @@
 					...[
 						consentRow($t('admin.detail.consent_gdpr'), submission.gdpr_consent, submission.gdpr_consent_at, submission.gdpr_consent_version),
 						consentRow($t('admin.detail.consent_policy'), submission.policy_consent, submission.policy_consent_at, submission.policy_consent_version),
-						consentRow($t('admin.detail.consent_statute'), submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version)
+						consentRow($t('admin.detail.consent_statute'), submission.statute_consent, submission.statute_consent_at, submission.statute_consent_version),
+						consentRow($t('admin.detail.consent_terms'), submission.terms_consent, submission.terms_consent_at, submission.terms_consent_version),
+						// Its own row: the specific approval of the clauses is a separate act.
+						consentRow($t('admin.detail.consent_terms_clauses'), submission.terms_clauses_consent, submission.terms_clauses_consent_at, submission.terms_clauses_consent_version)
 					].filter((row) => row.given || row.version),
 					consentRow(
 						$t('admin.detail.consent_data_sharing'),

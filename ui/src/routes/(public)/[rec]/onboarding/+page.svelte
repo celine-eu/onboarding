@@ -83,7 +83,7 @@
 	// A consent slot is asked only when the community's manifest declares it: a
 	// community that publishes no statute (or no regulations) leaves it out, and the
 	// applicant is not asked to accept a document they cannot read.
-	type ConsentSlot = 'gdpr' | 'policy' | 'statute';
+	type ConsentSlot = 'gdpr' | 'policy' | 'statute' | 'terms' | 'terms_clauses';
 	function asks(slot: ConsentSlot): boolean {
 		return !!(config?.consent as Record<string, unknown> | undefined)?.[slot];
 	}
@@ -95,9 +95,13 @@
 					// legal host has not answered), and then the acceptance date tracks it.
 					gdpr: asks('gdpr') ? (config.consent.gdpr?.version ?? null) : null,
 					policy: asks('policy') ? (config.consent.policy?.version ?? null) : null,
-					statute: asks('statute') ? (config.consent.statute?.version ?? null) : null
+					statute: asks('statute') ? (config.consent.statute?.version ?? null) : null,
+					terms: asks('terms') ? (config.consent.terms?.version ?? null) : null,
+					terms_clauses: asks('terms_clauses')
+						? (config.consent.terms_clauses?.version ?? null)
+						: null
 				}
-			: { gdpr: null, policy: null, statute: null }
+			: { gdpr: null, policy: null, statute: null, terms: null, terms_clauses: null }
 	);
 
 	let currentStep = $state(0);
@@ -119,6 +123,10 @@
 
 	let gdprConsent = $state(false);
 	let policyConsent = $state(false);
+	// The terms, and the specific approval of their clauses (Art. 1341(2) c.c.): two
+	// boxes, two acts. Neither is ticked in advance, and ticking one never ticks the other.
+	let termsConsent = $state(false);
+	let termsClausesConsent = $state(false);
 
 	interface UploadedFile {
 		file: File;
@@ -460,7 +468,9 @@
 			return (
 				(!asks('gdpr') || gdprConsent) &&
 				(!asks('policy') || policyConsent) &&
-				(!asks('statute') || statuteConsent)
+				(!asks('statute') || statuteConsent) &&
+				(!asks('terms') || termsConsent) &&
+				(!asks('terms_clauses') || termsClausesConsent)
 			);
 		}
 		if (currentStepName === 'utility') return !stepBusy;
@@ -505,6 +515,10 @@
 					policy_consent_version: consentVersions.policy,
 					statute_consent: statuteConsent,
 					statute_consent_version: consentVersions.statute,
+					terms_consent: termsConsent,
+					terms_consent_version: consentVersions.terms,
+					terms_clauses_consent: termsClausesConsent,
+					terms_clauses_consent_version: consentVersions.terms_clauses,
 					...(existingMembers ? { declared_existing_member: declaredExistingMember } : {})
 				});
 				declaredSaved = declaredExistingMember;
@@ -991,6 +1005,27 @@
 							bind:checked={statuteConsent}
 							required
 							documentUrl={config?.consent?.statute?.url ?? `/api/${rec}/consent-documents/statute`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
+					{#if asks('terms')}
+						<!-- The text's own words when it has them: this page composes no legal wording. -->
+						<ConsentCheckbox
+							label={config?.consent?.terms?.declarations?.general ?? $t('onboarding.terms_consent')}
+							bind:checked={termsConsent}
+							required
+							documentUrl={config?.consent?.terms?.url ?? `/api/${rec}/consent-documents/terms`}
+							documentLabel={$t('onboarding.view_document')}
+						/>
+					{/if}
+					{#if asks('terms_clauses') && config?.consent?.terms_clauses?.declarations?.specific_approval}
+						<!-- Asked only with the words for it (the server leaves the slot out otherwise),
+						     and shown verbatim. -->
+						<ConsentCheckbox
+							label={config.consent.terms_clauses.declarations.specific_approval.text}
+							bind:checked={termsClausesConsent}
+							required
+							documentUrl={config.consent.terms_clauses.url}
 							documentLabel={$t('onboarding.view_document')}
 						/>
 					{/if}

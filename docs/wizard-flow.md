@@ -1,6 +1,6 @@
 # The Wizard Flow
 
-1. **Consents** — GDPR + policy + statute + keep-me-updated. Creates the submission (UUID, IP, timestamps).
+1. **Consents** — GDPR + policy + statute + terms of use + the specific approval of the terms' clauses + keep-me-updated, each only where the community declares it and has a document for it ([templates.md](templates.md#consent-documents-and-the-legal-host)). The terms and their clauses are two boxes, neither ticked in advance, labelled with the terms' own words. Creates the submission (UUID, IP, timestamps).
 2. **Bill Upload** — Optional multi-page upload. AI extraction produces editable prefilled data. Dropped from the steps when document upload is off.
 3. **Personal Data** — Name, email, phone, CF, POD (validated, prefilled from extraction) + manifest extra fields. Optional ID card upload with cross-validation against bill data. With document upload off, the manual fields only.
 

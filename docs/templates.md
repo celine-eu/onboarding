@@ -268,7 +268,8 @@ decides whether a recipient is disclosed or must be consented to separately. See
 
 ## Consent documents and the legal host
 
-`gdpr`, `policy` and `statute` are the documents an applicant accepts on the first step.
+`gdpr`, `policy`, `statute` and `terms` are the documents an applicant accepts on the first
+step, and `terms_clauses` is the specific approval of the terms' clauses.
 **A slot the manifest leaves out is not asked**: no checkbox, nothing required or recorded.
 That is how a community that publishes no statute is onboarded.
 
@@ -280,7 +281,7 @@ leads nowhere is never shown. A declared slot shows, in this order:
    template does not have is not asked;
 2. otherwise, when `LEGAL_BASE_URL` is set, the legal host's document for that community.
    This is the versioned page in the community's `locale` (`gdpr` → `privacy`, `policy` →
-   `regulations`, `statute` → `statute`, read from `<LEGAL_BASE_URL>/<community>/current.json`,
+   `regulations`, `statute` → `statute`, `terms` → `terms`, read from `<LEGAL_BASE_URL>/<community>/current.json`,
    refreshed every five minutes, the last good copy kept when the host does not answer).
    A document the host does not have, or that its owner publishes nowhere, is not asked;
 3. before the host has ever answered, the slot's address with no version. The acceptance's
@@ -290,6 +291,30 @@ leads nowhere is never shown. A declared slot shows, in this order:
 
 The version recorded with an acceptance is the one this service showed, never the client's.
 A submission naming another version came from a stale page, and is refused with 409.
+
+### The terms, and the specific approval of their clauses
+
+```yaml
+consent:
+  terms: {required: true}          # no url: the legal host's terms of use
+  terms_clauses: {required: true}  # declared only together with `terms`
+```
+
+`terms_clauses` has no document of its own. It is the specific approval of the onerous
+clauses (Art. 1341(2) c.c.), which is valid only as a separate act: its own box, never
+ticked in advance, recorded on its own (`terms_clauses_consent`, `_at`), with the same url,
+version and sha256 as `terms`.
+
+- It is asked only when `terms` is asked **and** the legal host's text, in the language
+  shown, carries `declarations.specific_approval` in `current.json`. No words, no box: with
+  the terms from a manifest `url` or `file`, or before the host has answered, only `terms`
+  is asked.
+- The wizard shows the text's own words, verbatim: `declarations.general` as the terms'
+  label, `specific_approval.text` as the clauses'. They are in the text's front matter, so
+  inside the sha256 the parties approve. Onboarding composes no legal wording; the terms'
+  generic label is used only when the text has none.
+- A manifest declaring `terms_clauses` without `terms` is refused by `import-templates` and
+  at startup.
 
 The data-sharing step shows a link to its privacy notice above the offers:
 `data_sharing.notice_url`, or the legal host's `data_sharing_notice` document.

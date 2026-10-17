@@ -41,7 +41,13 @@ def can_submit(submission: Submission) -> list[str]:
     # Only the documents the community declares: one it publishes nowhere was never
     # asked, so it cannot be missing (`template_service.consent_slots`).
     asked = template_service.consent_slots(submission.rec_slug)
-    for slot, name in (("gdpr", "GDPR"), ("policy", "Policy"), ("statute", "Statute")):
+    for slot, name in (
+        ("gdpr", "GDPR"),
+        ("policy", "Policy"),
+        ("statute", "Statute"),
+        ("terms", "Terms of use"),
+        ("terms_clauses", "Specific approval of the terms' clauses"),
+    ):
         if slot in asked and not getattr(submission, f"{slot}_consent"):
             errors.append(f"{name} consent is required")
 
