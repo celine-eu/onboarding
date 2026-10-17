@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-10-17)
+
+### Features
+
+- Hook terms in onboarding
+  ([`10cbd20`](https://github.com/celine-eu/onboarding/commit/10cbd20f9c02d15aa154a97852f801ad6a92c141))
+
+
 ## v1.2.0 (2026-10-17)
 
 ### Features
