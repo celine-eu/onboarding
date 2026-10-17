@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.3.1 (2026-10-17)
+
+### Bug Fixes
+
+- Move the API version to 0.6.0 and add the terms requirements
+  ([`5d4caea`](https://github.com/celine-eu/onboarding/commit/5d4caea9e81c110ed309f42a9d404540b28b374d))
+
+
 ## v1.3.0 (2026-10-17)
 
 ### Features
