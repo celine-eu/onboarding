@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.2.0 (2026-10-17)
+
+### Features
+
+- Handle terms
+  ([`b28a1a0`](https://github.com/celine-eu/onboarding/commit/b28a1a0b70e587771463dcec0468803aacfa915f))
+
+- Normalize user of env CELINE_POLICIES*
+  ([`58bb202`](https://github.com/celine-eu/onboarding/commit/58bb2020859228fa359723218b11b92f7f7d41e2))
+
+
 ## v1.1.1 (2026-10-09)
 
 ### Bug Fixes
