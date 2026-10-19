@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-10-19)
+
+### Features
+
+- Add switches for AI documents processing
+  ([`b2947e1`](https://github.com/celine-eu/onboarding/commit/b2947e126d52facfa28859950c32766bfbca60e5))
+
+
 ## v1.3.1 (2026-10-17)
 
 ### Bug Fixes
