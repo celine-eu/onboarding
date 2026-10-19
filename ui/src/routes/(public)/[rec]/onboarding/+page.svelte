@@ -43,6 +43,11 @@
 	// and a `utility` step, which is a bill upload and nothing else, is dropped.
 	let documentUpload = $derived(config?.features?.document_upload === true);
 	let documentScan = $derived(config?.features?.document_scan === true);
+	// The identity document has its own switch (REQ-0051): the deployment or the
+	// community can drop it while the bill keeps its upload and scan. Off, there is
+	// no ID upload, no ID scan and so nothing to cross-check the bill against.
+	let idDocumentUpload = $derived(config?.features?.id_document_upload === true);
+	let idDocumentScan = $derived(config?.features?.id_document_scan === true);
 	// Same for SMS: a real gateway needs an agreement, and without one the step
 	// could never be completed, so it is left out rather than shown and failing.
 	let phoneVerification = $derived(config?.features?.phone_verification === true);
@@ -759,7 +764,7 @@
 			idUploadedFiles = [...idUploadedFiles];
 		}
 
-		if (documentScan) scheduleIdExtraction();
+		if (idDocumentScan) scheduleIdExtraction();
 	}
 
 	function scheduleIdExtraction() {
@@ -803,6 +808,7 @@
 	// An expired identity document backs no verification. Uploading one is
 	// optional, so this asks for a valid one rather than blocking the application.
 	let idExpiredOn = $derived.by(() => {
+		if (!idDocumentScan) return null;
 		const raw = (idExtractionData?.scadenza ?? '').trim();
 		const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(raw);
 		if (!m) return null;
@@ -818,7 +824,7 @@
 		id: string;
 	}
 	let mismatches = $derived.by(() => {
-		if (!extractionData || !idExtractionData) return [];
+		if (!idDocumentScan || !extractionData || !idExtractionData) return [];
 		const result: MismatchField[] = [];
 
 		const billName = (extractionData.nome ?? '').toUpperCase().trim();
@@ -1071,7 +1077,7 @@
 				</div>
 			{:else if currentStepName === 'personal'}
 				<div class="personal-step">
-				{#if documentUpload}
+				{#if idDocumentUpload}
 				<p class="step-hint">{$t('onboarding.upload_id_intro')}</p>
 				<div class="step-section">
 					<FileUpload

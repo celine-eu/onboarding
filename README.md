@@ -85,7 +85,7 @@ Security headers are enabled by default (`SECURITY_HEADERS=true`): X-Content-Typ
 - Consent-first: data collection only after explicit GDPR and policy consent, with IP, timestamp, and document version recorded
 - Right to erasure: `DELETE /api/admin/{rec}/submissions/{id}` removes files from disk and all DB records
 - Audit trail: all admin operations logged with action, entity, IP, detail **and the operator who performed them**
-- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `EXTRACTION_ENABLED=yes`, `LLM_BASE_URL` and `LLM_VISION_MODEL` are all set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). Phone verification follows the same pattern: a real SMS provider without `DPA_SMS_SIGNED=yes` starts with verification **off** (see [Phone Verification](#phone-verification-sms-otp))
+- Processing agreements: bill and ID scanning send identity documents to the extraction provider, so document upload and scanning are **off** unless `EXTRACTION_ENABLED=yes`, `LLM_BASE_URL` and `LLM_VISION_MODEL` are all set — the wizard then collects personal data without documents and the document endpoints answer 403 (see [Document upload and scanning](#document-upload-and-scanning)). The identity document can be switched off on its own, keeping the bill: `ID_DOCUMENT_ENABLED=false` for the deployment, or `id_document: {enabled: false}` in a template. Phone verification follows the same pattern: a real SMS provider without `DPA_SMS_SIGNED=yes` starts with verification **off** (see [Phone Verification](#phone-verification-sms-otp))
 - CER field coverage vs GSE registration: see [docs/regulatory-compliance.md](docs/regulatory-compliance.md)
 - Data minimization: `consent_ip` excluded from public API responses, only visible to admins
 - Markdown content sanitized with DOMPurify to prevent XSS
@@ -217,12 +217,19 @@ Off by default. Scanning sends a participant's utility bill and identity documen
 - `POST /api/{rec}/extract`, `/extract-id`, `/documents/{id}/extract`, `/extractions/{id}/confirm`, and a `utility_bill` or `id_card` upload to `/submissions/{id}/documents`, answer **403** with `detail.code` `document_processing_disabled`;
 - `GET /api/{rec}/config` reports `features.document_upload` and `features.document_scan`, which is what the wizard reads.
 
+**The identity document has its own switch** (REQ-0051). It is offered only where document processing is on, the deployment has not set `ID_DOCUMENT_ENABLED=false`, and the community's template has not set `id_document: {enabled: false}` ([docs/templates.md](docs/templates.md#identity-document-optional-per-community)). The deployment's off wins over any template. With it off for a community, the bill keeps its upload and scan, and:
+
+- the wizard offers no ID-card upload, no ID scan and no comparison of the bill with an ID card;
+- `POST /api/{rec}/extract-id`, an `id_card` upload to `/submissions/{id}/documents`, and `/documents/{id}/extract` or `/extractions/{id}/confirm` on a stored ID card answer **403** with `detail.code` `id_document_disabled`;
+- `GET /api/{rec}/config` reports `features.id_document_upload` and `features.id_document_scan` as `false`. `features.document_upload` and `features.document_scan` keep meaning the bill.
+
 | Variable | Default | Description |
 |---|---|---|
 | `EXTRACTION_ENABLED` | `false` | Set to `yes` only once the endpoint at `LLM_BASE_URL` is operated by this deployment's own operator, or covered by a processing agreement that keeps processing in the EU |
 | `LLM_BASE_URL` | *(none)* | OpenAI-compatible endpoint that reads the documents |
 | `LLM_VISION_MODEL` | *(none)* | Vision model at that endpoint |
 | `LLM_API_KEY` | *(none)* | Key for the endpoint, if it needs one (for vLLM, `--api-key`) |
+| `ID_DOCUMENT_ENABLED` | `true` | `false` drops the ID-card upload and its scan on every community, keeping the bill's. `true` leaves it to each template's `id_document` |
 | `LLM_THINKING` | `true` | `false` asks a reasoning model (Qwen on vLLM or SGLang) to skip thinking, via `chat_template_kwargs`; extraction then takes about half as long. Leave `true` for OpenAI, which refuses the field |
 
 Some older names are no longer read:

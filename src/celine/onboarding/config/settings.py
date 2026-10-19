@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # deployment's own operator, or covered by a processing agreement (GDPR Art. 28)
     # that keeps processing in the EU. See `document_processing_enabled`.
     extraction_enabled: bool = False
+    # The identity document's own kill switch, under document processing: `false`
+    # stops the ID-card upload and its scan on every community of this deployment
+    # while the bill keeps both. `true` (the default) leaves it to each template's
+    # `id_document: {enabled: …}`. See `id_document_processing_enabled`.
+    id_document_enabled: bool = True
 
     # The two names the switch had until 2026-09-14. Declared only so a leftover is
     # reported at boot instead of silently leaving the feature off: `DPA_SIGNED`
@@ -447,6 +452,20 @@ class Settings(BaseSettings):
         be scanned or reviewed alongside a scan.
         """
         return self.extraction_enabled and bool(self.llm_base_url) and bool(self.llm_vision_model)
+
+    @property
+    def id_document_processing_enabled(self) -> bool:
+        """Whether this deployment lets participants upload an ID card and have it read.
+
+        The identity document is the most sensitive thing scanning reads, so it has
+        its own switch under `document_processing_enabled`: it needs document
+        processing on and the operator not to have switched the ID document off
+        (`ID_DOCUMENT_ENABLED`, default on). Off is the bill without the ID card —
+        the bill keeps its upload and scan — and off here wins over any template.
+        A template can still drop it for its own community
+        (`template_service.id_document_enabled`), never add it back.
+        """
+        return self.document_processing_enabled and self.id_document_enabled
 
     @property
     def phone_verification_enabled(self) -> bool:

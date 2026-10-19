@@ -910,6 +910,50 @@ def validate_existing_members(block: Any, *, where: str) -> None:
         )
 
 
+def id_document_offered(manifest: dict[str, Any]) -> bool:
+    """Whether the template offers the identity document: absent means it does.
+
+    The template's own say only; :func:`id_document_enabled` adds the deployment's.
+    """
+    block = manifest.get("id_document")
+    if not isinstance(block, dict):
+        return True
+    return block.get("enabled", True) is not False
+
+
+def id_document_enabled(rec_slug: str) -> bool:
+    """Whether a participant of this REC may upload an ID card and have it read (REQ-0051).
+
+    Both levels must allow it: the deployment
+    (``Settings.id_document_processing_enabled`` — document processing on and
+    ``ID_DOCUMENT_ENABLED`` not off) and the template (``id_document.enabled``,
+    absent meaning enabled). A template can drop it, never add it back. The bill
+    does not depend on this.
+    """
+    from celine.onboarding.config.settings import settings
+
+    return settings.id_document_processing_enabled and id_document_offered(load_manifest(rec_slug))
+
+
+def validate_id_document(block: Any, *, where: str) -> None:
+    """What an ``id_document`` block may say (REQ-0051): ``enabled``, a boolean.
+
+    Refused at import and at boot rather than read as "on" — a template that meant
+    to drop the identity document and misspelt it would otherwise keep collecting it.
+    """
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: 'id_document' must be a mapping")
+    unknown = set(block) - {"enabled"}
+    if unknown:
+        raise ValueError(
+            f"{where}: 'id_document' has unknown keys {sorted(unknown)}; it takes 'enabled'"
+        )
+    if not isinstance(block.get("enabled", True), bool):
+        raise ValueError(f"{where}: 'id_document.enabled' must be true or false")
+
+
 def rec_registry_binding(rec_slug: str) -> RecRegistryBinding:
     """Resolve a REC's registry binding from its manifest."""
     block = load_manifest(rec_slug).get("rec_registry")

@@ -79,6 +79,8 @@ steps: [consents, utility, personal, energy, eligibility, statute, review]
 existing_members:              # optional: "I am already a member" (see below)
   enabled: true
   skip_steps: [energy]         # only utility, phone_verify, energy, eligibility
+id_document:                   # optional: absent means the ID card is offered (see below)
+  enabled: false               # drop the ID-card upload and scan; the bill keeps both
 notifications:
   from: "noreply@my-rec.org"
   notify: [admin@my-rec.org]
@@ -120,6 +122,19 @@ meant for a community onboarding the members it already has.
   `skip_steps`, an unknown key, or a non-boolean `enabled`.
 
 [specifications/existing-members.md](specifications/existing-members.md) states the rules.
+
+### Identity document (optional, per community)
+
+`id_document: {enabled: false}` drops the identity document for this community: the wizard
+offers no ID-card upload or scan, and the API refuses one with `403`
+`id_document_disabled`. The bill keeps its upload and scan. Absent, or `enabled: true`, the
+ID card is offered wherever the deployment offers it.
+
+A template can only drop it. The ID card is offered only where document processing is on
+and the deployment has not set `ID_DOCUMENT_ENABLED=false` as well; the deployment's off wins
+over `enabled: true`. Import and boot refuse a non-boolean `enabled` and any other key.
+Requires a release carrying the key (REQ-0051): an earlier one ignores it and keeps
+offering the ID card.
 
 ### REC registry binding (optional, per community)
 

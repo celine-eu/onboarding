@@ -30,6 +30,7 @@ def peer_ip(request: Request) -> str:
 SESSION_TTL_SECONDS = 600
 
 DOCUMENT_PROCESSING_DISABLED = "document_processing_disabled"
+ID_DOCUMENT_DISABLED = "id_document_disabled"
 PHONE_VERIFICATION_DISABLED = "phone_verification_disabled"
 
 
@@ -47,6 +48,26 @@ async def require_document_processing() -> None:
             {
                 "code": DOCUMENT_PROCESSING_DISABLED,
                 "message": "Document upload and scanning are not enabled on this deployment.",
+            },
+        )
+
+
+def refuse_id_document(rec_slug: str) -> None:
+    """Refuse an ID-card upload or scan where this REC does not offer it (REQ-0051).
+
+    Call it after :func:`require_document_processing`, so that with processing
+    off every document route keeps answering ``document_processing_disabled``.
+    Same shape: a 403 with a stable ``code``, and the wizard never gets here
+    because ``/config`` reported ``features.id_document_upload`` false. See
+    ``template_service.id_document_enabled`` for the two levels.
+    """
+    if not template_service.id_document_enabled(rec_slug):
+        raise HTTPException(
+            403,
+            {
+                "code": ID_DOCUMENT_DISABLED,
+                "message": "Identity document upload and scanning are not enabled "
+                "for this community.",
             },
         )
 
@@ -77,6 +98,11 @@ async def require_phone_verification() -> None:
                 "message": "Phone verification is not enabled on this deployment.",
             },
         )
+
+
+async def require_id_document(rec_slug: str = Depends(valid_rec_slug)) -> None:
+    """:func:`refuse_id_document` as a route dependency, for a route that is only for it."""
+    refuse_id_document(rec_slug)
 
 
 async def require_session(

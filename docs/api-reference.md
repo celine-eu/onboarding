@@ -69,6 +69,16 @@ while document upload and scanning are off (`EXTRACTION_ENABLED`, `LLM_BASE_URL`
 deployment. `GET /api/{rec}/config` reports the state in `features.document_upload`
 and `features.document_scan`.
 
+The identity document has its own switch under that one (REQ-0051): off on the deployment
+(`ID_DOCUMENT_ENABLED=false`) or in the community's template (`id_document: {enabled:
+false}`), `POST /api/{rec}/extract-id`, an upload with `doc_type` `id_card`, and
+`/documents/{id}/extract` or `/extractions/{id}/confirm` on a stored ID card answer
+**403** with `{"detail": {"code": "id_document_disabled", ...}}`. The bill's routes are
+unaffected. With document processing off, these answer `document_processing_disabled`
+as above. `GET /api/{rec}/config` reports it per community in
+`features.id_document_upload` and `features.id_document_scan`; `document_upload` and
+`document_scan` keep meaning the bill.
+
 **The member's own surface (`/api/me/**`, Keycloak identity, no capability):**
 
 The only self-service surface in this service, and the only authenticated one

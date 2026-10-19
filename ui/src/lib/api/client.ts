@@ -204,7 +204,16 @@ export interface SiteConfig {
 	login_invitation?: boolean;
 	/** What this deployment allows, which the manifest cannot know. Absent means
 	 *  off: the wizard never offers a control the API would refuse. */
-	features?: { document_upload: boolean; document_scan: boolean; phone_verification?: boolean };
+	features?: {
+		// The bill.
+		document_upload: boolean;
+		document_scan: boolean;
+		// The identity document, per community (REQ-0051). Absent on an API older
+		// than these fields, which the wizard reads as off.
+		id_document_upload?: boolean;
+		id_document_scan?: boolean;
+		phone_verification?: boolean;
+	};
 }
 
 /** A community's own wording for one offer (`consent.data_sharing.texts`),

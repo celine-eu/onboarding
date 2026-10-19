@@ -1,7 +1,8 @@
 # Data protection
 
 How the applicant's documents reach the people who review them, how personal data is
-encrypted at rest, and which values the applicant can change.
+encrypted at rest, which values the applicant can change, and when an identity document is
+collected at all.
 
 ---
 
@@ -61,3 +62,27 @@ with a longer one, as the wizard shows them.
   is refused with `422`, and nothing is confirmed.
 - **An operator may change them** through the admin `PATCH`, recorded in the audit trail as
   `update` with the field names and the operator.
+
+### REQ-0051 — the identity document has its own switch, at the deployment and per community, apart from the bill
+
+A participant may upload an identity document and have it scanned only where all three hold:
+
+- **document processing is on** (`EXTRACTION_ENABLED`, `LLM_BASE_URL` and `LLM_VISION_MODEL`);
+- **the deployment has not switched it off**: `ID_DOCUMENT_ENABLED`, default `true`. `false`
+  turns it off on every community, whatever a template says;
+- **the community's template has not switched it off**: `id_document: {enabled: false}`.
+  Absent, or `enabled: true`, means offered. A template can only drop it. Import and boot
+  refuse a block that is not a mapping, a non-boolean `enabled`, and any other key.
+
+Off for a community:
+
+- `GET /api/{rec}/config` reports `features.id_document_upload` and
+  `features.id_document_scan` as `false`. `features.document_upload` and
+  `features.document_scan` keep meaning the bill, and do not change.
+- `POST /api/{rec}/extract-id`, an upload with `doc_type` `id_card` to
+  `/submissions/{id}/documents`, and `/documents/{id}/extract` or `/extractions/{id}/confirm`
+  on a stored ID card answer `403` with `detail.code` `id_document_disabled`. With document
+  processing off they answer `document_processing_disabled`, as every document route does.
+- The bill's upload and scan are unaffected.
+- The wizard offers no ID-card upload, no ID scan, and no comparison of the bill with an
+  ID card. It reads a missing `id_document_*` feature as off.

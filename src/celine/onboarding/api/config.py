@@ -23,16 +23,27 @@ async def get_config(rec_slug: str = Depends(valid_rec_slug)):
     The wizard renders upload and scanning only where these say so, rather than
     offering a control the API would refuse. Upload and scan are separate
     fields that follow one switch today, so that upload without scanning can be
-    enabled later without changing this response. ``phone_verification`` says
-    whether a ``phone_verify`` step can run; off, the wizard leaves it out.
+    enabled later without changing this response. ``document_upload`` and
+    ``document_scan`` mean the bill. ``id_document_upload`` and
+    ``id_document_scan`` mean the identity document, and are per REC: on only
+    where document processing is, the deployment has not switched the ID
+    document off (``ID_DOCUMENT_ENABLED``) and the template has not either
+    (``id_document.enabled``, REQ-0051). A wizard older than these fields reads
+    only the first two: it offers the ID card with the bill, and the API refuses
+    the ID card where it is off.
+    ``phone_verification`` says whether a ``phone_verify`` step can run; off,
+    the wizard leaves it out.
     """
     documents = settings.document_processing_enabled
+    id_document = template_service.id_document_enabled(rec_slug)
     return {
         **template_service.get_config(rec_slug),
         "login_invitation": await provisioning.login_is_provisioned(rec_slug),
         "features": {
             "document_upload": documents,
             "document_scan": documents,
+            "id_document_upload": id_document,
+            "id_document_scan": id_document,
             "phone_verification": settings.phone_verification_enabled,
         },
     }

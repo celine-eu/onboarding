@@ -41,6 +41,7 @@ async def _validate_dataspace_config() -> None:
         validate_data_sharing_summary,
         validate_data_sharing_texts,
         validate_existing_members,
+        validate_id_document,
         validate_organization,
     )
 
@@ -54,6 +55,7 @@ async def _validate_dataspace_config() -> None:
         registry = rec_registry_binding(slug)  # raises on a malformed block
         validate_boundary_template(manifest, where=f"REC {slug!r}")
         validate_existing_members(manifest.get("existing_members"), where=f"REC {slug!r}")
+        validate_id_document(manifest.get("id_document"), where=f"REC {slug!r}")
         validate_consent_slots(manifest.get("consent"), where=f"REC {slug!r}")
         validate_data_sharing_texts(
             ((manifest.get("consent") or {}).get("data_sharing") or {}).get("texts"),
@@ -270,6 +272,10 @@ def _warn_document_processing() -> None:
     not to take the whole onboarding down: the wizard works from the fields the
     participant types, and the API refuses the document routes on its own.
 
+    With processing on and `ID_DOCUMENT_ENABLED=false`, it says the identity
+    document is off on every community (REQ-0051); a template's own
+    `id_document: {enabled: false}` is per community and not logged here.
+
     It also names `DPA_SIGNED`, `OPENAI_API_KEY` and the `EXTRACTION_*` endpoint
     settings when a deployment still sets them: they were renamed, and a leftover
     would otherwise look like the reason scanning is on.
@@ -292,6 +298,13 @@ def _warn_document_processing() -> None:
             ", ".join(renamed),
         )
     if settings.document_processing_enabled:
+        if not settings.id_document_enabled:
+            # A deliberate choice, not a fault: said at info, once.
+            logger.info(
+                "Identity document upload and scanning are disabled on every community "
+                "(ID_DOCUMENT_ENABLED=false): the wizard offers no ID card and "
+                "/extract-id and an id_card upload answer 403. The bill keeps both."
+            )
         return
     missing = [
         name

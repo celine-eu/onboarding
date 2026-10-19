@@ -4,16 +4,25 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celine.onboarding.api.deps import limiter, require_document_processing, require_session
+from celine.onboarding.api.deps import (
+    limiter,
+    refuse_id_document,
+    require_document_processing,
+    require_id_document,
+    require_session,
+)
 from celine.onboarding.config.settings import settings
 from celine.onboarding.models.database import get_db
+from celine.onboarding.models.document import DocumentType
 from celine.onboarding.models.schemas import ExtractionConfirm, ExtractionRead
 from celine.onboarding.models.submission import Submission
 from celine.onboarding.services import document_service, extraction_service
 
 # Every route here reads a document with the extraction provider, so the whole
 # router is behind the document-processing switch — confirm included, since an
-# extraction to confirm can only exist while scanning is on.
+# extraction to confirm can only exist while scanning is on. The identity
+# document has its own switch on top (REQ-0051): `/extract-id` is behind it, and
+# the two routes taking a stored document check it once they know its type.
 router = APIRouter(tags=["extractions"], dependencies=[Depends(require_document_processing)])
 
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
@@ -41,7 +50,7 @@ async def extract_from_upload(
     return extracted_data
 
 
-@router.post("/extract-id")
+@router.post("/extract-id", dependencies=[Depends(require_id_document)])
 @limiter.limit(lambda: settings.rate_limit_extraction)
 async def extract_from_id_upload(
     request: Request,
@@ -84,6 +93,8 @@ async def extract_from_document(
         raise HTTPException(404, "Document not found")
     if document.submission_id != session.id:
         raise HTTPException(403, "Document does not belong to this session")
+    if document.doc_type == DocumentType.ID_CARD:
+        refuse_id_document(session.rec_slug)
 
     if document.extraction:
         raise HTTPException(409, "Extraction already exists for this document")
@@ -105,6 +116,8 @@ async def confirm_extraction(
     document = await document_service.get_document(db, extraction.document_id)
     if not document or document.submission_id != session.id:
         raise HTTPException(403, "Extraction does not belong to this session")
+    if document.doc_type == DocumentType.ID_CARD:
+        refuse_id_document(session.rec_slug)
 
     if extraction.confirmed_by_user:
         raise HTTPException(409, "Extraction already confirmed")
