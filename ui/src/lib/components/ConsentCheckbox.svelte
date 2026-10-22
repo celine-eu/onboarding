@@ -5,6 +5,8 @@
 		required?: boolean;
 		documentUrl?: string;
 		documentLabel?: string;
+		/** Articles of the document the label names ("art. 5"): each links to its heading. */
+		articles?: number[];
 		onchange?: (checked: boolean) => void;
 	}
 
@@ -14,8 +16,26 @@
 		required = false,
 		documentUrl,
 		documentLabel,
+		articles = [],
 		onchange
 	}: Props = $props();
+
+	// The label in parts, "art. N" of a listed article as a link to the legal host's anchor
+	// for its heading (`#sec-N`). The words are the text's own; only the links are added.
+	let parts = $derived.by(() => {
+		if (!documentUrl || articles.length === 0) return [{ text: label, href: null }];
+		const base = documentUrl.split('#')[0];
+		const out: { text: string; href: string | null }[] = [];
+		let last = 0;
+		for (const m of label.matchAll(/\bart\. (\d+)\b/gi)) {
+			if (!articles.includes(Number(m[1]))) continue;
+			out.push({ text: label.slice(last, m.index), href: null });
+			out.push({ text: m[0], href: `${base}#sec-${m[1]}` });
+			last = m.index + m[0].length;
+		}
+		out.push({ text: label.slice(last), href: null });
+		return out;
+	});
 </script>
 
 <div class="consent-row">
@@ -27,7 +47,13 @@
 			{required}
 			onchange={() => onchange?.(checked)}
 		/>
-		<span class="consent-label">{label}</span>
+		<span class="consent-label"
+			>{#each parts as part}{#if part.href}<a
+						href={part.href}
+						target="_blank"
+						rel="noopener">{part.text}</a
+					>{:else}{part.text}{/if}{/each}</span
+		>
 	</label>
 	{#if documentUrl}
 		<a href={documentUrl} target="_blank" rel="noopener" class="consent-doc-link">
@@ -71,6 +97,10 @@
 		font-size: 0.9375rem;
 		color: var(--celine-text);
 		line-height: 1.4;
+	}
+
+	.consent-label a {
+		color: var(--celine-primary);
 	}
 
 	.consent-doc-link {

@@ -1029,6 +1029,7 @@
 						     and shown verbatim. -->
 						<ConsentCheckbox
 							label={config.consent.terms_clauses.declarations.specific_approval.text}
+							articles={config.consent.terms_clauses.declarations.specific_approval.articles ?? []}
 							bind:checked={termsClausesConsent}
 							required
 							documentUrl={config.consent.terms_clauses.url}
