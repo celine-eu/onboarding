@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.4.1 (2026-10-22)
+
+### Bug Fixes
+
+- Add terms link on checkboxes
+  ([`2840dea`](https://github.com/celine-eu/onboarding/commit/2840dea8c80bbde60ebbf5bbf26a4deaccb47d51))
+
+
 ## v1.4.0 (2026-10-19)
 
 ### Features
