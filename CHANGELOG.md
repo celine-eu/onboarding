@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.4.2 (2026-10-23)
+
+### Bug Fixes
+
+- **enablement**: Let a named retry mint a skipped DID and skip the share step without one
+  ([`1e782cd`](https://github.com/celine-eu/onboarding/commit/1e782cdee525fcdbadb74c20277fb99ee6eb5213))
+
+
 ## v1.4.1 (2026-10-22)
 
 ### Bug Fixes
