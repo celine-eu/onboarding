@@ -126,6 +126,8 @@ Provisioning takes **facts, not a database row**. `provision_subject(access, fac
 
 Step 5 is skipped entirely when the REC's manifest declares no `dataspace.organization`. Step 8 is skipped when `DS_CONNECTOR_URL` is unset.
 
+A member approved while either was missing keeps those enablement steps `skipped`; neither Approve nor "retry all" runs them again. Once the binding and the connector exist, an operator names them: `enablement retry … --step dataspace_identity`, then `--step dataspace_share` ([admin console](admin-console.md#a-member-approved-before-the-dataspace)). A `dataspace_identity` step that succeeded is never re-run, so nobody is given a second DID.
+
 ### Retrying a failed share
 
 `POST /api/admin/submissions/{id}/retry-share` re-runs `provision_user_shares()` with `raise_on_error=True`, returning `422` if the connector rejects the request. Use it to complete provisioning for a submission left at `share_provisioned=false`.

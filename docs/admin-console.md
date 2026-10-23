@@ -317,9 +317,11 @@ When the geocoder or the Digital Twin does not answer, the step fails with
 step, and a retry resolves again: it succeeds once the template (and the registry
 community's areas) declare that boundary, or once the Digital Twin answers.
 
-`retry` only re-runs steps that are not already `succeeded` or `skipped`, with two
-exceptions, both only when the step is named: `keycloak_user` re-runs a login step
+`retry` only re-runs steps that are not already `succeeded` or `skipped`, with three
+exceptions, all only when the step is named: `keycloak_user` re-runs a login step
 whose invitation is `send_failed` (see [The invitation, for the operator](#the-invitation-for-the-operator)),
+`dataspace_identity` runs an identity step `skipped` because the community declared no
+dataspace binding (see [A member approved before the dataspace](#a-member-approved-before-the-dataspace)),
 and `dataspace_share` re-examines a succeeded consent step — *Re-check every
 connector* in the console. A member's withdrawal that reached only one of the
 connectors holding an offer leaves that step `succeeded`; re-examining it brings
@@ -329,6 +331,31 @@ step `skipped` because the member declined everything on the form: they may have
 decided on their page since.
 It never fails the request: the operator asked to repair, and the step table is the
 answer.
+
+#### A member approved before the dataspace
+
+A member approved while the community's manifest declared no dataspace binding has
+step 3 `skipped` ("this community declares no dataspace binding"), and, with no
+connector configured, step 4 `skipped` too. Once the binding and the connector are in
+place, name the steps in order:
+
+```bash
+onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step dataspace_identity
+onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step dataspace_share
+```
+
+The first runs step 3 as approval does: it mints the DID and writes it onto the
+registry member. If the community still declares no binding it ends `skipped` again,
+with the same detail, and nothing fails. The second grants for the DID the first
+recorded, so their order matters: step 4 run first has no DID to grant for, and ends
+`skipped` with "the member holds no dataspace identity: retry --step
+dataspace_identity first, then this step". Approval records the same for a member
+whose community has a connector but no binding. An identity step that `succeeded`
+is never re-run, by name or otherwise — a second DID would split the member's
+consents. "Retry all" and Approve leave a skipped step 3 as
+it is, so nobody is given a credential an operator did not ask for. The console has
+no button for this yet; use the CLI or `POST …/enablement/retry` with
+`{"step": "dataspace_identity"}`.
 
 ### Reversal
 
@@ -468,6 +495,7 @@ onboarding-cli admin review reject 20260730-a1b2 --rec my-rec --reason "POD di u
 onboarding-cli admin enablement status 20260730-a1b2 --rec my-rec
 onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step rec_registry_member
 onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step keycloak_user  # resend a send_failed invitation
+onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step dataspace_identity  # mint a DID skipped for want of a binding
 onboarding-cli admin enablement retry 20260730-a1b2 --rec my-rec --step dataspace_share  # re-drive a split sharing decision
 onboarding-cli admin audit --rec my-rec --action transition_failed
 ```

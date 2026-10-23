@@ -58,7 +58,9 @@ class RetryRequest(BaseModel):
         None,
         description="One step to re-run. Omit to re-run every step that is not "
         "already succeeded or skipped. Named, `keycloak_user` also re-runs a "
-        "succeeded login whose invitation is `send_failed`, and `dataspace_share` "
+        "succeeded login whose invitation is `send_failed`, `dataspace_identity` "
+        "runs a step skipped because the community declared no dataspace binding "
+        "(it mints the DID, or is skipped again), and `dataspace_share` "
         "re-examines a succeeded consent step (or one skipped because the member "
         "declined on the form): every connector holding the "
         "member's offers is brought to their newest decision, withdrawals "

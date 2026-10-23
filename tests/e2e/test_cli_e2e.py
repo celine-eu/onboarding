@@ -161,6 +161,31 @@ class TestEnablement:
         )
         assert "Unknown enablement step" in result.stdout + result.stderr
 
+    def test_naming_a_skipped_identity_in_a_community_still_unbound_skips_it_again(
+        self, cli, submission
+    ):
+        """The backfill for a member approved before the dataspace, run where the
+        community still declares no binding: the step is re-run, ends skipped with
+        the same reason, and nothing fails."""
+        made = submission(REC)
+        cli("review", "approve", made["ref"], "--rec", REC)
+        payload = json.loads(
+            cli(
+                "enablement",
+                "retry",
+                made["ref"],
+                "--rec",
+                REC,
+                "--step",
+                "dataspace_identity",
+                "--json",
+            ).stdout
+        )
+        step = next(s for s in payload["steps"] if s["step"] == "dataspace_identity")
+        assert step["status"] == "skipped"
+        assert step["attempts"] == 2
+        assert payload["state"] == "complete"
+
     def test_revoke_needs_confirmation(self, cli, submission):
         made = submission(REC)
         result = cli("enablement", "revoke", made["ref"], "--rec", REC, expect=1)

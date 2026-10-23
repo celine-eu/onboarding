@@ -419,7 +419,9 @@ def enablement_retry(
         help="keycloak_user | rec_registry_member | dataspace_identity | "
         "dataspace_share. Omit to re-run everything unfinished. Naming "
         "keycloak_user also re-runs a succeeded login step whose invitation "
-        "is send_failed, to send it again. Naming dataspace_share re-examines "
+        "is send_failed, to send it again. Naming dataspace_identity runs a "
+        "step skipped because the community declared no dataspace binding, so "
+        "a member approved before it did gets a DID. Naming dataspace_share re-examines "
         "a succeeded consent step, or one skipped for a declined form: every "
         "connector is brought to the member's "
         "newest decision, withdrawals included, and nothing is written where "
@@ -430,8 +432,9 @@ def enablement_retry(
     token: str = _TOKEN,
     as_json: bool = _JSON,
 ):
-    """Re-run the steps that have not succeeded, resend a failed invitation, or
-    re-drive a sharing decision that is split across connectors."""
+    """Re-run the steps that have not succeeded, resend a failed invitation,
+    give a DID to a member approved before the dataspace binding, or re-drive a
+    sharing decision that is split across connectors."""
 
     async def _go():
         transport = build(local, api_url=api_url, token=token)

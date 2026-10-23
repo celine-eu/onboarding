@@ -393,6 +393,17 @@ async def _run_dataspace_share(ctx: RunContext) -> StepOutcome:
         # and a split they made there is the retry's to converge (the
         # maintainer, 2026-09-19).
         return StepOutcome(EnablementStatus.SKIPPED, detail="no data-sharing consent was given")
+    if not ctx.submission.dataspace_did:
+        # Every grant is made for the DID step 3 records, so without one there is
+        # nothing to grant for. Skipped, like `member_release`'s
+        # `no_dataspace_identity`: a prerequisite is missing, nothing failed — and
+        # `succeeded` here used to say every connector agreed while nothing had
+        # been written anywhere.
+        return StepOutcome(
+            EnablementStatus.SKIPPED,
+            detail="the member holds no dataspace identity: retry --step "
+            "dataspace_identity first, then this step",
+        )
 
     # Every run reads each connector and writes only where it disagrees with the
     # member's newest decision, so a re-run where nothing is split writes nothing
@@ -676,11 +687,17 @@ async def _run_one(db: AsyncSession, ctx: RunContext, spec: StepSpec) -> Submiss
 
 
 def _rerun_by_name(spec: StepSpec, row: SubmissionEnablementStep) -> bool:
-    """Whether a step named in a retry is re-run although it `succeeded`.
+    """Whether a step named in a retry is re-run although it `succeeded` or `skipped`.
 
-    Two, and nothing else:
+    Three, and nothing else:
 
     - step 1 whose invitation failed to send, so the operator can send it again;
+    - step 3, the dataspace identity, when it was `skipped`: the community
+      declared no dataspace binding at approval, and may declare one since. Its
+      run is the approval's — it mints the DID and writes it onto the registry
+      member — or, still unbound, `skipped` again with the same detail. A
+      *succeeded* step 3 is not re-run: the DID it minted is the member's, and
+      a second one would split their consents;
     - step 4, the sharing consent, **always** (the maintainer, 2026-09-19). A
       member's withdrawal that reaches one connector of two leaves the step
       `succeeded` — nothing about approval failed — and the offer split. Its run
@@ -694,6 +711,10 @@ def _rerun_by_name(spec: StepSpec, row: SubmissionEnablementStep) -> bool:
         # `skipped` too: a member who declined everything on the form has step 4
         # skipped, and can still make a split on their page afterwards.
         return row.status in (EnablementStatus.SUCCEEDED, EnablementStatus.SKIPPED)
+    if spec.step == EnablementStep.DATASPACE_IDENTITY:
+        # Members approved before their community joined the dataspace hold a
+        # skipped step 3, and naming it is the only way they get a DID.
+        return row.status == EnablementStatus.SKIPPED
     if row.status != EnablementStatus.SUCCEEDED:
         return False
     return spec.step == EnablementStep.KEYCLOAK_USER and row.invitation in RESENDABLE_INVITATIONS
@@ -708,15 +729,18 @@ async def enable(
     first committed everything that did. A step already `succeeded` or `skipped`
     is not re-run: retry means "finish what is unfinished", not "do it all again".
 
-    **Two exceptions**, and only when the step is named (:func:`_rerun_by_name`):
+    **Three exceptions**, and only when the step is named (:func:`_rerun_by_name`):
     step 1 whose invitation came back `send_failed` is re-run, so the operator
-    can resend an email that did not go out; and a succeeded step 4 is re-run, so
-    the operator can re-drive an offer split across connectors. An unnamed run
-    still skips both, so neither approval nor "retry all" re-sends by accident.
-    Re-running step 1 is safe because the upsert is idempotent on
+    can resend an email that did not go out; a skipped step 3 is re-run, so a
+    member approved before their community declared a dataspace binding can be
+    given a DID; and a succeeded or skipped step 4 is re-run, so the operator
+    can re-drive an offer split across connectors. An unnamed run still skips
+    all three, so neither approval nor "retry all" re-sends or mints by
+    accident. Re-running step 1 is safe because the upsert is idempotent on
     `(community, key)` and the provisioning service applies its send rule again;
-    step 4 because it writes only where a connector disagrees with the member's
-    newest decision.
+    step 3 because a skipped step minted nothing, and a succeeded one is never
+    re-run; step 4 because it writes only where a connector disagrees with the
+    member's newest decision.
 
     **The invitation is sent after the steps, not by step 1** (celine-eu/onboarding#8):
     only when no fail-closed step is left unfinished, so an approval that fails
@@ -764,8 +788,11 @@ async def retry(
     """Re-run the failed steps, or one named step.
 
     Naming `keycloak_user` also re-runs a step 1 that succeeded with a
-    `send_failed` invitation, and naming `dataspace_share` re-examines a step 4
-    that succeeded; see :func:`enable`.
+    `send_failed` invitation, naming `dataspace_identity` runs a step 3 that was
+    skipped for want of a dataspace binding, and naming `dataspace_share`
+    re-examines a step 4 that succeeded or was skipped; see :func:`enable`. A
+    member approved before their community joined the dataspace is brought in by
+    naming step 3, then step 4: step 4 grants for the DID step 3 records.
 
     Unlike `enable` this never raises on a fail-closed failure: the submission is
     already approved, so there is no decision to block — the operator asked to

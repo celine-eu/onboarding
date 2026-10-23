@@ -1019,6 +1019,163 @@ class TestASucceededShareIsReExaminedByName:
         assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
 
 
+class TestASkippedIdentityIsRunByName:
+    """A member approved before their community joined the dataspace gets a DID
+    when an operator names step 3.
+
+    Step 3 is `skipped` while the manifest declares no dataspace binding, and a
+    skipped step is finished as far as a retry is concerned — so once the
+    binding is switched on, nothing could give that member a DID, and step 4
+    had nobody to grant for. Naming the step runs it again. Unnamed — approval
+    again, "retry all" — it is still left: nobody receives a credential that an
+    operator did not ask for. A succeeded step 3 is never re-run: the DID it
+    minted is the member's, and a second one would split their consents.
+    """
+
+    @pytest.fixture()
+    def unbound(self, monkeypatch, happy_path):
+        """The community declares no dataspace binding and no connector is set."""
+        from celine.onboarding.config.settings import settings
+
+        async def _no_binding(sub, **kwargs):
+            happy_path.append("dataspace_identity(no binding)")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _no_binding)
+        monkeypatch.setattr(settings, "ds_connector_url", "")
+        return happy_path
+
+    @staticmethod
+    def _bind(monkeypatch, calls):
+        """The binding and the connector are switched on, as on 2026-10-23."""
+        from celine.onboarding.config.settings import settings
+
+        async def _identity(sub, **kwargs):
+            calls.append("dataspace_identity")
+            sub.dataspace_vc_id = "cred-1"
+            sub.dataspace_did = "did:web:member"
+
+        async def _shares(sub, **kwargs):
+            calls.append(f"dataspace_share(did={sub.dataspace_did})")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _identity)
+        monkeypatch.setattr(dataspace_identity, "provision_user_shares", _shares)
+        monkeypatch.setattr(settings, "ds_connector_url", "http://connector.test")
+
+    async def _approved_unbound(self, db, submission, calls):
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SKIPPED
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SKIPPED
+        calls.clear()
+        return rows
+
+    async def test_a_named_retry_runs_a_skipped_identity(
+        self, db, submission, monkeypatch, unbound
+    ):
+        await self._approved_unbound(db, submission, unbound)
+        self._bind(monkeypatch, unbound)
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_IDENTITY)
+
+        row = rows[EnablementStep.DATASPACE_IDENTITY]
+        assert row.status == EnablementStatus.SUCCEEDED
+        assert row.external_ref == "cred-1"
+        assert row.attempts == 2
+        # The same run as at approval, so the DID lands on the registry member.
+        assert unbound == [
+            "dataspace_identity",
+            "set_member_did(member=member-key-1, did=did:web:member)",
+        ]
+
+    async def test_an_unnamed_retry_or_approval_again_leaves_it(
+        self, db, submission, monkeypatch, unbound
+    ):
+        await self._approved_unbound(db, submission, unbound)
+        self._bind(monkeypatch, unbound)
+
+        await enablement.enable(db, submission)
+        rows = await enablement.retry(db, submission)
+
+        assert unbound == []
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SKIPPED
+        assert rows[EnablementStep.DATASPACE_IDENTITY].attempts == 1
+
+    async def test_a_community_still_unbound_stays_skipped(self, db, submission, unbound):
+        await self._approved_unbound(db, submission, unbound)
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_IDENTITY)
+
+        row = rows[EnablementStep.DATASPACE_IDENTITY]
+        assert unbound == ["dataspace_identity(no binding)"]
+        assert row.status == EnablementStatus.SKIPPED
+        assert row.detail == "this community declares no dataspace binding"
+        assert row.last_error is None
+        assert enablement.state_of(rows) == "complete"
+
+    async def test_a_succeeded_identity_is_not_re_run_by_name(self, db, submission, happy_path):
+        rows = await enablement.enable(db, submission)
+        assert rows[EnablementStep.DATASPACE_IDENTITY].status == EnablementStatus.SUCCEEDED
+        happy_path.clear()
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_IDENTITY)
+
+        assert happy_path == []
+        assert rows[EnablementStep.DATASPACE_IDENTITY].attempts == 1
+
+    async def test_the_backfill_gives_the_share_step_a_did(
+        self, db, submission, monkeypatch, unbound
+    ):
+        """The operator's sequence: step 3 by name, then step 4 by name."""
+        await self._approved_unbound(db, submission, unbound)
+        self._bind(monkeypatch, unbound)
+
+        await enablement.retry(db, submission, step=EnablementStep.DATASPACE_IDENTITY)
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        assert unbound[-1] == "dataspace_share(did=did:web:member)"
+        assert rows[EnablementStep.DATASPACE_SHARE].status == EnablementStatus.SUCCEEDED
+        assert enablement.state_of(rows) == "complete"
+        # A named retry of steps 3 and 4 is about those steps: nobody is emailed.
+        assert "invitation" not in unbound
+
+
+class TestAShareWithNoDidIsSkipped:
+    """Step 4 grants for the DID step 3 records, so without one it has nothing
+    to grant for. It used to report `succeeded` — "every connector … records
+    their decision" — while nothing had been written anywhere; it is `skipped`,
+    and says which step to run first.
+    """
+
+    @pytest.fixture()
+    def no_identity(self, monkeypatch, happy_path):
+        """A connector is configured, and step 3 mints no DID."""
+
+        async def _no_binding(sub, **kwargs):
+            happy_path.append("dataspace_identity(no binding)")
+
+        monkeypatch.setattr(dataspace_identity, "provision_user_identity", _no_binding)
+        return happy_path
+
+    async def test_approval_skips_the_share_and_says_why(self, db, submission, no_identity):
+        rows = await enablement.enable(db, submission)
+
+        row = rows[EnablementStep.DATASPACE_SHARE]
+        assert "dataspace_share" not in no_identity
+        assert row.status == EnablementStatus.SKIPPED
+        assert "--step dataspace_identity" in row.detail
+        assert enablement.state_of(rows) == "complete"
+
+    async def test_a_named_retry_before_the_identity_is_skipped(self, db, submission, no_identity):
+        await enablement.enable(db, submission)
+        no_identity.clear()
+
+        rows = await enablement.retry(db, submission, step=EnablementStep.DATASPACE_SHARE)
+
+        row = rows[EnablementStep.DATASPACE_SHARE]
+        assert no_identity == []
+        assert row.status == EnablementStatus.SKIPPED
+        assert "--step dataspace_identity" in row.detail
+
+
 class TestAFailedSendIsRetriedByName:
     """`send_failed` is the one `succeeded` step a retry re-runs, and only by name.
 
