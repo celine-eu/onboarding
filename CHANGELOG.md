@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.5.0 (2026-10-30)
+
+### Features
+
+- **registry**: Send the account subject with the member
+  ([`68d675f`](https://github.com/celine-eu/onboarding/commit/68d675fe2c54cacc583ca2dbb7a1524199db6dd0))
+
+
 ## v1.4.2 (2026-10-23)
 
 ### Bug Fixes
