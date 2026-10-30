@@ -241,6 +241,34 @@ class TestUserId:
         assert "cannot resolve" in caplog.text
 
 
+class TestSubject:
+    """The account's own id, beside the username: the registry keeps it in a
+    field of its own for the member mirrors (rec-registry REQ-0101)."""
+
+    SUBJECT = "0b6f6c3e-8d2a-4c41-9f0e-5a7d2c1b9e10"
+
+    def test_the_keycloak_user_id_is_the_subject(self):
+        """
+        @verifies REQ-0052
+        """
+        payload = rr.build_member_payload(
+            _sub(), BINDING, keycloak_username="ex-00001", keycloak_user_id=self.SUBJECT
+        )
+
+        assert payload["subject"] == self.SUBJECT
+        assert payload["user_id"] == "ex-00001"
+
+    def test_no_account_id_sends_no_subject(self):
+        """Not `null`: a registry that predates the field would keep the key in
+        the member's `extra`.
+
+        @verifies REQ-0052
+        """
+        payload = rr.build_member_payload(_sub(), BINDING)
+
+        assert "subject" not in payload
+
+
 class TestRole:
     def test_pv_makes_a_prosumer(self):
         assert rr.member_role(_sub(extra_data={"has_pv": True})) == "prosumer"
@@ -356,6 +384,20 @@ class TestRegisterMember:
 
         assert key == "20260727-abcd"
         assert calls[0][0] == "test-community"
+
+    async def test_the_subject_reaches_the_create(self, monkeypatch, _configured):
+        """Through the SDK's `MemberCreate`, which declares no `subject` yet and
+        carries it as an additional property.
+
+        @verifies REQ-0052
+        """
+        calls = _stub_client(monkeypatch, 201)
+
+        await rr.register_member(_sub(), keycloak_user_id="0b6f6c3e-8d2a-4c41-9f0e-5a7d2c1b9e10")
+
+        body = calls[0][1].to_dict()
+        assert body["subject"] == "0b6f6c3e-8d2a-4c41-9f0e-5a7d2c1b9e10"
+        assert "subject" not in body.get("extra", {})
 
     async def test_already_registered_is_not_a_failure(self, monkeypatch, _configured):
         """Approval is retriable. Refusing the second attempt would leave a

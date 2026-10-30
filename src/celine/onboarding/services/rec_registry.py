@@ -169,6 +169,7 @@ def build_member_payload(
     binding: template_service.RecRegistryBinding,
     *,
     keycloak_username: str | None = None,
+    keycloak_user_id: str | None = None,
     area: str | None = None,
 ) -> dict[str, Any]:
     """The member body, as the registry's own bundle schema expects it.
@@ -176,6 +177,12 @@ def build_member_payload(
     ``key`` and ``user_id`` are different identifiers and deliberately so: the
     key is the registry's own handle on the member, the ``user_id`` is who they
     log in as. See :func:`member_user_id`.
+
+    ``keycloak_user_id`` is the provisioned account's own id (the token's
+    ``sub``) and becomes the member's ``subject``, which the registry keeps
+    beside ``user_id`` for the member mirrors of the intermediate environments
+    (REQ-0052). Without one the key is left out rather than sent ``null``: a
+    member can exist before its account.
 
     ``area`` is the area already resolved by boundary, and is required for a
     community whose areas are boundaries: its member's area is the boundary the
@@ -211,6 +218,9 @@ def build_member_payload(
         # is the REC manager's offline work.
         "assets": {},
     }
+
+    if keycloak_user_id:
+        payload["subject"] = keycloak_user_id
 
     # The POD is the one thing that must be tracked from onboarding. It is what
     # the distributor keys on, what the metering data arrives against, and what
@@ -354,7 +364,10 @@ async def _accept_conflict(community: str, *, key: str, user_id: str, detail: st
 
 
 async def register_member(
-    submission: Submission, *, keycloak_username: str | None = None
+    submission: Submission,
+    *,
+    keycloak_username: str | None = None,
+    keycloak_user_id: str | None = None,
 ) -> str | None:
     """Register the approved participant, returning the member key.
 
@@ -362,6 +375,10 @@ async def register_member(
     becomes the member's ``user_id`` — the thing that lets them resolve
     themselves. Omitting it falls back to the submission's email; see
     :func:`member_user_id` for when that differs.
+
+    ``keycloak_user_id`` is the id of the account provisioning made or found,
+    and becomes the member's ``subject`` (REQ-0052). Omitted, the member is
+    registered without one.
 
     Returns ``None`` when registration is not configured — a deployment with no
     registry, or a community whose manifest declares no ``rec_registry`` block.
@@ -397,7 +414,11 @@ async def register_member(
         area = await resolve_for_approval(submission, binding)
 
     payload = build_member_payload(
-        submission, binding, keycloak_username=keycloak_username, area=area
+        submission,
+        binding,
+        keycloak_username=keycloak_username,
+        keycloak_user_id=keycloak_user_id,
+        area=area,
     )
 
     from celine.sdk.openapi.rec_registry.models import MemberCreate

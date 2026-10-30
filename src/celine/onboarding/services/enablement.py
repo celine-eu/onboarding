@@ -282,7 +282,13 @@ async def _revoke_keycloak_user(ctx: RunContext, row: SubmissionEnablementStep) 
 async def _run_registry_member(ctx: RunContext) -> StepOutcome:
     from celine.onboarding.services.rec_registry import register_member
 
-    key = await register_member(ctx.submission, keycloak_username=ctx.keycloak_username)
+    # The account id comes from step 1's row, not from this run, so a retry of
+    # this step alone still names the account (REQ-0052).
+    key = await register_member(
+        ctx.submission,
+        keycloak_username=ctx.keycloak_username,
+        keycloak_user_id=ctx.keycloak_user_id,
+    )
     if key is None:
         return StepOutcome(
             EnablementStatus.SKIPPED,
